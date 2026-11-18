@@ -1,5 +1,11 @@
 package com.gamemale.client
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -10,6 +16,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Density
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.background
@@ -402,7 +416,14 @@ fun AppUi(
     onSetThemeMode: (Int) -> Unit = {},
     onSetFontScale: (Float) -> Unit = {},
     onSetCacheMb: (Int) -> Unit = {},
-    onClearCache: () -> Unit = {}
+    onClearCache: () -> Unit = {},
+    canGoBack: Boolean = false,
+    showThemeToggle: Boolean = true,
+    refreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
+    onOpenSearch: () -> Unit = {},
+    searchHistory: List<String> = emptyList(),
+    backProgress: Float = 0f
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -422,26 +443,55 @@ fun AppUi(
                 title = when (nav) {
                     is Nav.Home -> "GameMale"
                     Nav.Settings -> "设置"
+                    Nav.Search -> "搜索"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
                     is Nav.Thread -> nav.title.ifEmpty { "帖子" }
                 },
-                canBack = nav != Nav.Home,
+                canBack = canGoBack,
                 dark = dark,
+                showTheme = showThemeToggle,
                 onSettings = onSettings,
                 onBack = onBack,
                 onToggleDark = onToggleDark,
                 onLogin = onLogin
             )
-            Box(Modifier.weight(1f)) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .graphicsLayer { translationX = backProgress * size.width * 0.35f }
+            ) {
+                AnimatedContent(
+                    targetState = nav,
+                    transitionSpec = {
+                        val forward = (targetState is Nav.Thread) || (targetState is Nav.Settings) ||
+                            (targetState is Nav.Search)
+                        if (forward) {
+                            (slideInHorizontally(tween(260)) { it } + fadeIn(tween(180)))
+                                .togetherWith(slideOutHorizontally(tween(260)) { -it / 4 } + fadeOut(tween(180)))
+                        } else {
+                            (slideInHorizontally(tween(260)) { -it / 3 } + fadeIn(tween(180)))
+                                .togetherWith(slideOutHorizontally(tween(260)) { it } + fadeOut(tween(180)))
+                        }
+                    },
+                    label = "nav"
+                ) { cur ->
                     when {
                         error != null -> ErrorView(error, onRetry, onDump, onLogin)
-                        nav == Nav.Home -> HomeList(forums, loading, onOpenForum)
-                        nav is Nav.Forum -> ForumView(forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState)
-                        nav is Nav.Thread -> ThreadView(
+                        cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
+                        cur is Nav.Search -> SearchScreen(
+                            history = searchHistory,
+                            onCancel = onBack,
+                            onSubmit = onSearch
+                        )
+                        cur is Nav.Forum -> ForumView(
+                            forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
+                            refreshing, onRefresh
+                        )
+                        cur is Nav.Thread -> ThreadView(
                             threadPage, loading, onLoad, onExternal,
                             onReply, onRate, onAttach, onImage
                         )
-                        nav is Nav.Settings -> SettingsView(
+                        cur is Nav.Settings -> SettingsView(
                             fontScale = fontScale,
                             themeMode = themeMode,
                             cacheMb = cacheMb,
@@ -454,8 +504,9 @@ fun AppUi(
                             onExternal = onExternal
                         )
                     }
-                    if (loading) LoadingLayer("正在加载…")
                 }
+                if (loading) LoadingLayer("正在加载…")
+            }
             }
 
         // 隐藏的取数 WebView（1dp，不渲染任何可见内容）
@@ -539,7 +590,7 @@ fun AppUi(
                         ),
                         CircleShape
                     )
-                    .lightPress { searchOpen = true },
+                    .lightPress { onOpenSearch() },
                 contentAlignment = Alignment.Center
             ) {
                 IconImg(CouiIcons.Outlined.Search, 24.dp, colors.onAccent)
@@ -573,6 +624,7 @@ private fun TopBar(
     onBack: () -> Unit,
     onToggleDark: () -> Unit,
     onSettings: () -> Unit,
+    showTheme: Boolean,
     onLogin: () -> Unit,
     onShare: () -> Unit,
     onDump: () -> Unit
@@ -609,8 +661,10 @@ private fun TopBar(
             CircleBtn(ShareVector, onShare)
             Spacer(Modifier.width(8.dp))
         }
-        CircleBtn(if (dark) CouiIcons.Filled.Sun else CouiIcons.Filled.DarkLight, onToggleDark)
-        Spacer(Modifier.width(8.dp))
+        if (showTheme) {
+            CircleBtn(if (dark) CouiIcons.Filled.Sun else CouiIcons.Filled.DarkLight, onToggleDark)
+            Spacer(Modifier.width(8.dp))
+        }
         if (!avatarUrl.isNullOrBlank()) {
             AsyncImage(
                 model = avatarUrl,
@@ -756,10 +810,65 @@ private fun ForumView(
     onLoad: (String) -> Unit,
     currentUrl: String,
     onImage: (String) -> Unit,
-    listState: LazyListState
+    listState: LazyListState,
+    refreshing: Boolean = false,
+    onRefresh: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
+    var pull by remember { mutableStateOf(0f) }
+    val scrollConn = remember {
+        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+            override fun onPreScroll(
+                available: androidx.compose.ui.geometry.Offset,
+                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource
+            ): androidx.compose.ui.geometry.Offset {
+                if (available.y < 0 && pull > 0f) {
+                    val d = available.y.coerceAtLeast(-pull)
+                    pull += d
+                    return androidx.compose.ui.geometry.Offset(0f, d)
+                }
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: androidx.compose.ui.geometry.Offset,
+                available: androidx.compose.ui.geometry.Offset,
+                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource
+            ): androidx.compose.ui.geometry.Offset {
+                if (available.y > 0 && !listState.canScrollBackward && !refreshing) {
+                    pull += available.y * 0.6f
+                    if (pull > 260f) pull = 260f
+                    return androidx.compose.ui.geometry.Offset(0f, available.y)
+                }
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+
+            override suspend fun onPreFling(
+                available: androidx.compose.ui.unit.Velocity
+            ): androidx.compose.ui.unit.Velocity {
+                if (pull > 90f) onRefresh()
+                pull = 0f
+                return androidx.compose.ui.unit.Velocity.Zero
+            }
+        }
+    }
     Column(Modifier.fillMaxSize()) {
+        // 顶部刷新提示：只在列表上方占一小条，不遮住原有内容
+        if (refreshing || pull > 8f) {
+            Row(
+                Modifier.fillMaxWidth().height(if (refreshing) 36.dp else (pull / 3f).dp.coerceAtMost(36.dp)),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (refreshing) {
+                    MiniSpinner(16.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Txt("刷新中…", size = 12.sp, color = colors.onSurfaceVariant)
+                } else {
+                    Txt(if (pull > 90f) "松开刷新" else "下拉刷新", size = 12.sp, color = colors.onSurfaceVariant)
+                }
+            }
+        }
         if (page != null && page.cats.isNotEmpty()) {
             LazyRow(
                 Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
@@ -782,7 +891,7 @@ private fun ForumView(
             }
         }
         LazyColumn(
-            Modifier.fillMaxSize(),
+            Modifier.fillMaxSize().nestedScroll(scrollConn),
             state = listState,
             contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -1360,6 +1469,89 @@ private fun LoadingLayer(text: String) {
             Spacer(Modifier.height(10.dp))
             Txt(text, size = 13.sp, color = Color.White)
         }
+    }
+}
+
+
+// ---------------- 搜索页 ----------------
+@Composable
+private fun SearchScreen(
+    history: List<String>,
+    onCancel: () -> Unit,
+    onSubmit: (String) -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    var q by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        runCatching { focus.requestFocus() }
+        keyboard?.show()
+    }
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(colors.container)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                if (q.isEmpty()) {
+                    Txt("搜索帖子、作者、关键词", size = 14.sp, color = colors.onSurfaceVariant)
+                }
+                BasicTextField(
+                    value = q,
+                    onValueChange = { q = it },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(color = colors.onSurface, fontSize = 14.sp),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.accent),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = {
+                        if (q.isNotBlank()) {
+                            keyboard?.hide()
+                            onSubmit(q.trim())
+                        }
+                    }),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus)
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Pill("搜索", {
+                if (q.isNotBlank()) {
+                    keyboard?.hide()
+                    onSubmit(q.trim())
+                }
+            }, primary = true)
+        }
+        if (history.isNotEmpty()) {
+            Spacer(Modifier.height(18.dp))
+            Txt("搜索历史", size = 12.sp, color = colors.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            history.chunked(2).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { h ->
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.card)
+                                .clickable {
+                                    keyboard?.hide()
+                                    onSubmit(h)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Txt(h, size = 13.sp, color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+        Txt("搜索使用站内搜索，结果按关键词匹配；可以搜作者名或标题片段。", size = 11.sp, color = colors.onSurfaceVariant)
     }
 }
 

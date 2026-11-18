@@ -17,7 +17,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,6 +37,7 @@ sealed interface Nav {
     data class Forum(val url: String, val title: String) : Nav
     data class Thread(val url: String, val title: String) : Nav
     data object Settings : Nav
+    data object Search : Nav
 }
 
 class MainActivity : ComponentActivity() {
@@ -102,7 +103,13 @@ class MainActivity : ComponentActivity() {
         val root = ComposeView(this)
         root.setContent {
             CouiTheme(darkTheme = darkMode, colorScheme = rememberScheme(darkMode)) {
-                BackHandler { goBack() }
+                // 预测性返回：手指拖动时内容跟着右移，松手提交后退
+                PredictiveBackHandler(enabled = true) { progress ->
+                    runCatching {
+                        progress.collect { e -> backProgress = e.progress }
+                    }
+                    backProgress = 0f
+                }
                 AppUi(
                     nav = nav,
                     forums = forums,
@@ -159,11 +166,19 @@ class MainActivity : ComponentActivity() {
                         refreshCacheStats()
                         toast("缓存已清除")
                     },
+                    canGoBack = backStack.isNotEmpty() || nav is Nav.Thread ||
+                        nav is Nav.Settings || nav is Nav.Search,
+                    showThemeToggle = nav !is Nav.Forum || backStack.isNotEmpty(),
+                    refreshing = refreshing,
+                    onRefresh = { refreshCurrentForum() },
+                    onOpenSearch = { openSearch() },
+                    searchHistory = searchHistory,
+                    backProgress = backProgress,
                     onLogin = { openLogin() },
                     onReply = { replyOpen = true },
                     onRate = { pid -> openRate(pid) },
                     onAttach = { at -> openAttach(at) },
-                    onImage = { url -> imageUrl = url },
+                    onImage = { url -> openImageExternally(url) },
                     replyOpen = replyOpen,
                     onCancelReply = { replyOpen = false },
                     onSendReply = { text -> sendReply(text) },
@@ -394,6 +409,7 @@ class MainActivity : ComponentActivity() {
                             is Nav.Thread -> {
                                 val tp = Site.parseThread(html)
                                 threadPage = tp
+                                loadedThreadUrl = url
                                 val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
                                 if (tid != null) {
                                     cache.save(tid, tp.subject, tp.lastEdit, html)
@@ -449,7 +465,7 @@ class MainActivity : ComponentActivity() {
 
     private fun reload() {
         when (val n = nav) {
-            Nav.Settings -> {}
+            Nav.Settings, Nav.Search -> {}
             is Nav.Home -> loadHome()
             is Nav.Forum -> load(n.url)
             is Nav.Thread -> {
@@ -488,18 +504,48 @@ class MainActivity : ComponentActivity() {
 
     /** 底部导航直达版块（动漫/游戏） */
     private fun openQuick(url: String, title: String) {
-        backStack.add(nav)
+        // 一级页之间切换：不压栈，底栏保持可见；有缓存就直接换过去
+        val isTopLevel = backStack.isEmpty()
+        if (!isTopLevel) backStack.add(nav)
         nav = Nav.Forum(url, title)
-        forumPage = null
         threadPage = null
+        val cached = forumCache[url]
+        if (cached != null) {
+            forumPage = cached
+            loadedForumUrl = url
+            error = null
+            return
+        }
+        val keep = forumPage
+        forumPage = keep?.copy(threads = emptyList(), title = title)
         load(url)
+    }
+
+    private fun openSearch() {
+        if (nav is Nav.Search) return
+        backStack.add(nav)
+        nav = Nav.Search
+        loadSearchHistory()
+    }
+
+    private fun loadSearchHistory() {
+        val raw = getSharedPreferences("gm", MODE_PRIVATE).getString("searchHistory", "").orEmpty()
+        searchHistory = raw.split("\n").filter { it.isNotBlank() }
+    }
+
+    private fun pushSearchHistory(q: String) {
+        val list = (listOf(q) + searchHistory.filter { it != q }).take(12)
+        searchHistory = list
+        getSharedPreferences("gm", MODE_PRIVATE).edit()
+            .putString("searchHistory", list.joinToString("\n")).commit()
     }
 
     /** 搜索：直接走站内搜索页，再用版块页解析（列表结构与版块页一致） */
     private fun doSearch(q: String) {
-        val url = SITE + "search.php?mod=forum&srchtxt=" + Uri.encode(q) + "&searchsubmit=yes&mobile=no"
-        backStack.add(nav)
-        nav = Nav.Forum(url, "搜索：" + q)
+        if (q.isBlank()) return
+        pushSearchHistory(q.trim())
+        val url = SITE + "search.php?mod=forum&srchtxt=" + Uri.encode(q.trim()) + "&searchsubmit=yes&mobile=no"
+        nav = Nav.Forum(url, "搜索：" + q.trim())
         forumPage = null
         load(url)
     }
@@ -563,7 +609,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openSettings() {
-        if (nav is Nav.Settings) return
+        if (nav is Nav.Settings || nav is Nav.Search) return
         backStack.add(nav)
         nav = Nav.Settings
         refreshCacheStats()
@@ -597,6 +643,75 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 下拉刷新：不动现有列表，成功后再整体替换 */
+    private fun refreshCurrentForum() {
+        val url = loadedForumUrl ?: return
+        if (refreshing) return
+        refreshing = true
+        fetcher.fetch(url) { r ->
+            runOnUiThread {
+                r.onSuccess { html ->
+                    runCatching {
+                        lastHtml = html
+                        refreshLogin(html)
+                        var fp = Site.parseForumPage(html)
+                        if (fp.threads.isEmpty() && url.contains("search.php")) {
+                            val hits = Site.parseSearchResults(html)
+                            if (hits.isNotEmpty()) fp = fp.copy(threads = hits)
+                        }
+                        val cur = forumPage
+                        val merged = fp.copy(
+                            cats = mergeCats(cur?.cats ?: emptyList(), fp.cats),
+                            threads = fp.threads
+                        )
+                        forumPage = merged
+                        forumCache[url] = merged
+                        prefetchToken++
+                        prefetchThumbs(merged)
+                    }.onFailure { toast("刷新失败，列表保持不变") }
+                }.onFailure { toast("刷新失败，列表保持不变") }
+                refreshing = false
+            }
+        }
+    }
+
+    /** 图片交给系统相册/看图应用：先下载到应用缓存，再用 FileProvider 授权打开 */
+    private fun openImageExternally(url: String) {
+        toast("正在下载图片…")
+        Thread {
+            runCatching {
+                val dir = java.io.File(cacheDir, "images").apply { mkdirs() }
+                val name = (url.hashCode().toString() + ".jpg")
+                val f = java.io.File(dir, name)
+                if (!f.exists()) {
+                    val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+                    conn.setRequestProperty("Referer", "https://www.gamemale.com/")
+                    android.webkit.CookieManager.getInstance().getCookie(url)
+                        ?.let { conn.setRequestProperty("Cookie", it) }
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 20000
+                    conn.inputStream.use { input -> f.outputStream().use { out -> input.copyTo(out) } }
+                }
+                val uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, packageName + ".fileprovider", f
+                )
+                runOnUiThread {
+                    runCatching {
+                        startActivity(
+                            Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, "image/*")
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                        )
+                    }.onFailure { toast("没有可用的看图应用，已用浏览器打开") }
+                }
+            }.onFailure {
+                runOnUiThread { toast("图片下载失败：" + (it.message ?: "")) }
+            }
+        }.start()
+    }
+
     private fun refreshCacheStats() {
         if (!::cache.isInitialized) return
         cacheBytes = cache.totalBytes()
@@ -608,6 +723,7 @@ class MainActivity : ComponentActivity() {
         if (backStack.isNotEmpty()) {
             nav = backStack.removeAt(backStack.size - 1)
             when (val n = nav) {
+                Nav.Search -> {}
                 Nav.Settings -> {}
                 is Nav.Home -> loadHome()
                 is Nav.Forum -> {
@@ -621,7 +737,22 @@ class MainActivity : ComponentActivity() {
                         load(n.url)
                     }
                 }
-                is Nav.Thread -> load(n.url)
+                is Nav.Thread -> {
+                    // 设置页返回帖子详情：本地已有同一帖就直接还原，不重新抓取
+                    if (threadPage != null && loadedThreadUrl == n.url) {
+                        error = null
+                    } else {
+                        val tid = Regex("thread-(\\d+)").find(n.url)?.groupValues?.get(1)
+                        val disk = tid?.let { cache.read(it) }
+                        if (disk != null) {
+                            runCatching {
+                                threadPage = Site.parseThread(disk.first)
+                                lastHtml = disk.first
+                                loadedThreadUrl = n.url
+                            }
+                        } else load(n.url)
+                    }
+                }
             }
             return
         }
@@ -664,6 +795,11 @@ class MainActivity : ComponentActivity() {
 
     private var prefetchToken = 0
     private var loadedForumUrl: String? = null
+    private var loadedThreadUrl: String? = null
+    private var refreshing by mutableStateOf(false)
+    private var searchOpen by mutableStateOf(false)
+    private var backProgress by mutableStateOf(0f)
+    private var searchHistory by mutableStateOf<List<String>>(emptyList())
     /** tid -> 已抓到的帖子 HTML（预取时顺手存下，再次打开直接用） */
     private val threadCache = LinkedHashMap<String, String>()
     /** url -> 已加载好的列表页（回退时不重载，搜索页也各存各的） */
@@ -673,7 +809,10 @@ class MainActivity : ComponentActivity() {
     /** 列表页本身没有缩略图（这个模板没开图文插件），就用正文首图补，最多补 6 条 */
     private fun prefetchThumbs(page: ForumPage) {
         val token = ++prefetchToken
-        val targets = page.threads.filter { it.thumbs.isEmpty() && it.url.contains("thread-") }.take(6)
+        val targets = page.threads
+            .filter { it.thumbs.isEmpty() && it.url.contains("thread-") }
+            .filter { t -> !cache.has(t.tid) }
+            .take(6)
         if (targets.isEmpty()) return
         fun step(i: Int) {
             if (i >= targets.size || token != prefetchToken || nav !is Nav.Forum) return
@@ -747,8 +886,10 @@ class MainActivity : ComponentActivity() {
     private fun navUrl(): String = when (val n = nav) {
         is Nav.Forum -> n.url
         is Nav.Thread -> n.url
-        is Nav.Settings -> ""
+        is Nav.Search -> SITE + "search.php?mod=forum"
         Nav.Home -> SITE + "forum.php"
+        Nav.Settings -> ""
+        Nav.Search -> SITE + "search.php?mod=forum"
     }
 
     /** 回复：用页面里的 #fastpostform 字段，补上 message 后 POST（带 inajax=1 拿纯文本结果） */
@@ -788,7 +929,7 @@ class MainActivity : ComponentActivity() {
             "usesig" to "1",
             "message" to text
         )
-        fetcher.submitOnPage(url, fields.joinToString("&") { (k, v) ->
+        fetcher.post(url, fields.joinToString("&") { (k, v) ->
             java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
         }) { r ->
             runOnUiThread {
@@ -924,8 +1065,10 @@ class MainActivity : ComponentActivity() {
     private fun submit(form: FormDef, onDone: () -> Unit) {
         prefetchToken++
         busy = true
-        val url = form.action + (if (form.action.contains("?")) "&" else "?") + "inajax=1"
-        fetcher.submitOnPage(url, form.body()) { r ->
+        val raw = form.action
+        val url = (if (raw.startsWith("http")) raw else SITE + raw) +
+            (if (raw.contains("?")) "&" else "?") + "inajax=1"
+        fetcher.post(url, form.body()) { r ->
             runOnUiThread {
                 busy = false
                 r.onSuccess { xml ->
@@ -942,8 +1085,8 @@ class MainActivity : ComponentActivity() {
                     }
                 }.onFailure {
                     rateSourceHtml?.let { dumpText("rate-form", it) }
-                    // 页内提交没走通时，回退到 postUrl 再试一次
-                    fetcher.post(url, form.body()) { r2 ->
+                    // postUrl 没走通时，回退到页内表单提交再试一次
+                    fetcher.submitOnPage(url, form.body()) { r2 ->
                         runOnUiThread {
                             r2.onSuccess { xml2 ->
                                 dumpText("submit", xml2)

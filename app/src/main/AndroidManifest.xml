@@ -19,6 +19,7 @@
         android:label="@string/app_name"
         android:hardwareAccelerated="true"
         android:usesCleartextTraffic="false"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.Gamemale">
 
         <activity
@@ -48,5 +49,16 @@
                 <data android:scheme="https" android:host="gamemale.com" android:pathPrefix="/thread-" />
             </intent-filter>
         </activity>
+
+        <!-- 图片交给系统相册查看时，用 FileProvider 授权读取缓存里的文件 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

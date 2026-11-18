@@ -95,6 +95,8 @@ class ThreadCache(ctx: Context) {
         }
     }
 
+    fun has(tid: String): Boolean = index[tid]?.let { fileOf(tid).exists() } ?: false
+
     fun totalBytes(): Long = index.values.sumOf { it.bytes } + runCatching { indexFile.length() }.getOrDefault(0L)
 
     fun count(): Int = index.size
