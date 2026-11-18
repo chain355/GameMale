@@ -45,6 +45,51 @@ object ImageStore {
     }
 }
 
+/** 帖子首图（列表预览图）的持久缓存：tid -> 图片 url 列表，避免列表刷新后又去联网抓预览图 */
+object ThumbStore {
+    private val map = LinkedHashMap<String, List<String>>()
+    private var file: File? = null
+
+    fun init(ctx: Context) {
+        val f = File(ctx.applicationContext.filesDir, "thumbs.json")
+        file = f
+        runCatching {
+            if (!f.exists()) return
+            val root = JSONObject(f.readText())
+            val arr = root.optJSONArray("items") ?: return
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val tid = o.optString("tid")
+                val urls = o.optJSONArray("urls") ?: continue
+                val list = ArrayList<String>()
+                for (j in 0 until urls.length()) list.add(urls.getString(j))
+                if (tid.isNotEmpty() && list.isNotEmpty()) map[tid] = list
+            }
+        }
+    }
+
+    fun get(tid: String): List<String> = map[tid] ?: emptyList()
+
+    fun put(tid: String, urls: List<String>) {
+        if (urls.isEmpty()) return
+        map[tid] = urls
+        val f = file ?: return
+        runCatching {
+            if (map.size > 500) map.remove(map.keys.first())
+            val arr = org.json.JSONArray()
+            map.forEach { (k, v) ->
+                arr.put(JSONObject().put("tid", k).put("urls", org.json.JSONArray(v)))
+            }
+            f.writeText(JSONObject().put("items", arr).toString())
+        }
+    }
+
+    fun clear() {
+        map.clear()
+        file?.delete()
+    }
+}
+
 class ThreadCache(ctx: Context) {
 
     data class Entry(val tid: String, var title: String, var edited: String, var bytes: Long, var ts: Long)

@@ -877,27 +877,6 @@ private fun ForumView(
                 }
             }
         }
-        if (page != null && page.cats.isNotEmpty()) {
-            LazyRow(
-                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(page.cats) { c ->
-                    val curType = Regex("typeid=(\\d+)").find(currentUrl)?.groupValues?.get(1)
-                    val chipType = Regex("typeid=(\\d+)").find(c.url)?.groupValues?.get(1)
-                    val active = if (chipType == null) curType == null else chipType == curType
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(if (active) colors.accent else colors.container)
-                            .clickable { onLoad(c.url) }
-                            .padding(horizontal = 14.dp, vertical = 7.dp)
-                    ) {
-                        Txt(c.label, size = 13.sp, color = if (active) colors.onAccent else colors.onSurfaceVariant)
-                    }
-                }
-            }
-        }
         LazyColumn(
             Modifier
                 .fillMaxSize()

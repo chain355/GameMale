@@ -93,6 +93,7 @@ class MainActivity : ComponentActivity() {
         }
         fontScale = prefs.getFloat("fontScale", 1f)
         ImageStore.init(this)
+        ThumbStore.init(this)
         cache = ThreadCache(this)
         cacheMb = cache.limitMb
         refreshCacheStats()
@@ -167,6 +168,7 @@ class MainActivity : ComponentActivity() {
                     onClearCache = {
                         cache.clear()
                         threadCache.clear()
+                        ThumbStore.clear()
                         refreshCacheStats()
                         toast("缓存已清除")
                     },
@@ -451,6 +453,12 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
+                                fp = fp.copy(threads = fp.threads.map { item ->
+                                    if (item.thumbs.isEmpty()) {
+                                        val cachedThumbs = ThumbStore.get(item.tid)
+                                        if (cachedThumbs.isNotEmpty()) item.copy(thumbs = cachedThumbs) else item
+                                    } else item
+                                })
                                 forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
                                 forumCache[url] = forumPage!!
                                 if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
@@ -736,7 +744,7 @@ class MainActivity : ComponentActivity() {
     private fun prefetchThreadImages(page: ThreadPage) {
         val urls = page.posts.flatMap { p ->
             p.blocks.mapNotNull { (it as? Block.Image)?.url }
-        }.distinct().filter { !ImageStore.hasUrl(it) }.take(14)
+        }.distinct().filter { !ImageStore.hasUrl(it) }
         if (urls.isEmpty()) return
         Thread {
             for (u in urls) {
@@ -754,6 +762,49 @@ class MainActivity : ComponentActivity() {
             }
             runOnUiThread { refreshCacheStats() }
         }.start()
+    }
+
+    /** 回复结果以“页面上真的有这条回复”为准，不依赖站点返回值文案 */
+    private fun verifyReply(text: String) {
+        val url = (nav as? Nav.Thread)?.url
+        if (url == null) {
+            busy = false
+            toast("回复已提交，回到帖子页刷新即可看到")
+            return
+        }
+        busy = true
+        val probe = text.trim().take(12)
+        fetcher.fetch(url) { r ->
+            runOnUiThread {
+                busy = false
+                r.onSuccess { html ->
+                    val tp = Site.parseThread(html)
+                    threadPage = tp
+                    lastHtml = html
+                    loadedThreadUrl = url
+                    val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
+                    if (tid != null) cache.save(tid, tp.subject, tp.lastEdit, html)
+                    val found = tp.posts.any { p ->
+                        p.blocks.filterIsInstance<Block.Text>().any { it.text.contains(probe) }
+                    }
+                    if (found) {
+                        toast("回复成功")
+                        replyOpen = false
+                        replyTextSatisfied()
+                    } else {
+                        toast("回复已提交，但页面里还没看到这条内容，稍后刷新确认")
+                        replyOpen = false
+                    }
+                }.onFailure {
+                    busy = false
+                    toast("回复已提交，刷新页面时网络不稳，稍后再看")
+                }
+            }
+        }
+    }
+
+    private fun replyTextSatisfied() {
+        refreshing = false
     }
 
     private fun refreshCacheStats() {
@@ -854,6 +905,11 @@ class MainActivity : ComponentActivity() {
     /** 单条帖子的预览图：本地有缓存就直接解析出来，不再联网 */
     fun ensureThumb(t: ThreadItem) {
         if (t.thumbs.isNotEmpty() || !t.url.contains("thread-")) return
+        val saved = ThumbStore.get(t.tid)
+        if (saved.isNotEmpty()) {
+            applyThumb(t, saved)
+            return
+        }
         val local = cache.read(t.tid)?.first ?: threadCache[t.tid]
         if (local != null) {
             applyThumb(t, Site.parseFirstImages(local, 3))
@@ -884,6 +940,7 @@ class MainActivity : ComponentActivity() {
 
     private fun applyThumb(t: ThreadItem, imgs: List<String>) {
         if (imgs.isEmpty()) return
+        ThumbStore.put(t.tid, imgs)
         val cur = forumPage ?: return
         val updated = cur.copy(threads = cur.threads.map { item ->
             if (item.tid == t.tid) item.copy(thumbs = imgs) else item
@@ -896,7 +953,7 @@ class MainActivity : ComponentActivity() {
         val token = ++prefetchToken
         val targets = page.threads
             .filter { it.thumbs.isEmpty() && it.url.contains("thread-") }
-            .take(6)
+            .filter { ThumbStore.get(it.tid).isEmpty() }
         if (targets.isEmpty()) return
         fun step(i: Int) {
             if (i >= targets.size || token != prefetchToken || nav !is Nav.Forum) return
@@ -999,7 +1056,13 @@ class MainActivity : ComponentActivity() {
             form.set("message", text)
             form.set("posttime", (System.currentTimeMillis() / 1000).toString())
             busy = true
-            submit(form, onDone = { replyOpen = false; busy = false }, okText = "回复成功", pageFirst = true)
+            submit(
+                form,
+                onDone = { replyOpen = false },
+                okText = "回复成功",
+                pageFirst = true,
+                verifyText = text
+            )
             return
         }
         // 页面里没有快速回复框时，用 formhash + tid 自己拼一次提交
@@ -1027,13 +1090,8 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 r.onSuccess { xml ->
                     dumpText("submit-reply", xml)
-                    val (ok, detail) = judgeXml(xml)
-                    toast(if (ok) "回复成功" else detail.ifEmpty { "提交失败" })
-                    if (ok) {
-                        replyOpen = false
-                        busy = false
-                        reload()
-                    } else busy = false
+                    replyOpen = false
+                    verifyReply(text)
                 }.onFailure {
                     busy = false
                     dumpText("submit-reply-timeout", it.message.orEmpty())
@@ -1175,7 +1233,8 @@ class MainActivity : ComponentActivity() {
         form: FormDef,
         onDone: () -> Unit,
         okText: String = "评分成功",
-        pageFirst: Boolean = false
+        pageFirst: Boolean = false,
+        verifyText: String? = null
     ) {
         submitOkText = okText
         prefetchToken++
@@ -1189,6 +1248,11 @@ class MainActivity : ComponentActivity() {
                 r.onSuccess { xml ->
                     dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
                     val (ok, detail) = judgeXml(xml)
+                    if (verifyText != null) {
+                        onDone()
+                        verifyReply(verifyText)
+                        return@onSuccess
+                    }
                     val msg = if (ok) submitOkText else detail.ifEmpty { "提交失败" }
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     if (ok) {
@@ -1208,6 +1272,11 @@ class MainActivity : ComponentActivity() {
                 r.onSuccess { xml ->
                     dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
                     val (ok, detail) = judgeXml(xml)
+                    if (verifyText != null) {
+                        onDone()
+                        verifyReply(verifyText)
+                        return@onSuccess
+                    }
                     toast(if (ok) submitOkText else detail.ifEmpty { "提交失败" })
                     if (ok) { onDone(); reload() }
                 }.onFailure { post() }
