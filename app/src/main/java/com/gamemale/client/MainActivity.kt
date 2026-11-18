@@ -9,6 +9,7 @@ import android.content.ContentValues
 import android.provider.MediaStore
 import android.webkit.CookieManager
 import android.widget.Toast
+import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -413,6 +414,13 @@ class MainActivity : ComponentActivity() {
     private fun load(rawUrl: String) {
         val url = if (rawUrl.contains("mod=forumdisplay") && !rawUrl.contains("orderby="))
             rawUrl + "&orderby=dateline" else rawUrl
+        if (nav is Nav.Forum && forumPage == null) {
+            val snap = forumCache[url] ?: SnapshotStore.get(url)
+            if (snap != null) {
+                Diag.log("load", "先用磁盘快照铺屏 threads=" + snap.threads.size)
+                forumPage = snap.copy(cats = mergeCats(emptyList(), snap.cats), title = (nav as Nav.Forum).title)
+            }
+        }
         // 已经有旧列表（快照或上一屏）时，用顶部细条静默刷新，不铺全屏 loading
         val hasOldList = nav is Nav.Forum && forumPage?.threads?.isNotEmpty() == true
         if (hasOldList) {
@@ -423,13 +431,6 @@ class MainActivity : ComponentActivity() {
             error = null
         }
         Diag.log("load", "start nav=" + nav + " url=" + url)
-        if (nav is Nav.Forum && forumPage == null) {
-            val snap = forumCache[url] ?: SnapshotStore.get(url)
-            if (snap != null) {
-                Diag.log("load", "先用磁盘快照铺屏 threads=" + snap.threads.size)
-                forumPage = snap.copy(cats = mergeCats(emptyList(), snap.cats), title = (nav as Nav.Forum).title)
-            }
-        }
         if (nav is Nav.Forum && loadedForumUrl == url) retryCount = 0
         if (nav is Nav.Forum) {
             loadedForumUrl = url
@@ -571,22 +572,34 @@ class MainActivity : ComponentActivity() {
      */
     private fun openInBrowser(url: String) {
         val uri = Uri.parse(url)
-        val probe = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
-        val candidates = packageManager.queryIntentActivities(probe, 0)
+        val base = Intent(Intent.ACTION_VIEW, uri)
+        fun open(pkg: String): Boolean {
+            val i = Intent(Intent.ACTION_VIEW, uri)
+                .setPackage(pkg)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            return runCatching { startActivity(i) }.isSuccess
+        }
+
+        // 1) 系统当前默认处理者（FV 悬浮球这类可能不声明 BROWSABLE，先认它）
+        val def = packageManager.resolveActivity(base, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+        val defPkg = def?.activityInfo?.packageName
+        Diag.log("browser", "default=" + defPkg + " candidates开始")
+        if (defPkg != null && defPkg != packageName && open(defPkg)) return
+
+        // 2) 所有能处理 http 的应用（不加 BROWSABLE 限制），排除自己
+        val candidates = packageManager.queryIntentActivities(base, 0)
             .mapNotNull { it.activityInfo?.packageName }
             .filter { it != packageName }
             .distinct()
-        if (candidates.isEmpty()) {
-            toast("这台设备没有可用的浏览器")
-            return
-        }
-        for (pkg in candidates) {
-            val i = Intent(Intent.ACTION_VIEW, uri)
-                .addCategory(Intent.CATEGORY_BROWSABLE)
-                .setPackage(pkg)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (runCatching { startActivity(i) }.isSuccess) return
-        }
+        Diag.log("browser", "candidates=" + candidates.joinToString(","))
+        for (pkg in candidates) if (open(pkg)) return
+
+        // 3) 兜底：让系统弹选择器，并把自己排除掉
+        val self = ComponentName(packageName, MainActivity::class.java.name)
+        val chooser = Intent.createChooser(Intent(Intent.ACTION_VIEW, uri), "选择浏览器")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(self))
+        if (runCatching { startActivity(chooser) }.isSuccess) return
         toast("没能调起浏览器，请检查默认应用设置")
     }
 
