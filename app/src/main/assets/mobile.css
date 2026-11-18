@@ -1,0 +1,2990 @@
+/* ==========================================================================
+   Gamemale App — Discuz! X 桌面模板移动端适配层
+   目标：把 960px 的桌面版论坛，变成单手可读的手机界面
+   原则：只改布局与尺寸，不隐藏功能入口（登录/回复/评分/附件下载全部保留）
+   ========================================================================== */
+
+/* ---------- 1. 基础排版 ---------- */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: hidden;
+  background: #F0F1F2;
+}
+
+body {
+  margin: 0 !important;
+  padding: 0 0 12px !important;
+  background: #F0F1F2 !important;
+  color: #1f2328 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif !important;
+  font-size: 15px !important;
+  line-height: 1.7 !important;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+a {
+  color: #0b63c5;
+  text-decoration: none !important;
+}
+
+a:hover,
+a:active {
+  color: #0b63c5;
+}
+
+img {
+  max-width: 100% !important;
+  height: auto !important;
+  border: 0;
+}
+
+/* 统一容器宽度：桌面版的 960px 固定宽度改为自适应 */
+.wp,
+#wp,
+#ct,
+#ct .wp,
+#ank,
+.mw,
+#ct #wp {
+  width: auto !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+  box-sizing: border-box !important;
+}
+
+#ct {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+/* ---------- 2. 顶部：站点自带头部整块收起（由原生标题栏接管） ---------- */
+
+#hd,
+#scbar,
+#nv,
+#um,
+#qmenu_menu,
+#mgb {
+  display: none !important;
+}
+
+/* 广告位全部隐藏 */
+[id^="ad_"],
+#ad_headerbanner,
+#ad_footerbanner,
+#ad_thread1_top,
+#ad_thread2_top,
+#ad_thread3_top,
+.ad,
+.adft,
+.wz_ad,
+div[class^="ad_"],
+div[class*=" banner"] {
+  display: none !important;
+}
+
+/* 页脚：只保留一行极简文字链接 */
+#ft {
+  padding: 14px 10px 4px !important;
+  background: transparent !important;
+  border: 0 !important;
+  color: #98a2ad !important;
+  font-size: 11px !important;
+  line-height: 1.6 !important;
+  text-align: center;
+}
+
+#ft img,
+#ft .flk img,
+#ft #flk,
+#ft #frt {
+  display: none !important;
+}
+
+#ft a {
+  color: #98a2ad !important;
+}
+
+#ft,
+#ft div {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* ---------- 3. 面包屑 ---------- */
+
+#pt {
+  margin: 0 -10px 8px !important;
+  padding: 8px 12px !important;
+  background: #fff;
+  border-bottom: 1px solid #eceef1;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  color: #7b8794 !important;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+#pt::-webkit-scrollbar {
+  display: none;
+}
+
+#pt .nvhm,
+#pt em,
+#pt .y {
+  display: none !important;
+}
+
+#pt a {
+  color: #7b8794 !important;
+}
+
+#pt .bm {
+  margin: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
+/* ---------- 4. 通用区块卡片 ---------- */
+
+.bm,
+.bmw {
+  margin: 8px 0 !important;
+  padding: 0 !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 1px 2px rgba(20, 28, 40, 0.05) !important;
+  overflow: hidden;
+}
+
+.bm_h,
+.bm_h.cl {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  margin: 0 !important;
+  padding: 12px 14px !important;
+  height: auto !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-bottom: 1px solid #f2f4f6 !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #1f2328 !important;
+}
+
+.bm_h h2,
+.bm_h .xs2 {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  margin: 0 !important;
+}
+
+/* 帖子标题：桌面版是 h1，移动端收到 19px */
+h1,
+h1.ts,
+.bm_h h1,
+#thread_subject,
+#subject {
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 19px !important;
+  line-height: 1.45 !important;
+  font-weight: 700 !important;
+  color: #1f2328 !important;
+  white-space: normal !important;
+  word-break: break-word;
+}
+
+.bm_c {
+  padding: 6px 14px !important;
+}
+
+.bm_h .o,
+.bm_h .y {
+  margin-left: auto;
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  white-space: nowrap;
+}
+
+/* ---------- 5. 版块页 / 帖子列表（桌面版是 table，这里压成卡片行） ---------- */
+
+#threadlist,
+#threadlisttableid {
+  margin: 0 !important;
+}
+
+#threadlist table,
+#threadlist thead,
+#threadlist tbody,
+#threadlist tr,
+#threadlist td,
+#threadlist th,
+#threadlisttableid,
+#threadlisttableid tbody,
+#threadlisttableid tr,
+#threadlisttableid td,
+#threadlisttableid th {
+  display: block !important;
+  width: auto !important;
+  min-width: 0 !important;
+  border: 0 !important;
+  float: none !important;
+  background: transparent !important;
+}
+
+#threadlist .th,
+#threadlist .by,
+#threadlist .num,
+#threadlisttableid .th,
+#threadlisttableid .by,
+#threadlisttableid .num {
+  display: block !important;
+  width: auto !important;
+  padding: 0 !important;
+  text-align: left !important;
+}
+
+/* 每个帖子一行卡片 */
+#threadlisttableid > tbody,
+#threadlisttableid tr[id^="normalthread"],
+tr[id^="stickthread"] {
+  position: relative;
+  padding: 13px 14px !important;
+  border-bottom: 1px solid #f2f4f6 !important;
+  background: #fff;
+}
+
+#threadlisttableid > tbody:last-child,
+#threadlisttableid tr:last-child {
+  border-bottom: 0 !important;
+}
+
+#threadlisttableid > tbody:active {
+  background: #f7f8fa;
+}
+
+/* 左侧类型图标：移动端收起，避免挤占标题宽度 */
+#threadlist .icn,
+#threadlisttableid .icn,
+#threadlist .new,
+#threadlisttableid .new {
+  display: none !important;
+}
+
+/* 标题 */
+#threadlist a.xst,
+#threadlisttableid a.xst,
+#threadlist .th a,
+#threadlisttableid .th a,
+.xst {
+  display: block !important;
+  padding: 0 !important;
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  line-height: 1.45 !important;
+  color: #1f2328 !important;
+  white-space: normal !important;
+  word-break: break-word;
+}
+
+/* 置顶 / 精华 / 热帖 标签 */
+#threadlist em,
+#threadlisttableid em,
+.bm_h em,
+#threadlist .th em {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 1px 6px;
+  background: #eef2f7;
+  border-radius: 4px;
+  color: #5b6b7c;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+  vertical-align: 2px;
+}
+
+/* 作者 / 时间 / 回复数 */
+#threadlist .by,
+#threadlisttableid .by,
+#threadlist .num,
+#threadlisttableid .num {
+  margin-top: 6px !important;
+  color: #98a2ad !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#threadlist .by a,
+#threadlisttableid .by a,
+#threadlist .num a,
+#threadlisttableid .num a {
+  color: #7b8794 !important;
+}
+
+#threadlist .by cite,
+#threadlisttableid .by cite,
+#threadlist .by em,
+#threadlisttableid .by em {
+  display: none !important;
+}
+
+/* 帖子列表分页 */
+.pg,
+.pgb,
+.pgs,
+.pgcl {
+  display: flex !important;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 !important;
+  padding: 12px 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  font-size: 13px !important;
+}
+
+.pg a,
+.pg strong,
+.pg label,
+.pgb a,
+.pgs a,
+.pg .pgb a {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 11px !important;
+  margin: 0 !important;
+  background: #fff !important;
+  border: 1px solid #eceef1 !important;
+  border-radius: 9px !important;
+  color: #4b5563 !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  box-shadow: none !important;
+}
+
+.pg strong,
+.pg .curpage {
+  background: #0080FF !important;
+  border-color: #0080FF !important;
+  color: #fff !important;
+}
+
+.pg label,
+.pg .pgb {
+  border: 0 !important;
+  background: transparent !important;
+}
+
+/* ---------- 6. 帖子详情 ---------- */
+
+#postlist {
+  margin: 0 -10px !important;
+}
+
+#postlist > div,
+#postlist .plhin,
+#postlist .pl {
+  display: block !important;
+  margin: 0 0 8px !important;
+  padding: 12px 14px !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+#postlist > div:first-child {
+  border-radius: 0 0 0 0;
+}
+
+/* 楼层里的左侧作者栏 -> 顶部一行"头像 + 昵称 + 楼层" */
+#postlist .plc {
+  display: flex !important;
+  align-items: center;
+  gap: 9px;
+  float: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  margin: 0 0 10px !important;
+  padding: 0 0 10px !important;
+  border: 0 !important;
+  border-bottom: 1px solid #f2f4f6 !important;
+  background: transparent !important;
+  text-align: left !important;
+  overflow: hidden;
+}
+
+#postlist .plc .avatar,
+#postlist .plc .avatar img,
+#postlist .plc img.avatar {
+  display: block !important;
+  float: none !important;
+  width: 36px !important;
+  height: 36px !important;
+  min-width: 36px;
+  border-radius: 50% !important;
+  object-fit: cover;
+  margin: 0 !important;
+}
+
+#postlist .plc .pi,
+#postlist .plc .authi,
+#postlist .plc .pi .authi {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+  color: #1f2328 !important;
+  text-align: left !important;
+}
+
+#postlist .plc .authi a,
+#postlist .plc .pi a {
+  font-weight: 600;
+  color: #1f2328 !important;
+  font-size: 13px !important;
+}
+
+#postlist .plc .authi em,
+#postlist .plc .pi em {
+  font-size: 11px;
+  color: #98a2ad;
+  font-style: normal;
+}
+
+/* 作者信息里的帖子数/精华数/积分等统计：移动端收起 */
+#postlist .plc dl,
+#postlist .plc .o,
+#postlist .plc .p_pop,
+#postlist .plc .userinfo,
+#postlist .plc .medal {
+  display: none !important;
+}
+
+/* 楼层右侧内容区 */
+#postlist .pct {
+  display: block !important;
+  float: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+#postlist .pct .pi,
+#postlist .pct .pim,
+#postlist .plc .pim {
+  display: flex !important;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px !important;
+  padding: 0 !important;
+  font-size: 12px !important;
+  color: #98a2ad !important;
+  line-height: 1.5 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+#postlist .pct .pi a,
+#postlist .pct .pi .y a {
+  color: #98a2ad !important;
+  font-size: 12px !important;
+}
+
+#postlist .pct .pi .y,
+#postlist .pct .pi strong {
+  margin-left: auto;
+  color: #98a2ad !important;
+  font-weight: 400 !important;
+}
+
+/* 正文 */
+#postlist .message,
+#postlist .pct .message,
+#postlist .t_f,
+#postlist .defaultpost {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 16px !important;
+  line-height: 1.85 !important;
+  color: #1f2328 !important;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow-x: auto;
+}
+
+#postlist .message p {
+  margin: 0 0 10px !important;
+}
+
+#postlist .message img {
+  display: block;
+  max-width: 100% !important;
+  height: auto !important;
+  margin: 8px 0;
+  border-radius: 8px;
+}
+
+#postlist .message blockquote,
+#postlist .message .quote {
+  margin: 10px 0 !important;
+  padding: 9px 12px !important;
+  background: #f5f7fa !important;
+  border-left: 3px solid #dfe4ea !important;
+  border-radius: 0 8px 8px 0 !important;
+  font-size: 13px !important;
+  line-height: 1.7 !important;
+  color: #5b6b7c !important;
+}
+
+#postlist .message blockquote img {
+  max-width: 100% !important;
+}
+
+#postlist .message pre,
+#postlist .message code {
+  max-width: 100%;
+  overflow-x: auto;
+  background: #f5f7fa;
+  border-radius: 6px;
+  font-size: 13px;
+  padding: 8px;
+  display: block;
+}
+
+/* 签名 / 广告楼层 / 隐藏内容标记 */
+#postlist .sign,
+#postlist .signature,
+#postlist .pct .sign {
+  display: none !important;
+}
+
+#postlist .pct .hide,
+#postlist .pct .blockcode {
+  border: 1px dashed #d9dee5;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfd;
+  font-size: 13px;
+}
+
+/* 帖子底部操作条（回复 / 引用 / 评分 / 举报 / 编辑） */
+#postlist .pct .po,
+#postlist .pct .pob,
+#postlist .pct .postactions,
+#postlist .pct .mgc,
+#postlist .pct > div:last-child {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 12px -2px 0 !important;
+  padding: 10px 0 0 !important;
+  border: 0 !important;
+  border-top: 1px solid #f2f4f6 !important;
+}
+
+#postlist .pct .po a,
+#postlist .pct .pob a,
+#postlist .pct .postactions a,
+#postlist .pct .mgc a,
+#postlist .pct > div:last-child a {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 13px !important;
+  background: #f2f4f7 !important;
+  border: 0 !important;
+  border-radius: 16px !important;
+  color: #4b5563 !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* 附件区 */
+#postlist .attach,
+#postlist .attachlist,
+#postlist dl.tatt,
+#postlist .pct .attach {
+  display: block !important;
+  margin: 12px 0 !important;
+  padding: 10px 12px !important;
+  background: #f7f9fb !important;
+  border: 1px solid #ecf0f4 !important;
+  border-radius: 10px !important;
+  font-size: 13px !important;
+  line-height: 1.6 !important;
+}
+
+#postlist .attach dt,
+#postlist .attach .attname,
+#postlist dl.tatt dt {
+  font-weight: 600;
+  color: #1f2328;
+  margin-bottom: 4px;
+}
+
+#postlist .attach dd a,
+#postlist dl.tatt dd a,
+#postlist .attachlist a,
+#postlist .attach a {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 6px 0 0;
+  padding: 9px 13px !important;
+  background: #fff !important;
+  border: 1px solid #e3e8ee !important;
+  border-radius: 9px !important;
+  color: #0b63c5 !important;
+  font-size: 13px !important;
+  max-width: 100%;
+  word-break: break-all;
+  white-space: normal;
+}
+
+/* 附件收费 / 下载提示 */
+#postlist .attach .pay,
+#postlist .pct .pay {
+  display: block;
+  margin-top: 6px;
+  color: #b45309;
+  font-size: 12px;
+}
+
+/* ---------- 7. 快速回复框 / 编辑器 ---------- */
+
+#fastpostform,
+#postform,
+#editform,
+#vfastpost {
+  margin: 8px 0 !important;
+  padding: 12px 14px !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  box-shadow: 0 1px 2px rgba(20, 28, 40, 0.05) !important;
+}
+
+#fastpostform .bm_h,
+#postform .bm_h {
+  padding: 0 0 10px !important;
+  border: 0 !important;
+}
+
+#fastpostmessage,
+#postmessage,
+.tedt textarea,
+#postform .tedt textarea,
+.edt textarea,
+textarea {
+  display: block;
+  width: 100% !important;
+  min-height: 112px;
+  padding: 11px 12px !important;
+  background: #f7f9fb !important;
+  border: 1px solid #e6ebf0 !important;
+  border-radius: 10px !important;
+  box-sizing: border-box !important;
+  font-size: 15px !important;
+  line-height: 1.65 !important;
+  color: #1f2328 !important;
+  resize: vertical;
+  -webkit-appearance: none;
+}
+
+/* 编辑器工具条：横向滚动，按钮放大 */
+.tedt .tb,
+.edt .tb,
+#postform .tb,
+#fastpostform .tb {
+  display: flex !important;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 2px;
+  padding: 6px 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.tedt .tb::-webkit-scrollbar,
+.edt .tb::-webkit-scrollbar {
+  display: none;
+}
+
+.tedt .tb a,
+.edt .tb a,
+.tb a,
+.tb button {
+  flex: 0 0 auto;
+  min-width: 34px;
+  min-height: 34px;
+  line-height: 34px !important;
+  border-radius: 8px;
+  background: #f2f4f7;
+  margin: 0 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 提交按钮 */
+.pn,
+.pnc,
+.pnv,
+.pnpost {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 18px !important;
+  background: #0080FF !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  color: #fff !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+  white-space: nowrap !important;
+}
+
+.pn strong,
+.pnc strong,
+.pnv strong {
+  color: #fff !important;
+  font-weight: 600 !important;
+  font-size: 15px !important;
+}
+
+#fastpostsubmit,
+#postsubmit,
+#editsubmit {
+  display: flex !important;
+  width: 100% !important;
+  height: 46px !important;
+  margin: 10px 0 0 !important;
+  border-radius: 11px !important;
+  font-size: 16px !important;
+}
+
+/* 编辑器里"上传附件"区域 */
+#postform .up,
+#postform .attach,
+#postform .fpd,
+#postform .pnc {
+  margin-top: 10px;
+}
+
+/* ---------- 8. 表单控件（登录 / 注册 / 评分 / 搜索） ---------- */
+
+input[type="text"],
+input[type="password"],
+input[type="search"],
+input[type="email"],
+input[type="number"],
+input[type="url"],
+textarea,
+select {
+  font-size: 16px !important;
+  line-height: 1.5 !important;
+  padding: 10px 12px !important;
+  min-height: 42px;
+  border: 1px solid #e6ebf0 !important;
+  border-radius: 9px !important;
+  box-sizing: border-box;
+  background: #fff !important;
+  color: #1f2328 !important;
+  -webkit-appearance: none;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="search"],
+textarea {
+  width: 100% !important;
+}
+
+input[type="submit"],
+input[type="button"],
+button {
+  min-height: 40px;
+  padding: 0 16px !important;
+  border: 0 !important;
+  border-radius: 9px !important;
+  background: #0080FF !important;
+  color: #fff !important;
+  font-size: 15px !important;
+}
+
+/* 登录/注册面板 */
+#loginform,
+.loginform,
+#registerform,
+.pns {
+  width: auto !important;
+}
+
+.pns,
+.pns table,
+.pns tr,
+.pns td,
+.pns th {
+  display: block !important;
+  width: auto !important;
+  border: 0 !important;
+}
+
+.pns th {
+  padding: 10px 0 4px !important;
+  text-align: left !important;
+  font-size: 13px !important;
+  color: #5b6b7c !important;
+}
+
+.pns td {
+  padding: 0 0 10px !important;
+}
+
+/* 评分弹窗里的表格 */
+#rating,
+#ratelog,
+.ratelog,
+#rateform,
+#moderate {
+  width: auto !important;
+  font-size: 14px !important;
+}
+
+#rateform table,
+#rating table,
+#rateform tbody,
+#rateform tr,
+#rateform td,
+#rateform th {
+  display: block !important;
+  width: auto !important;
+  border: 0 !important;
+  padding: 4px 0 !important;
+  text-align: left !important;
+}
+
+/* ---------- 9. 弹层（Discuz fwin 对话框：评分、举报、复制链接等） ---------- */
+
+#fwin_rating,
+#fwin_report,
+#fwin_mod,
+#fwin_login,
+#fwin_quote,
+.fwin,
+.fwinmask {
+  font-size: 14px !important;
+}
+
+.fwin_mask,
+.fwinmask {
+  background: rgba(0, 0, 0, 0.45) !important;
+}
+
+.fwin .fwinlg,
+.fwin .fwinbg,
+.fwin .fwinm,
+.fwin .fwin-tb {
+  width: 92vw !important;
+  max-width: 92vw !important;
+  min-width: 0 !important;
+  left: 4vw !important;
+  right: 4vw !important;
+  margin-left: 0 !important;
+  top: 7vh !important;
+  max-height: 84vh;
+  box-sizing: border-box;
+  border-radius: 14px !important;
+  overflow: auto !important;
+}
+
+.fwin .fwinh {
+  padding: 12px 14px !important;
+  font-size: 15px !important;
+  font-weight: 600;
+  border-radius: 14px 14px 0 0;
+}
+
+.fwin .fwinlg .c,
+.fwin .c {
+  padding: 6px 14px !important;
+  max-height: 66vh;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.fwin .fwinlg .o,
+.fwin .o {
+  padding: 10px 14px !important;
+  text-align: right;
+  border-top: 1px solid #f2f4f6;
+}
+
+.fwin .xw,
+.fwin .clos,
+.fwin .flb {
+  min-width: 36px;
+  min-height: 36px;
+  line-height: 36px;
+}
+
+/* ---------- 10. 下拉菜单 / 悬浮菜单 ---------- */
+
+.p_pop,
+.p_pop_menu,
+#g_upmine,
+.menu {
+  max-width: 92vw !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+  overflow: auto;
+  max-height: 60vh;
+}
+
+.p_pop a,
+.p_pop_menu a {
+  display: block;
+  padding: 9px 12px !important;
+  font-size: 14px !important;
+}
+
+/* ---------- 11. 门户首页（portal）模块 ---------- */
+
+#portal_block_1,
+.portal_block,
+#frame,
+.frame {
+  width: auto !important;
+}
+
+#frame .frame-tb,
+.frame .frame-tb {
+  font-size: 14px !important;
+  padding: 10px 12px !important;
+}
+
+#frame .frame-c,
+.frame .frame-c {
+  padding: 8px 12px !important;
+}
+
+/* 首页幻灯片 / 图片墙 */
+.slidebox,
+#slideshow,
+.diy,
+#diy {
+  max-width: 100% !important;
+}
+
+/* 统计/在线会员等长列表 */
+#online,
+.onlinelist,
+#icps,
+.bm_c dl {
+  font-size: 13px !important;
+  line-height: 1.8 !important;
+}
+
+/* ---------- 12. 短消息 / 个人中心 ---------- */
+
+#pm_list,
+.pm_list,
+#space,
+.space,
+#profile,
+.profile {
+  width: auto !important;
+  font-size: 14px !important;
+}
+
+.pm_list table,
+#pm_list table,
+.pm_list tbody,
+.pm_list tr,
+.pm_list td,
+#pm_list tbody,
+#pm_list tr,
+#pm_list td {
+  display: block !important;
+  width: auto !important;
+  border: 0 !important;
+  padding: 6px 0 !important;
+}
+
+#pm_list .pm_date,
+.pm_date {
+  color: #98a2ad;
+  font-size: 12px;
+}
+
+/* ---------- 13. 搜索页 ---------- */
+
+#searchform,
+#srchform,
+.searchform {
+  width: auto !important;
+  padding: 12px !important;
+}
+
+#searchform table,
+#srchform table,
+#searchform tbody,
+#searchform tr,
+#searchform td {
+  display: block !important;
+  width: auto !important;
+  border: 0 !important;
+  padding: 4px 0 !important;
+}
+
+/* ---------- 14. 深色模式（反转 + 图片回正） ---------- */
+
+html.gm-dark {
+  /* 反色方案：这里必须给“浅色”值，反色后才是深色。
+     之前写 #0e1116 会被再反一次变成白色，就是白底问题的根源 */
+  filter: invert(1) hue-rotate(180deg);
+  background: #F0F1F2 !important;
+}
+
+html.gm-dark body {
+  background: #FFFFFF !important;
+}
+
+html.gm-dark img,
+html.gm-dark video,
+html.gm-dark iframe,
+html.gm-dark canvas,
+html.gm-dark embed,
+html.gm-dark object,
+html.gm-dark [style*="background-image"],
+html.gm-dark [style*="url("] {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* ---------- 15. 专注阅读模式 ---------- */
+
+html.gm-focus #hd,
+html.gm-focus #ft,
+html.gm-focus #pt,
+html.gm-focus .pg,
+html.gm-focus .pgb,
+html.gm-focus #pgt,
+html.gm-focus .bm_h,
+html.gm-focus .plc,
+html.gm-focus .sign,
+html.gm-focus .pct .po,
+html.gm-focus #postlist .pct .postactions,
+html.gm-focus #postlist > div:last-child .po {
+  display: none !important;
+}
+
+html.gm-focus #postlist > div {
+  margin: 0 !important;
+  padding: 14px 16px 18px !important;
+}
+
+html.gm-focus #postlist .message {
+  font-size: 17px !important;
+  line-height: 1.95 !important;
+}
+
+/* ---------- 16. 游客登录提示条 ---------- */
+
+#gm-guestbar {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  margin: 0 !important;
+  padding: 10px 14px !important;
+  background: #fff !important;
+  border-bottom: 1px solid #eceef1;
+  font-size: 12.5px !important;
+  line-height: 1.5 !important;
+  color: #5b6b7c !important;
+}
+
+#gm-guestbar .gm-guest-text {
+  flex: 1;
+  min-width: 0;
+}
+
+#gm-guestbar .gm-guest-btn {
+  flex: 0 0 auto;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 14px !important;
+  background: #0080FF !important;
+  border-radius: 15px !important;
+  color: #fff !important;
+  font-size: 12.5px !important;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#gm-guestbar .gm-guest-ghost {
+  background: #f2f4f7 !important;
+  color: #4b5563 !important;
+}
+
+/* ---------- 17. 图片点按放大（配合 adapt.js 的浮层） ---------- */
+
+#gm-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.94);
+  padding: 0;
+}
+
+#gm-lightbox.on {
+  display: flex !important;
+}
+
+#gm-lightbox img {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: auto !important;
+  object-fit: contain;
+  border-radius: 0 !important;
+  margin: 0 !important;
+}
+
+#gm-lightbox .hint {
+  position: absolute;
+  bottom: 18px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+}
+
+/* ---------- 17. 其它零碎 ---------- */
+
+/* 加载/提示 */
+#ajaxwaitid,
+.alert_error,
+.alert_info {
+  font-size: 13px !important;
+  border-radius: 8px !important;
+}
+
+/* 用户卡片、勋章墙收起，减少干扰 */
+.pct .medal,
+.pct .userinfo,
+.pct .card {
+  display: none !important;
+}
+
+/* 防止任何横向溢出 */
+html body .wp,
+html body #wp {
+  overflow-x: visible !important;
+}
+
+/* ==========================================================================
+   18. mwt2 皮肤适配（依据真实页面标记：桌面模板 + DIY 门户首页）
+   ========================================================================== */
+
+/* 18.1 骨架：任何固定宽度都要让位给屏幕宽度 */
+html,
+body {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  overflow-x: hidden !important;
+}
+
+body {
+  padding-bottom: calc(86px + env(safe-area-inset-bottom)) !important;
+  font-size: 15.5px !important;
+  line-height: 1.75 !important;
+}
+
+/* 18.2 桌面端顶部工具条 / 重复头部：全部收起，由原生顶栏与底栏接管 */
+#toptb,
+#hd,
+#nv,
+#um,
+#scbar,
+#qmenu_menu,
+#mgb,
+.wp_hd,
+.logo_img,
+#wp_user {
+  display: none !important;
+}
+
+/* 18.3 容器铺满：桌面模板是 .wrapper-body > #wp > #ct > .wp 三层套娃，
+   每层都带 12px 内边距，手机屏只有 390px，必须只保留一层留白 */
+.wp,
+.wp-width,
+#wp,
+#ct .wp,
+.wp960,
+.wp1200,
+.wp1500,
+.wp1800,
+#wp960,
+#wp1200,
+.mw,
+.wrapper-body {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  box-sizing: border-box !important;
+}
+
+/* 唯一的左右留白在这里 */
+#ct {
+  width: 100% !important;
+  max-width: none !important;
+  padding: 0 12px !important;
+  box-sizing: border-box !important;
+}
+
+/* 18.4 首页统计条（今日 / 昨日 / 帖子 / 会员） */
+#chart {
+  margin: 10px 0 12px !important;
+  padding: 10px 14px !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+  color: #5b6472 !important;
+  font-size: 12.5px !important;
+  line-height: 2 !important;
+}
+
+#chart .chart {
+  display: block !important;
+  float: none !important;
+  width: auto !important;
+  white-space: normal !important;
+  margin: 0 !important;
+}
+
+#chart em {
+  font-style: normal !important;
+  font-weight: 600 !important;
+  color: #111 !important;
+}
+
+#chart .pipe {
+  margin: 0 4px !important;
+  color: #d0d5dd !important;
+}
+
+/* 18.5 门户首页：三栏杂志式 DIY 模块 -> 纵向卡片流 */
+.frame,
+.move-span,
+.column,
+.block,
+.area,
+.module,
+#diy1,
+#diy2,
+#diy3,
+[id^="frame"],
+[id^="portal_block_"] {
+  float: none !important;
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  height: auto !important;
+  left: auto !important;
+  right: auto !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.frame,
+.block,
+[id^="portal_block_"].block {
+  height: auto !important;
+  max-height: none !important;
+  margin: 0 0 12px !important;
+  padding: 0 !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+  overflow: hidden !important;
+}
+
+/* 模块标题（带行内背景色 / 字号，这里统一压掉） */
+.frame-title,
+.blocktitle,
+.title.frame-title,
+.blocktitle.title {
+  position: static !important;
+  height: auto !important;
+  line-height: 1.5 !important;
+  margin: 0 !important;
+  padding: 12px 14px 8px !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: 0 !important;
+  text-align: left !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  color: #111 !important;
+}
+
+.frame-title .titletext,
+.blocktitle .titletext {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  float: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  line-height: 1.5 !important;
+  color: #111 !important;
+  text-align: left !important;
+}
+
+.frame-title .titletext img,
+.blocktitle .titletext img {
+  display: inline-block !important;
+  width: 20px !important;
+  height: 20px !important;
+  object-fit: cover !important;
+  border-radius: 6px !important;
+  vertical-align: middle !important;
+}
+
+/* 模块内容区 */
+.dxb_bc {
+  display: block !important;
+  height: auto !important;
+  max-height: none !important;
+  padding: 0 14px 12px !important;
+  margin: 0 !important;
+  background: transparent !important;
+  font-size: 13.5px !important;
+  line-height: 1.7 !important;
+  text-align: left !important;
+  overflow: visible !important;
+}
+
+.dxb_bc * {
+  text-align: left !important;
+}
+
+.dxb_bc table {
+  width: 100% !important;
+  table-layout: auto !important;
+}
+
+.dxb_bc td,
+.dxb_bc th {
+  padding: 7px 2px !important;
+  font-size: 13.5px !important;
+  line-height: 1.65 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+}
+
+.dxb_bc a {
+  white-space: normal !important;
+}
+
+/* 门户里的横幅 / 幻灯片：不再固定高度，图片按屏宽等比缩放 */
+.frame img,
+.dxb_bc img,
+#diy1 img,
+#diy2 img,
+#diy3 img {
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+}
+
+/* 18.6 版块页帖子列表：桌面表格 -> 卡片式列表 */
+#threadlist {
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+  overflow: hidden !important;
+  margin: 0 0 12px !important;
+}
+
+#threadlist .th {
+  display: block !important;
+  padding: 0 !important;
+  background: #fff !important;
+  border-bottom: 1px solid #F2F4F7 !important;
+}
+
+#threadlist .th table {
+  width: 100% !important;
+}
+
+#threadlist .th tr {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 10px 12px !important;
+}
+
+#threadlist .th th,
+#threadlist .th td {
+  border: 0 !important;
+  padding: 0 !important;
+  text-align: left !important;
+  font-size: 12.5px !important;
+  color: #8a94a1 !important;
+}
+
+#threadlist .th th {
+  flex: 1 1 100% !important;
+  font-weight: 400 !important;
+}
+
+#threadlist .th td.by,
+#threadlist .th td.num {
+  display: none !important;
+}
+
+#threadlist .th .tf {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+#threadlist .th .tf a,
+#threadlist .th .tf span#atarget {
+  display: inline-block !important;
+  padding: 4px 11px !important;
+  background: #F2F4F7 !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  font-size: 12.5px !important;
+  color: #454F5B !important;
+  text-decoration: none !important;
+}
+
+/* 每条主题一行卡片 */
+#threadlist tbody {
+  display: block !important;
+  margin: 0 !important;
+  padding: 12px 14px 11px !important;
+  border-bottom: 1px solid #F2F4F7 !important;
+  background: #fff !important;
+}
+
+#threadlist tbody tr {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+#threadlist tbody tr td.icn {
+  display: none !important;
+}
+
+#threadlist tbody tr th {
+  display: block !important;
+  width: auto !important;
+  margin: 0 !important;
+  padding: 0 0 4px !important;
+  border: 0 !important;
+  text-align: left !important;
+  background: transparent !important;
+}
+
+#threadlist tbody tr th a.s,
+#threadlist tbody tr th a.xst,
+#threadlist tbody tr th a {
+  display: inline !important;
+  padding: 0 !important;
+  font-size: 15px !important;
+  font-weight: 500 !important;
+  line-height: 1.45 !important;
+  color: #14181f !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+}
+
+#threadlist tbody tr td.by,
+#threadlist tbody tr td.num {
+  display: inline-block !important;
+  width: auto !important;
+  margin: 0 !important;
+  padding: 0 8px 0 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 12px !important;
+  color: #8a94a1 !important;
+  text-align: left !important;
+  white-space: normal !important;
+}
+
+#threadlist tbody tr td.by cite,
+#threadlist tbody tr td.by em,
+#threadlist tbody tr td.by a,
+#threadlist tbody tr td.num a {
+  font-size: 12px !important;
+  font-style: normal !important;
+  color: #8a94a1 !important;
+}
+
+/* “最后发表”列在手机上意义不大，收起 */
+#threadlist tbody tr td:last-child {
+  display: none !important;
+}
+
+/* 18.7 帖子页：楼层卡片化（覆盖皮肤对 td / 行内宽度的影响） */
+#postlist {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+#postlist table,
+#postlist table.plhin,
+#postlist .plhin {
+  width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: separate !important;
+  margin: 0 0 10px !important;
+  background: #fff !important;
+  border: 0 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+  overflow: hidden !important;
+}
+
+#postlist td.plc,
+#postlist td.pct,
+#postlist td.plm {
+  width: 100% !important;
+  max-width: 100% !important;
+  border: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+#postlist .pi {
+  height: auto !important;
+  line-height: 1.6 !important;
+  padding: 10px 14px 4px !important;
+  margin: 0 !important;
+  font-size: 12px !important;
+  color: #8a94a1 !important;
+}
+
+#postlist .authi {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 4px 14px 10px !important;
+  margin: 0 !important;
+  border-bottom: 1px solid #F4F6F8 !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+
+#postlist .authi img {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+  margin: 0 !important;
+}
+
+#postlist .pcb,
+#postlist .pct,
+#postlist .t_f,
+#postlist .t_fsz {
+  text-align: left !important;
+  font-size: 16px !important;
+  line-height: 1.85 !important;
+  color: #1f2328 !important;
+  padding: 12px 14px 14px !important;
+  margin: 0 !important;
+  max-width: 100% !important;
+  overflow-wrap: break-word !important;
+  word-break: break-word !important;
+}
+
+#postlist .pcb img,
+#postlist .t_f img {
+  display: block !important;
+  max-width: 100% !important;
+  height: auto !important;
+  margin: 8px auto !important;
+}
+
+/* 楼层工具条（回复 / 引用 / 评分 / 举报） */
+#postlist .pob,
+#postlist .po,
+#postlist .plm {
+  padding: 0 14px 12px !important;
+  font-size: 12.5px !important;
+  line-height: 1.6 !important;
+}
+
+#postlist .po a,
+#postlist .pob a,
+#postlist .plm a {
+  display: inline-block !important;
+  margin: 0 8px 6px 0 !important;
+  padding: 6px 12px !important;
+  border-radius: 999px !important;
+  background: #F2F4F7 !important;
+  color: #454F5B !important;
+  font-size: 12.5px !important;
+  text-decoration: none !important;
+}
+
+/* 插件楼层（dxksst）保持内容可见即可 */
+.dxksst_floor,
+.floor_main,
+.dxksst_showreply,
+.dxksst_submit {
+  max-width: 100% !important;
+  white-space: normal !important;
+  overflow-wrap: break-word !important;
+}
+
+/* 18.8 兜底：内容区任何元素都不许把页面撑出横向滚动 */
+#ct img,
+#ct video,
+#ct iframe,
+#ct embed,
+#ct object,
+#ct table,
+#ct pre,
+#ct .t_f table {
+  max-width: 100% !important;
+}
+
+#ct pre,
+#ct code {
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+
+/* 18.10 版块信息条（收藏本版 / 版主 / 今日·主题·排名） */
+.bm_h,
+.bm_c,
+.tl .th {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  height: auto !important;
+}
+
+.bm_h {
+  padding: 10px 14px !important;
+  font-size: 12.5px !important;
+  line-height: 1.9 !important;
+  color: #5b6472 !important;
+}
+
+/* 桌面端靠 float:right 排的“收藏本版”“今日/主题/排名”改成自然换行 */
+.bm_h .y,
+.bm_h .z {
+  float: none !important;
+  display: inline !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 12.5px !important;
+  line-height: 1.9 !important;
+}
+
+.bm_h .pipe {
+  margin: 0 4px !important;
+  color: #d0d5dd !important;
+}
+
+/* 版块规则/公告里的超大标题不再撑破卡片 */
+.bm_c {
+  padding: 0 14px 12px !important;
+  font-size: 14px !important;
+  line-height: 1.8 !important;
+  overflow-wrap: break-word !important;
+  word-break: break-word !important;
+}
+
+/* 列表里的“隐藏置顶帖”等管理操作，手机端收起，避免和标题挤在一行 */
+#threadlist tbody tr th a.showhide,
+#threadlist tbody tr th a.showcontent {
+  display: none !important;
+}
+
+/* 18.11 楼层结构修正：这套皮肤是 td.plc > div.pi > div.pti > .authi > div.pct，
+   桌面版把 .pi / .pct 并排靠浮动排布，手机上必须各自独占一行 */
+#postlist td.plc {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+#postlist .pi {
+  display: block !important;
+  float: none !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  box-sizing: border-box !important;
+  padding: 10px 14px 4px !important;
+  margin: 0 !important;
+  font-size: 12px !important;
+  line-height: 1.6 !important;
+  overflow: visible !important;
+}
+
+/* 电梯直达的输入框在手机上太小，收起（分页仍可翻页） */
+#postlist .pi #fj {
+  display: none !important;
+}
+
+#postlist .pi .pti,
+#postlist .pti {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+#postlist .pct {
+  display: block !important;
+  float: none !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+}
+
+#postlist .pcb {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding: 10px 14px 14px !important;
+}
+
+#postlist .pcb table,
+#postlist .t_f table {
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: auto !important;
+}
+
+/* t_f 是正文所在的 td：宽度交给外层，不再自己加内边距，避免撑出屏幕 */
+#postlist .t_f,
+#postlist .t_fsz {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  text-align: left !important;
+  font-size: 16px !important;
+  line-height: 1.85 !important;
+  color: #1f2328 !important;
+}
+
+/* 主题标题栏：桌面版把标题挤在浮动元素之间 */
+#postlist td.vwthd {
+  display: block !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  padding: 12px 14px !important;
+  border: 0 !important;
+}
+
+#postlist td.vwthd .y,
+#postlist td.vwthd .side_btn {
+  display: none !important;
+}
+
+#postlist td.vwthd h1.ts,
+#postlist td.vwthd .ts {
+  display: block !important;
+  float: none !important;
+  width: auto !important;
+  max-width: 100% !important;
+  margin: 0 0 6px !important;
+  padding: 0 !important;
+  font-size: 17px !important;
+  font-weight: 600 !important;
+  line-height: 1.45 !important;
+  color: #14181f !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+}
+
+#postlist td.vwthd .xg1,
+#postlist td.vwthd a#pf_followMe {
+  float: none !important;
+  display: inline-block !important;
+  margin: 0 10px 0 0 !important;
+  font-size: 11.5px !important;
+  color: #8a94a1 !important;
+}
+
+#postlist td.vwthd .pipe {
+  display: none !important;
+}
+
+/* 18.12 覆盖早期为 Discuz 默认模板写的 flex 布局：
+   这套皮肤的 td.plc 是整个楼层（含作者行 + 正文），不能用 flex 并排 */
+#postlist td.plc {
+  display: block !important;
+  align-items: initial !important;
+  gap: 0 !important;
+  overflow: visible !important;
+}
+
+#postlist .pcb,
+#postlist .pct,
+#postlist .pi,
+#postlist .pti,
+#postlist .plc > * {
+  display: block !important;
+  flex-direction: initial !important;
+  align-items: initial !important;
+  gap: 0 !important;
+}
+
+/* 正文里可能嵌着固定宽度表格（粘贴自 Word 等），强制收进屏宽 */
+#postlist .t_f table,
+#postlist .pcb table {
+  width: auto !important;
+  max-width: 100% !important;
+}
+
+#postlist .t_f td,
+#postlist .pcb td {
+  max-width: 100% !important;
+  word-break: break-word !important;
+}
+
+/* 18.13 正文里超长链接 / 表格会把 table 撑到 600px+，强制固定布局并允许断词 */
+#postlist .t_f table,
+#postlist .pcb table {
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
+}
+
+#postlist .t_f,
+#postlist .t_f *,
+#postlist .pcb * {
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  white-space: normal !important;
+}
+
+/* 18.14 作者行左对齐（早期规则用了 flex 居中，在该皮肤里显得浮） */
+#postlist .authi {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+  padding: 2px 0 8px !important;
+  margin: 0 !important;
+  border: 0 !important;
+  text-align: left !important;
+  font-size: 13px !important;
+  color: #454f5b !important;
+}
+
+#postlist .authi *,
+#postlist .pi,
+#postlist .pi * {
+  text-align: left !important;
+}
+
+/* 楼层里的“只看该作者 / 只看大图 / 倒序浏览”等操作，做成小号灰字排一行 */
+#postlist .pi a {
+  display: inline-block !important;
+  margin: 0 10px 4px 0 !important;
+  font-size: 12px !important;
+  color: #8a94a1 !important;
+  text-decoration: none !important;
+}
+
+#postlist .pi .pipe {
+  display: none !important;
+}
+
+/* ==========================================================================
+   19. 对照社区脚本修正：版块列表 / 附件 / 弹窗 / 回复框 / 评分 / 分页
+   ========================================================================== */
+
+/* 19.1 版块列表（首页与版块页的 .fl_tb）：桌面是两列 49.9% + 图标占 120px，
+   手机上每列只剩 55px，文字被挤成一字一行。这里改成单列横排。 */
+.fl_tb,
+.fl_tb tr,
+.fl_tb td,
+.fl_tb th {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.fl_tb tr {
+  margin: 0 0 6px !important;
+}
+
+.fl_tb td.fl_g {
+  position: relative !important;
+  padding: 10px 0 !important;
+  border-bottom: 1px solid #F2F4F7 !important;
+}
+
+.fl_tb td.fl_g:last-child {
+  border-bottom: 0 !important;
+}
+
+/* 版块图标缩到 44px，给标题腾出整行 */
+.fl_tb .fl_icn_g,
+.fl_tb .fl_icn {
+  display: block !important;
+  float: left !important;
+  width: 44px !important;
+  height: 44px !important;
+  min-width: 0 !important;
+  margin: 0 10px 0 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border-radius: 12px !important;
+  background: #F2F4F7 !important;
+}
+
+.fl_tb .fl_icn_g img,
+.fl_tb .fl_icn img {
+  display: block !important;
+  width: 44px !important;
+  height: 44px !important;
+  object-fit: cover !important;
+  border-radius: 12px !important;
+}
+
+/* 关键：桌面模板给 dl 加了 margin-left:120px，去掉它文字才能横向排列 */
+.fl_tb dl {
+  display: block !important;
+  margin: 0 0 0 54px !important;
+  padding: 0 !important;
+  width: auto !important;
+  max-width: none !important;
+  float: none !important;
+  white-space: normal !important;
+}
+
+.fl_tb dl dt {
+  display: block !important;
+  margin: 0 0 2px !important;
+  padding: 0 !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  line-height: 1.4 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+}
+
+.fl_tb dl dt a {
+  color: #14181f !important;
+  white-space: normal !important;
+}
+
+.fl_tb dl dd {
+  display: block !important;
+  margin: 0 0 2px !important;
+  padding: 0 !important;
+  font-size: 12.5px !important;
+  line-height: 1.6 !important;
+  color: #8a94a1 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.fl_tb dl dd em,
+.fl_tb dl dd cite,
+.fl_tb dl dd a {
+  font-size: 12.5px !important;
+  font-style: normal !important;
+  color: #8a94a1 !important;
+}
+
+/* 19.2 附件区（pattl / tattl / 原图 savephotop）——参考脚本的关键修复 */
+#postlist .pattl,
+#postlist .pattl,
+.pattl {
+  display: block !important;
+  margin: 12px 0 16px !important;
+  padding: 10px 12px !important;
+  width: auto !important;
+  max-width: 100% !important;
+  background: #F7F8FA !important;
+  border: 1px dashed #D7DCE3 !important;
+  border-radius: 12px !important;
+  overflow: visible !important;
+  position: relative !important;
+}
+
+#postlist .pattl .bbda {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  padding: 0 0 8px !important;
+  margin: 0 0 8px !important;
+  border-bottom: 1px solid #E7EBF0 !important;
+  font-size: 13px !important;
+  color: #5b6472 !important;
+}
+
+#postlist .pattl [id^="imagelist_"],
+#postlist .pattl [id^="imagelistthumb_"] {
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  margin: 8px 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+#postlist .pattl [id^="imagelist_"] img,
+#postlist .pattl [id^="imagelistthumb_"] img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: inline-block !important;
+  margin: 4px !important;
+  border-radius: 8px !important;
+}
+
+#postlist .pattl dl.tattl {
+  display: flex !important;
+  align-items: flex-start !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 8px 0 !important;
+  border-bottom: 1px solid #EEF1F4 !important;
+}
+
+#postlist .pattl dl.tattl dt {
+  display: block !important;
+  width: 28px !important;
+  min-width: 28px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+#postlist .pattl dl.tattl dd {
+  display: block !important;
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 0 0 8px !important;
+}
+
+#postlist .pattl dl.tattl dd p {
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+  margin: 0 0 6px !important;
+  padding: 0 !important;
+  font-size: 13.5px !important;
+  line-height: 1.6 !important;
+  color: #5b6472 !important;
+  white-space: normal !important;
+  overflow: visible !important;
+}
+
+#postlist .pattl dl.tattl dd p.attnm a {
+  display: inline !important;
+  font-size: 14.5px !important;
+  color: #0b63c5 !important;
+  text-decoration: none !important;
+}
+
+#postlist .pattl dl.tattl dd p * {
+  color: inherit !important;
+  background: transparent !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+}
+
+/* 真正的大图在 .savephotop 里，别把它藏了 */
+#postlist .pattl dl.tattl dd .savephotop {
+  display: block !important;
+  width: 100% !important;
+  margin: 8px 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+#postlist .pattl dl.tattl dd .savephotop img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: inline-block !important;
+  margin: 6px 0 !important;
+  border-radius: 10px !important;
+}
+
+/* 19.3 楼层工具条 / 评分区：桌面用绝对定位压在正文上，这里下推 */
+#postlist .pob,
+#postlist .rate,
+#postlist td.plc > form,
+#postlist .plc > .pob {
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  display: block !important;
+  width: 100% !important;
+  margin: 14px 0 0 !important;
+  padding: 10px 14px 4px !important;
+  clear: both !important;
+  float: none !important;
+  z-index: 1 !important;
+  background: transparent !important;
+  border-top: 1px solid #F4F6F8 !important;
+}
+
+/* 19.4 Discuz 弹层（评分 / 举报 / 购买附件 / 回复）统一成居中大卡片 */
+.floatwin,
+.popupwindow,
+[id^="fwin_"] {
+  position: fixed !important;
+  left: 4vw !important;
+  right: 4vw !important;
+  width: 92vw !important;
+  top: 12vh !important;
+  max-height: 76vh !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  border-radius: 18px !important;
+  background: #FFFFFF !important;
+  box-shadow: 0 18px 48px rgba(16, 24, 40, 0.28) !important;
+  z-index: 999999 !important;
+  box-sizing: border-box !important;
+  transform: none !important;
+}
+
+.floatwin table,
+.popupwindow table,
+[id^="fwin_"] table {
+  width: 100% !important;
+  max-width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+}
+
+.floatwin td,
+.floatwin th,
+.popupwindow td,
+[id^="fwin_"] td {
+  white-space: normal !important;
+  word-break: break-word !important;
+  padding: 8px 10px !important;
+  font-size: 13.5px !important;
+  color: #1f2328 !important;
+  border-color: #EEF1F4 !important;
+}
+
+/* 按钮区：并排居中，点按区域够大 */
+.floatwin .m_c,
+.popupwindow .m_c,
+[id^="fwin_"] .m_c {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  padding: 14px 12px !important;
+}
+
+.floatwin .btn,
+.popupwindow .btn,
+[id^="fwin_"] .btn,
+.floatwin .pn,
+[id^="fwin_"] .pn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 96px !important;
+  height: 38px !important;
+  margin: 0 !important;
+  padding: 0 18px !important;
+  border-radius: 999px !important;
+  border: 0 !important;
+  background: #F2F4F7 !important;
+  color: #14181f !important;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  text-decoration: none !important;
+}
+
+.floatwin .btn.pnc,
+[id^="fwin_"] .btn.pnc,
+.floatwin .pn.pnc {
+  background: #0080FF !important;
+  color: #FFFFFF !important;
+}
+
+/* 19.5 回复框：Discuz 用 table 排版，手机上每格都要独占一行 */
+#fwin_reply table,
+#fwin_reply tbody,
+#fwin_reply tr,
+#fwin_reply td {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+#fwin_reply td {
+  padding: 6px 10px !important;
+}
+
+#fwin_reply textarea,
+#fwin_reply input[type="text"],
+#fwin_reply .edt,
+#fwin_reply .px,
+#fwin_reply iframe {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  font-size: 15px !important;
+  line-height: 1.7 !important;
+  border-radius: 12px !important;
+  border: 1px solid #E3E8EF !important;
+  padding: 10px 12px !important;
+  background: #FAFBFC !important;
+  color: #1f2328 !important;
+}
+
+#fwin_reply textarea {
+  min-height: 120px !important;
+}
+
+#fwin_reply .m_c,
+#fwin_reply .o {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  padding: 12px 10px !important;
+  border: 0 !important;
+}
+
+/* 快速回复框（页脚 fastpost）同样处理 */
+#fastpost,
+#fastpostform {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  padding: 12px 14px !important;
+  background: #FFFFFF !important;
+  border-radius: 16px !important;
+  margin: 0 0 12px !important;
+}
+
+#fastpost textarea,
+#fastpost .pt,
+#fastpost .px {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  min-height: 92px !important;
+  font-size: 15px !important;
+  border-radius: 12px !important;
+  border: 1px solid #E3E8EF !important;
+  padding: 10px 12px !important;
+}
+
+/* 19.6 下拉菜单 / 悬浮菜单（“全部主题”“更多”“评分”等） */
+.p_pop,
+.p_pop_menu,
+#qmenu_menu,
+#filter_menu,
+#filter_dateline_menu {
+  max-width: 90vw !important;
+  z-index: 9999999 !important;
+  border-radius: 14px !important;
+  border: 1px solid #E3E8EF !important;
+  background: #FFFFFF !important;
+  box-shadow: 0 10px 32px rgba(16, 24, 40, 0.18) !important;
+  padding: 6px !important;
+}
+
+.p_pop li {
+  padding: 4px 0 !important;
+}
+
+.p_pop a {
+  display: block !important;
+  padding: 9px 12px !important;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+  color: #14181f !important;
+  white-space: normal !important;
+}
+
+/* 19.7 分页：顶部那排（#pgt，正文之前）收起来，只在楼层底部保留 .pgs */
+#pgt,
+#postlist > .pgt {
+  display: none !important;
+}
+
+.pgs {
+  display: block !important;
+  width: 100% !important;
+  margin: 12px 0 !important;
+  padding: 0 12px !important;
+  box-sizing: border-box !important;
+}
+
+.pg,
+.pgbtn,
+.pgt {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  margin: 12px 0 !important;
+  padding: 0 !important;
+  width: auto !important;
+  font-size: 13px !important;
+} 
+
+.pg a,
+.pg label,
+.pg strong,
+.pgbtn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 34px !important;
+  height: 34px !important;
+  padding: 0 10px !important;
+  border-radius: 999px !important;
+  background: #F2F4F7 !important;
+  color: #14181f !important;
+  font-size: 13px !important;
+  text-decoration: none !important;
+  border: 0 !important;
+}
+
+.pg strong,
+.pg .pgb a,
+.pg a[href*="page=1"]:not(.nxt):not(.prv) {
+  background: #0080FF !important;
+  color: #FFFFFF !important;
+}
+
+.pg .nxt,
+.pg .prv {
+  min-width: 64px !important;
+}
+
+/* 19.8 侧边“楼主新帖 / 热帖”盒子（tianchai 插件） */
+.tianchai_hot_style3,
+.tianchai_hot_style3 fieldset,
+.tianchai_hot_style3 .left_box {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  box-sizing: border-box !important;
+}
+
+.tianchai_hot_style3 .left_box ul {
+  padding-left: 18px !important;
+  margin: 8px 0 0 !important;
+}
+
+.tianchai_hot_style3 .left_box li {
+  margin-bottom: 8px !important;
+  line-height: 1.5 !important;
+  white-space: normal !important;
+}
+
+.tianchai_hot_style3 .left_box li a {
+  display: inline !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+}
+
+/* 19.9 版块筛选 tab：当前项高亮（配合 adapt.js 的列表内切换） */
+#threadlist .th .tf a.gm-on {
+  background: #0080FF !important;
+  color: #FFFFFF !important;
+}
+
+/* 19.10 帖子页作者行重排：头像 + 昵称 + 楼层，右侧楼层号 */
+#postlist .authi {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 4px 10px !important;
+  width: 100% !important;
+  padding: 6px 0 8px !important;
+  border-bottom: 1px solid #F4F6F8 !important;
+}
+
+/* 关键：flex 项不能被压成 1 个字宽（否则昵称会竖排） */
+#postlist .authi > * {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  max-width: 100% !important;
+  white-space: normal !important;
+}
+
+#postlist .authi > a:first-child,
+#postlist .authi img {
+  flex: 0 0 auto !important;
+}
+
+#postlist .authi .xw1,
+#postlist .authi a.xw1,
+#postlist .authi em,
+#postlist .authi .z {
+  float: none !important;
+  display: inline !important;
+  width: auto !important;
+  font-size: 13px !important;
+  font-style: normal !important;
+  white-space: normal !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#postlist .authi .xi1 {
+  color: #8a94a1 !important;
+  font-size: 11.5px !important;
+}
+
+/* 19.11 版块图标缺失时不要露出 alt 文字（真机上是图片，本地/弱网时才回退） */
+.fl_tb .fl_icn_g img,
+.fl_tb .fl_icn img {
+  font-size: 0 !important;
+  color: transparent !important;
+  overflow: hidden !important;
+}
+
+/* =====================================================================
+   20 节：按第二轮反馈继续修（版块筛选 tab / 帖子页作者行 / 弹窗 / 深色）
+   ===================================================================== */
+
+/* 20.1 版块内筛选 → 顶部可横滑的 COUI 胶囊 tab（粘顶，只换列表时不闪） */
+#threadlist .th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 60 !important;
+  margin: 0 -12px 8px !important;
+  padding: 8px 10px !important;
+  border: none !important;
+  border-radius: 0 0 14px 14px !important;
+  background-color: rgba(255, 255, 255, 0.92) !important;
+  -webkit-backdrop-filter: saturate(1.6) blur(14px) !important;
+  backdrop-filter: saturate(1.6) blur(14px) !important;
+  box-shadow: 0 2px 10px rgba(28, 31, 36, 0.06) !important;
+}
+
+#threadlist .th table,
+#threadlist .th tr,
+#threadlist .th th {
+  display: block !important;
+  width: 100% !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
+#threadlist .th td.by,
+#threadlist .th td.num {
+  display: none !important;
+}
+
+#threadlist .th .tf {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 8px !important;
+  overflow-x: auto !important;
+  font-size: 0 !important;
+  padding: 2px !important;
+  -webkit-overflow-scrolling: touch !important;
+  scrollbar-width: none !important;
+}
+
+#threadlist .th .tf::-webkit-scrollbar {
+  display: none !important;
+}
+
+#threadlist .th .tf > a,
+#threadlist .th .tf > span.pipe,
+#threadlist .th .tf > * {
+  flex: 0 0 auto !important;
+}
+
+#threadlist .th .tf > a {
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 32px !important;
+  padding: 0 14px !important;
+  margin: 0 !important;
+  border-radius: 16px !important;
+  background-color: #F1F2F5 !important;
+  color: #33363B !important;
+  font-size: 13.5px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  text-decoration: none !important;
+}
+
+/* 分隔符 | 与隐藏项不占位 */
+#threadlist .th .tf > .pipe,
+#threadlist .th .tf > br {
+  display: none !important;
+}
+
+#threadlist .th .tf #atarget {
+  display: none !important;
+}
+
+/* 20.2 当前选中的筛选项：强调色实心胶囊 */
+#threadlist .th .tf > a.gm-on {
+  background-color: #0080FF !important;
+  color: #FFFFFF !important;
+  font-weight: 600 !important;
+  box-shadow: 0 2px 8px rgba(0, 128, 255, 0.28) !important;
+}
+
+/* 20.3 帖子页：隐藏左侧用户信息栏（它会和正文重叠），作者信息收成顶部一行 */
+#postlist td.pls,
+#postlist .pls {
+  display: none !important;
+}
+
+#postlist .pi {
+  height: auto !important;
+  min-height: 0 !important;
+  display: block !important;
+  padding: 12px 2px 10px !important;
+  overflow: visible !important;
+  border-bottom: 1px solid #F1F3F6 !important;
+  margin-bottom: 8px !important;
+}
+
+/* 电梯直达 / 空的 pdbt 不占位 */
+#postlist .pi #fj,
+#postlist .pi .pdbt {
+  display: none !important;
+}
+
+/* 楼层标签（主楼/沙发…）做成小胶囊 */
+#postlist .pi > strong {
+  display: inline-block !important;
+  float: none !important;
+  margin: 0 0 6px !important;
+  padding: 2px 9px !important;
+  border-radius: 9px !important;
+  background-color: #F1F2F5 !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: 1.6 !important;
+}
+
+#postlist .pi > strong a {
+  color: #33363B !important;
+  text-decoration: none !important;
+}
+
+/* 头像 40px 圆形 + 昵称 15px + 时间灰色小字，自然横排换行 */
+#postlist .authi > a:first-child img,
+#postlist .authi .avatar img {
+  width: 40px !important;
+  height: 40px !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+  display: block !important;
+}
+
+#postlist .authi > a:first-child {
+  margin-right: 2px !important;
+}
+
+#postlist .authi .authicn {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+#postlist .authi em {
+  display: inline-block !important;
+  font-style: normal !important;
+  font-size: 12px !important;
+  color: #8A8F99 !important;
+}
+
+#postlist .authi .pipe {
+  color: #D8DCE2 !important;
+  margin: 0 2px !important;
+}
+
+/* 20.4 评分弹窗 #fwin_rate：星级横排、理由满宽、按钮一行 */
+#fwin_rate table,
+#fwin_rate tr,
+#fwin_rate td,
+#fwin_rate th {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  border: none !important;
+  padding: 4px 0 !important;
+  white-space: normal !important;
+}
+
+#fwin_rate .rate_star,
+#fwin_rate .ratestar {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+}
+
+#fwin_rate textarea,
+#fwin_rate input[type="text"] {
+  width: 100% !important;
+  max-width: 100% !important;
+  font-size: 15px !important;
+  line-height: 1.6 !important;
+  border-radius: 10px !important;
+  padding: 8px 10px !important;
+  box-sizing: border-box !important;
+}
+
+#fwin_rate .m_c {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: flex-end !important;
+  gap: 10px !important;
+}
+
+/* 20.5 附件购买/下载窗口（#fwin_attach 及同类）*/
+#fwin_attach table,
+#fwin_download table,
+#fwin_album table {
+  display: block !important;
+  width: 100% !important;
+  table-layout: fixed !important;
+}
+
+#fwin_attach td,
+#fwin_download td,
+#fwin_album td {
+  display: block !important;
+  width: 100% !important;
+  padding: 6px 0 !important;
+  white-space: normal !important;
+  word-break: break-word !important;
+}
+
+#fwin_attach .m_c,
+#fwin_download .m_c,
+#fwin_album .m_c {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  padding: 12px 0 !important;
+}
+
+/* 20.6 帖子页右下角浮动回复按钮（参考社区 App 的 FAB） */
+.gm-fab {
+  position: fixed !important;
+  right: 18px !important;
+  bottom: calc(86px + env(safe-area-inset-bottom)) !important;
+  z-index: 300 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 48px !important;
+  padding: 0 18px !important;
+  border-radius: 24px !important;
+  background-color: #0080FF !important;
+  color: #FFFFFF !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  text-decoration: none !important;
+  box-shadow: 0 6px 20px rgba(0, 128, 255, 0.36) !important;
+}
+
+.gm-fab:active {
+  transform: scale(0.96) !important;
+}
+
+/* 20.7 深色：先“拍平”成纯浅色再整体反色，避免局部残留白块 */
+html.gm-dark body,
+html.gm-dark #ct,
+html.gm-dark #wp,
+html.gm-dark .wrapper-body,
+html.gm-dark .bm,
+html.gm-dark .bm_c,
+html.gm-dark .bm_h,
+html.gm-dark .tl,
+html.gm-dark .th,
+html.gm-dark .pl,
+html.gm-dark .plhin,
+html.gm-dark .pcb,
+html.gm-dark .pct,
+html.gm-dark .pi,
+html.gm-dark .frame,
+html.gm-dark .block,
+html.gm-dark .dxb_bc,
+html.gm-dark .fl_tb,
+html.gm-dark .fl_tb td,
+html.gm-dark .pgs,
+html.gm-dark .p_pop,
+html.gm-dark .floatwin,
+html.gm-dark [id^="fwin_"],
+html.gm-dark .m_c,
+html.gm-dark .gm-fab {
+  background-color: #FFFFFF !important;
+  background-image: none !important;
+  color: #111111 !important;
+  border-color: #E3E6EB !important;
+}
+
+html.gm-dark .th {
+  background-color: rgba(255, 255, 255, 0.94) !important;
+}
+
+html.gm-dark .gm-fab {
+  background-color: #1B6DD1 !important;
+  color: #FFFFFF !important;
+}
+
+#atarget, #threadlist .th .tf #atarget { display: none !important; }
+
+/* 20.8 断图不显示 alt 文字（本地/弱网时不至于冒出“开启左侧”等字样） */
+img {
+  font-size: 0 !important;
+}
+
+/* 20.9 作者行再收紧：头像 + 昵称 + 时间一行，操作项缩小靠右 */
+#postlist .authicn,
+#postlist .authi .pipe {
+  display: none !important;
+}
+
+#postlist .authi a {
+  font-size: 12.5px !important;
+  color: #8A8F99 !important;
+  text-decoration: none !important;
+}
+
+#postlist .authi a:nth-of-type(2) {
+  font-size: 15px !important;
+  font-weight: 600 !important;
+  color: #1A1A1A !important;
+}
+
+#postlist .authi em {
+  font-size: 12px !important;
+}
+
+/* 正文左右留白收一点，多给正文宽度 */
+#postlist .pcb,
+#postlist .pct {
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+}
+
+/* 20.10 作者行最终形态：头像绝对定位在左，其余按行内文字自然横排 */
+#postlist .pi {
+  position: relative !important;
+}
+
+#postlist .authi {
+  display: block !important;
+  position: relative !important;
+  padding-left: 52px !important;
+  min-height: 44px !important;
+  font-size: 13px !important;
+  line-height: 1.9 !important;
+}
+
+#postlist .authi > a:first-child {
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  float: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 42px !important;
+  height: 42px !important;
+}
+
+#postlist .authi > a:first-child img {
+  width: 42px !important;
+  height: 42px !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+}
+
+/* 动作行单独占一行，缩小弱化 */
+#postlist .authi .pipe,
+#postlist .authi .none {
+  display: none !important;
+}
+
+/* 20.11 正文左对齐（站点模板里部分正文继承了居中） */
+#postlist .pcb,
+#postlist .t_f,
+#postlist .t_f *,
+#postlist .message {
+  text-align: left !important;
+}
+
+/* 20.12 底部页码：胶囊化，保证只在评论区最底部出现一处分页 */
+#postlist ~ .pgs,
+#ct > .pgs {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin: 14px 0 6px !important;
+  padding: 8px 2px !important;
+  background: transparent !important;
+  border: none !important;
+}
+
+#postlist ~ .pgs .pg a,
+#ct > .pgs .pg a {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 32px !important;
+  height: 32px !important;
+  padding: 0 10px !important;
+  border-radius: 16px !important;
+  background-color: #F1F2F5 !important;
+  color: #33363B !important;
+  font-size: 13.5px !important;
+  text-decoration: none !important;
+}
+
+#postlist ~ .pgs .pg strong,
+#ct > .pgs .pg strong {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 32px !important;
+  height: 32px !important;
+  padding: 0 10px !important;
+  border-radius: 16px !important;
+  background-color: #0080FF !important;
+  color: #FFFFFF !important;
+  font-size: 13.5px !important;
+}
+
+/* 20.13 主题分类条已由原生 COUI ChipTabRow 渲染时，隐藏网页里那一排 */
+html.gm-native-tabs #thread_types {
+  display: none !important;
+}
+
+/* 20.14 网页内的排序条（最新/热门/热帖/精华）配合原生分类栏，缩成小号细条 */
+#threadlist .th .tf > a {
+  height: 28px !important;
+  padding: 0 11px !important;
+  border-radius: 14px !important;
+  font-size: 12.5px !important;
+}

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 自适应图标背景色，同时作为默认强调色（运行时会跟随系统取色） -->
+    <color name="accent">#0080FF</color>
+</resources>

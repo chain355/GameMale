@@ -1,0 +1,21 @@
+# Gradle / build
+.gradle/
+build/
+app/build/
+.kotlin/
+captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Local SDK path (machine specific)
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
