@@ -278,6 +278,7 @@ class MainActivity : ComponentActivity() {
         fetcher.fetch(url) { r ->
             runOnUiThread {
                 loading = false
+                refreshing = false
                 r.onSuccess { html ->
                     lastHtml = html
                     refreshLogin(html)
@@ -412,8 +413,15 @@ class MainActivity : ComponentActivity() {
     private fun load(rawUrl: String) {
         val url = if (rawUrl.contains("mod=forumdisplay") && !rawUrl.contains("orderby="))
             rawUrl + "&orderby=dateline" else rawUrl
-        loading = true
-        error = null
+        // 已经有旧列表（快照或上一屏）时，用顶部细条静默刷新，不铺全屏 loading
+        val hasOldList = nav is Nav.Forum && forumPage?.threads?.isNotEmpty() == true
+        if (hasOldList) {
+            refreshing = true
+            error = null
+        } else {
+            loading = true
+            error = null
+        }
         Diag.log("load", "start nav=" + nav + " url=" + url)
         if (nav is Nav.Forum && forumPage == null) {
             val snap = forumCache[url] ?: SnapshotStore.get(url)
@@ -538,6 +546,8 @@ class MainActivity : ComponentActivity() {
                     }
                     if (nav is Nav.Forum) forumPage?.let { prefetchThumbs(it) }
                 }.onFailure {
+                    refreshing = false
+                    loading = false
                     Diag.log("load", "fail url=" + url + " reason=" + (it.message ?: it.javaClass.simpleName))
                     if (nav is Nav.Forum && retryCount < 1) {
                         retryCount++
