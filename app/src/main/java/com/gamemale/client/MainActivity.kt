@@ -36,6 +36,7 @@ sealed interface Nav {
     data object Home : Nav
     data class Forum(val url: String, val title: String) : Nav
     data class Thread(val url: String, val title: String) : Nav
+    data object Settings : Nav
 }
 
 class MainActivity : ComponentActivity() {
@@ -61,6 +62,13 @@ class MainActivity : ComponentActivity() {
     private var loggedIn by mutableStateOf(false)
     private var avatarUrl by mutableStateOf<String?>(null)
     private var imageUrl by mutableStateOf<String?>(null)
+    private lateinit var cache: ThreadCache
+    /** 0 跟随系统 / 1 深色 / 2 浅色 */
+    private var themeMode by mutableStateOf(0)
+    private var fontScale by mutableStateOf(1f)
+    private var cacheMb by mutableStateOf(300)
+    private var cacheBytes by mutableStateOf(0L)
+    private var cacheCount by mutableStateOf(0)
     private var rateFormDef: FormDef? = null
     private var rateReasonName: String? = null
 
@@ -76,7 +84,16 @@ class MainActivity : ComponentActivity() {
         val systemDark = (resources.configuration.uiMode and
             android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES
-        darkMode = prefs.getBoolean("dark", systemDark)
+        themeMode = prefs.getInt("themeMode", if (prefs.getBoolean("dark", systemDark)) 1 else 2)
+        darkMode = when (themeMode) {
+            1 -> true
+            2 -> false
+            else -> systemDark
+        }
+        fontScale = prefs.getFloat("fontScale", 1f)
+        cache = ThreadCache(this)
+        cacheMb = cache.limitMb
+        refreshCacheStats()
         applyStatusBar()
 
         browserHost = FrameLayout(this)
@@ -101,10 +118,46 @@ class MainActivity : ComponentActivity() {
                     onOpenThread = { openThread(it) },
                     onLoad = { url -> linkLoad(url) },
                     onToggleDark = {
+                        themeMode = if (darkMode) 2 else 1
                         darkMode = !darkMode
                         getSharedPreferences("gm", MODE_PRIVATE).edit()
-                            .putBoolean("dark", darkMode).commit()
+                            .putInt("themeMode", themeMode).commit()
                         applyStatusBar()
+                    },
+                    onSettings = { openSettings() },
+                    fontScale = fontScale,
+                    themeMode = themeMode,
+                    cacheMb = cacheMb,
+                    cacheBytes = cacheBytes,
+                    cacheCount = cacheCount,
+                    onSetThemeMode = { m ->
+                        themeMode = m
+                        darkMode = when (m) {
+                            1 -> true
+                            2 -> false
+                            else -> (resources.configuration.uiMode and
+                                android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                                android.content.res.Configuration.UI_MODE_NIGHT_YES
+                        }
+                        getSharedPreferences("gm", MODE_PRIVATE).edit()
+                            .putInt("themeMode", m).commit()
+                        applyStatusBar()
+                    },
+                    onSetFontScale = { v ->
+                        fontScale = v
+                        getSharedPreferences("gm", MODE_PRIVATE).edit()
+                            .putFloat("fontScale", v).commit()
+                    },
+                    onSetCacheMb = { v ->
+                        cacheMb = v
+                        cache.limitMb = v
+                        refreshCacheStats()
+                    },
+                    onClearCache = {
+                        cache.clear()
+                        threadCache.clear()
+                        refreshCacheStats()
+                        toast("缓存已清除")
                     },
                     onLogin = { openLogin() },
                     onReply = { replyOpen = true },
@@ -338,7 +391,15 @@ class MainActivity : ComponentActivity() {
                     runCatching {
                         refreshLogin(html)
                         when (nav) {
-                            is Nav.Thread -> threadPage = Site.parseThread(html)
+                            is Nav.Thread -> {
+                                val tp = Site.parseThread(html)
+                                threadPage = tp
+                                val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
+                                if (tid != null) {
+                                    cache.save(tid, tp.subject, tp.lastEdit, html)
+                                    refreshCacheStats()
+                                }
+                            }
                             is Nav.Forum -> {
                                 loadedForumUrl = url
                                 var fp = Site.parseForumPage(html)
@@ -388,6 +449,7 @@ class MainActivity : ComponentActivity() {
 
     private fun reload() {
         when (val n = nav) {
+            Nav.Settings -> {}
             is Nav.Home -> loadHome()
             is Nav.Forum -> load(n.url)
             is Nav.Thread -> {
@@ -446,12 +508,16 @@ class MainActivity : ComponentActivity() {
         backStack.add(nav)
         nav = Nav.Thread(item.url, item.title)
         val tid = Regex("thread-(\\d+)").find(item.url)?.groupValues?.get(1)
-        val cached = tid?.let { threadCache[it] }
+        val disk = tid?.let { cache.read(it) }
+        val cached = tid?.let { threadCache[it] } ?: disk?.first
         if (cached != null) {
-            // 预取时已经抓过整页，直接解析，不再二次加载
-            threadPage = Site.parseThread(cached)
-            lastHtml = cached
-            refreshLogin(cached)
+            // 本地已有整页，立即还原；随后后台核对标题/编辑时间，有变化才替换
+            runCatching {
+                threadPage = Site.parseThread(cached)
+                lastHtml = cached
+                refreshLogin(cached)
+            }
+            verifyThreadLater(item.url, cached)
             return
         }
         threadPage = null
@@ -496,11 +562,53 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openSettings() {
+        if (nav is Nav.Settings) return
+        backStack.add(nav)
+        nav = Nav.Settings
+        refreshCacheStats()
+    }
+
+    /** 后台核对：标题与最后编辑时间都没变就当缓存有效，不再重绘 */
+    private fun verifyThreadLater(url: String, cachedHtml: String) {
+        val old = runCatching { Site.parseThread(cachedHtml) }.getOrNull()
+        fetcher.fetch(url) { r ->
+            runOnUiThread {
+                r.onSuccess { html ->
+                    runCatching {
+                        val fresh = Site.parseThread(html)
+                        val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
+                        if (old == null ||
+                            fresh.subject != old.subject ||
+                            fresh.lastEdit != old.lastEdit ||
+                            fresh.posts.size != old.posts.size
+                        ) {
+                            threadPage = fresh
+                            lastHtml = html
+                            refreshLogin(html)
+                            if (tid != null) cache.save(tid, fresh.subject, fresh.lastEdit, html)
+                            refreshCacheStats()
+                        } else if (tid != null) {
+                            cache.save(tid, fresh.subject, fresh.lastEdit, html)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshCacheStats() {
+        if (!::cache.isInitialized) return
+        cacheBytes = cache.totalBytes()
+        cacheCount = cache.count()
+    }
+
     private fun goBack() {
         if (loginOpen) { loginOpen = false; return }
         if (backStack.isNotEmpty()) {
             nav = backStack.removeAt(backStack.size - 1)
             when (val n = nav) {
+                Nav.Settings -> {}
                 is Nav.Home -> loadHome()
                 is Nav.Forum -> {
                     // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
@@ -582,9 +690,12 @@ class MainActivity : ComponentActivity() {
                         }
                         val cur = forumPage
                         if (imgs.isNotEmpty() && cur != null) {
-                            forumPage = cur.copy(threads = cur.threads.map { item ->
+                            val updated = cur.copy(threads = cur.threads.map { item ->
                                 if (item.tid == t.tid) item.copy(thumbs = imgs) else item
                             })
+                            forumPage = updated
+                            // 预览图也要写回缓存，否则从帖子返回搜索结果时又会丢
+                            loadedForumUrl?.let { forumCache[it] = updated }
                         }
                     }
                     step(i + 1)
@@ -636,6 +747,7 @@ class MainActivity : ComponentActivity() {
     private fun navUrl(): String = when (val n = nav) {
         is Nav.Forum -> n.url
         is Nav.Thread -> n.url
+        is Nav.Settings -> ""
         Nav.Home -> SITE + "forum.php"
     }
 

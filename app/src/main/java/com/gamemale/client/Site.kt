@@ -65,7 +65,8 @@ data class ThreadPage(
     val pages: List<Pair<Int, String>>,
     val pageNo: Int,
     val pageCount: Int,
-    val forumUrl: String?
+    val forumUrl: String?,
+    val lastEdit: String = ""
 )
 
 data class FormDef(var action: String, val fields: MutableList<Pair<String, String>>) {
@@ -224,29 +225,66 @@ object Site {
             if (content != null) collectBlocks(content, blocks)
 
             val attachments = ArrayList<AttachItem>()
-            // 正文内部插入的附件（[attach] 标签）也要能点开下载
-            if (content != null) {
-                for (a in content.select("a[href*=mod=attachment]")) {
-                    // 图片附件（[attach]img[/attach]）不当作可下载文件，也不显示附件说明
-                    if (a.selectFirst("img") != null) continue
-                    if (a.closest(".tip") != null) continue
-                    val name = a.text().trim()
-                    if (name.isEmpty() || name.length < 2) continue
-                    if (name == "下载附件" || name == "保存到相册") continue
-                    val url = a.absUrl("href")
-                    if (url.isNotBlank() && attachments.none { it.url == url }) {
-                        attachments.add(AttachItem(name, url, "正文内附件", null))
-                    }
+            // 正文内插入的附件（[attach] 标签）：普通文件 + 付费附件（action=attachpay）
+            for (a in plc.select("a[href*=mod=attachment], a[href*=action=attachpay]")) {
+                // 图片附件（[attach]img[/attach]）不当作可下载文件，也不显示附件说明
+                if (a.selectFirst("img") != null) continue
+                // 悬浮提示里的“下载附件/保存到相册”不是附件本体
+                if (a.closest(".tip") != null) continue
+                val name = a.text().trim()
+                if (name.isEmpty() || name.length < 2) continue
+                if (name in listOf("下载附件", "保存到相册", "购买", "记录")) continue
+                val url = a.absUrl("href")
+                if (url.isBlank() || attachments.any { it.url == url }) continue
+                // 大小 / 下载次数 / 售价
+                val em = a.parent()?.selectFirst("em.xg1") ?: a.nextElementSibling() as? Element
+                val raw = em?.text()?.trim()?.removeSurrounding("(", ")")?.replace(", ", " · ").orEmpty()
+                val price = Regex("售价[:：]\\s*(\\d+)\\s*枚").find(raw)?.let { it.groupValues[1] + " 枚金币" }
+                var meta = raw.replace(Regex(" · *售价[:：]\\s*\\d+\\s*枚金币"), "").trim()
+                if (meta.startsWith("售价")) meta = ""
+                val aid = Regex("aid=([A-Za-z0-9%]+)").find(url)?.groupValues?.get(1).orEmpty()
+                val tipText = Regex("aid=(\\d+)").find(url)?.groupValues?.get(1)
+                    ?.let { n -> plc.selectFirst("#attach_" + n + "_menu .tip_c")?.text() }
+                    ?: plc.selectFirst(".tip_c")?.text()
+                val perm = tipText?.let {
+                    Regex("阅读权限[:：]\\s*(\\d+)").find(it)?.let { m -> "阅读权限 " + m.groupValues[1] }
                 }
+                val note = listOfNotNull(perm).joinToString(" · ")
+                val metaFinal = listOfNotNull(meta.ifEmpty { null }, note.ifEmpty { null }).joinToString(" · ")
+                attachments.add(AttachItem(name, url, metaFinal, price))
             }
             for (dl in plc.select(".pattl dl.tattl")) {
-                val a = dl.selectFirst("dd p.attnm a") ?: continue
-                val name = a.text().trim()
-                val url = a.absUrl("href")
-                val ps = dl.select("dd > p")
-                val meta = ps.getOrNull(1)?.text()?.trim() ?: ""
-                val price = ps.getOrNull(2)?.text()?.trim()
-                attachments.add(AttachItem(name, url, meta, price))
+                for (a in dl.select("dd a[href*=mod=attachment], dd a[href*=action=attachpay]")) {
+                    if (a.closest(".tip") != null) continue
+                    if (a.selectFirst("img") != null) continue
+                    val name = a.text().trim()
+                    if (name.length < 2 || name in listOf("下载附件", "保存到相册", "购买", "记录")) continue
+                    val url = a.absUrl("href")
+                    if (url.isBlank()) continue
+                    val lines = dl.select("dd > p").map { it.text().trim() } +
+                        listOfNotNull((a.parent()?.selectFirst("em.xg1") ?: dl.selectFirst("em.xg1"))?.text()?.trim())
+                    val raw = lines.firstOrNull { it.contains("下载次数") || it.contains("Bytes") || it.contains("KB") }
+                        .orEmpty().removeSurrounding("(", ")").replace(", ", " · ")
+                    val priceLine = lines.firstOrNull { it.contains("售价") }.orEmpty()
+                    val price = Regex("售价[:：]\\s*(\\d+)\\s*枚").find(priceLine)?.let { it.groupValues[1] + " 枚金币" }
+                    val perm = dl.selectFirst(".tip_c")?.text()?.let {
+                        Regex("阅读权限[:：]\\s*(\\d+)").find(it)?.let { m -> "阅读权限 " + m.groupValues[1] }
+                    }
+                    val meta = listOfNotNull(raw.ifEmpty { null }, perm).joinToString(" · ")
+                    attachments.add(AttachItem(name, url, meta, price))
+                    break
+                }
+            }
+            // 同一附件可能在正文与末尾各出现一次：按 URL 去重，保留信息更全的那条
+            if (attachments.size > 1) {
+                val merged = LinkedHashMap<String, AttachItem>()
+                for (at in attachments) {
+                    val old = merged[at.url]
+                    merged[at.url] = if (old == null) at
+                    else if ((old.meta.length + (old.price?.length ?: 0)) >= (at.meta.length + (at.price?.length ?: 0))) old else at
+                }
+                attachments.clear()
+                attachments.addAll(merged.values)
             }
 
             val rating = parseRating(plc.selectFirst(".rate .ratl, dl.rate .ratl"))
@@ -265,11 +303,23 @@ object Site {
                     if (links.size >= 12) break
                 }
             }
+            // 帖子末尾的“更多图片”在网页里是 display:none，靠 JS 展开，这里直接补进正文
+            for (img in plc.select(".pattl img, .mbn.savephotop img")) {
+                val u = listOf("zoomfile", "file", "data-src", "src").map { img.absUrl(it) }
+                    .firstOrNull { it.startsWith("http") && it.contains("img.gamemale.com") }
+                    .orEmpty()
+                if (u.isEmpty()) continue
+                if (blocks.any { it is Block.Image && it.url == u }) continue
+                blocks.add(Block.Image(u))
+            }
             posts.add(PostItem(pid, author, avatar, time, floor, blocks, attachments, rating, posts.isEmpty(), links))
         }
 
+        val lastEdit = doc.select("em").map { it.text() }.firstOrNull { it.contains("编辑") }
+            ?.let { t -> Regex("于\\s*(.+?)\\s*编辑").find(t)?.groupValues?.get(1) ?: t }
+            .orEmpty().trim()
         val (pages, pageNo, pageCount) = pagination(doc)
-        return ThreadPage(subject, typeName, posts, pages, pageNo, pageCount, forumUrl)
+        return ThreadPage(subject, typeName, posts, pages, pageNo, pageCount, forumUrl, lastEdit)
     }
 
     /**
@@ -514,8 +564,8 @@ object Site {
                             .firstOrNull { it.startsWith("http") && !it.contains("none.gif") }
                             .orEmpty()
                         if (u.isNotEmpty() &&
-                            !u.contains("static/image/smiley") &&
-                            !u.contains("static/image/common")
+                            !u.contains("static/image/") &&
+                            u.contains("img.gamemale.com")
                         ) out.add(Block.Image(u))
                     }
                     "a" -> {

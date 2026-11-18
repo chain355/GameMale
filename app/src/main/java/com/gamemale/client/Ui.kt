@@ -8,6 +8,9 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -389,9 +392,23 @@ fun AppUi(
     imageUrl: String?,
     onCloseImage: () -> Unit,
     busy: Boolean,
-    currentUrl: String
+    currentUrl: String,
+    onSettings: () -> Unit = {},
+    fontScale: Float = 1f,
+    themeMode: Int = 0,
+    cacheMb: Int = 300,
+    cacheBytes: Long = 0L,
+    cacheCount: Int = 0,
+    onSetThemeMode: (Int) -> Unit = {},
+    onSetFontScale: (Float) -> Unit = {},
+    onSetCacheMb: (Int) -> Unit = {},
+    onClearCache: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
+    val baseDensity = LocalDensity.current
+    CompositionLocalProvider(
+        LocalDensity provides Density(baseDensity.density, fontScale)
+    ) {
     val forumListState = rememberLazyListState()
     var searchOpen by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(colors.background)) {
@@ -404,11 +421,13 @@ fun AppUi(
                 onDump = onDump,
                 title = when (nav) {
                     is Nav.Home -> "GameMale"
+                    Nav.Settings -> "设置"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
                     is Nav.Thread -> nav.title.ifEmpty { "帖子" }
                 },
                 canBack = nav != Nav.Home,
                 dark = dark,
+                onSettings = onSettings,
                 onBack = onBack,
                 onToggleDark = onToggleDark,
                 onLogin = onLogin
@@ -421,6 +440,18 @@ fun AppUi(
                         nav is Nav.Thread -> ThreadView(
                             threadPage, loading, onLoad, onExternal,
                             onReply, onRate, onAttach, onImage
+                        )
+                        nav is Nav.Settings -> SettingsView(
+                            fontScale = fontScale,
+                            themeMode = themeMode,
+                            cacheMb = cacheMb,
+                            cacheBytes = cacheBytes,
+                            cacheCount = cacheCount,
+                            onSetThemeMode = onSetThemeMode,
+                            onSetFontScale = onSetFontScale,
+                            onSetCacheMb = onSetCacheMb,
+                            onClearCache = onClearCache,
+                            onExternal = onExternal
                         )
                     }
                     if (loading) LoadingLayer("正在加载…")
@@ -528,6 +559,7 @@ fun AppUi(
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) ImageDialog(imageUrl, onCloseImage)
     }
+    }
 }
 
 @Composable
@@ -540,6 +572,7 @@ private fun TopBar(
     avatarUrl: String?,
     onBack: () -> Unit,
     onToggleDark: () -> Unit,
+    onSettings: () -> Unit,
     onLogin: () -> Unit,
     onShare: () -> Unit,
     onDump: () -> Unit
@@ -587,7 +620,7 @@ private fun TopBar(
                     .size(40.dp)
                     .clip(CircleShape)
                     .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                    .clickable { onLogin() }
+                    .clickable { onSettings() }
             )
         } else {
             CircleBtn(CouiIcons.Filled.UserCircle, onLogin)
@@ -1326,6 +1359,109 @@ private fun LoadingLayer(text: String) {
             }
             Spacer(Modifier.height(10.dp))
             Txt(text, size = 13.sp, color = Color.White)
+        }
+    }
+}
+
+// ---------------- 设置页 ----------------
+@Composable
+private fun SettingsView(
+    fontScale: Float,
+    themeMode: Int,
+    cacheMb: Int,
+    cacheBytes: Long,
+    cacheCount: Int,
+    onSetThemeMode: (Int) -> Unit,
+    onSetFontScale: (Float) -> Unit,
+    onSetCacheMb: (Int) -> Unit,
+    onClearCache: () -> Unit,
+    onExternal: (String) -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    @Composable
+    fun section(title: String, content: @Composable () -> Unit) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.card)
+                .padding(14.dp)
+        ) {
+            Txt(title, size = 13.sp, weight = FontWeight.SemiBold, color = colors.onSurfaceVariant)
+            Spacer(Modifier.height(10.dp))
+            content()
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+
+    @Composable
+    fun choices(options: List<Pair<String, Boolean>>, onPick: (Int) -> Unit) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            options.forEachIndexed { i, (label, on) ->
+                Pill(label, { onPick(i) }, primary = on)
+            }
+        }
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 100.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        item {
+            section("字体大小") {
+                val scales = listOf(1.0f to "标准", 1.12f to "较大", 1.24f to "大", 1.36f to "特大")
+                choices(scales.map { it.second to (kotlin.math.abs(fontScale - it.first) < 0.02f) }) { i ->
+                    onSetFontScale(scales[i].first)
+                }
+                Spacer(Modifier.height(6.dp))
+                Txt("调大后正文、标题、按钮文字会一起放大。", size = 11.sp, color = colors.onSurfaceVariant)
+            }
+        }
+        item {
+            section("深色模式") {
+                choices(listOf("跟随系统" to (themeMode == 0), "深色" to (themeMode == 1), "浅色" to (themeMode == 2))) {
+                    onSetThemeMode(it)
+                }
+            }
+        }
+        item {
+            section("帖子缓存") {
+                val mb = (cacheBytes / 1024.0 / 1024.0)
+                Txt(
+                    "已用 %.1f MB · %d 篇帖子".format(mb, cacheCount),
+                    size = 13.sp,
+                    color = colors.onSurface
+                )
+                Spacer(Modifier.height(10.dp))
+                Txt("存储上限", size = 12.sp, color = colors.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                val limits = listOf(100, 300, 500, 1000)
+                choices(limits.map { "$it MB" to (cacheMb == it) }) { i -> onSetCacheMb(limits[i]) }
+                Spacer(Modifier.height(10.dp))
+                Pill("清除全部缓存", onClearCache, primary = false)
+            }
+        }
+        item {
+            section("关于") {
+                Txt("GameMale 客户端 3.0", size = 14.sp, weight = FontWeight.Medium, color = colors.onSurface)
+                Spacer(Modifier.height(6.dp))
+                Txt(
+                    "非官方 Android 客户端，界面基于开源 COUI-Kit（仿 ColorOS 17）绘制，数据来自 gamemale.com 网页。代码全程由 AI 编写。",
+                    size = 12.sp,
+                    color = colors.onSurfaceVariant,
+                    lineHeight = 1.55f
+                )
+                Spacer(Modifier.height(6.dp))
+                Txt(
+                    "底部导航两个按钮分别指向「和谐动漫」（fid=150）与「和谐游戏」（fid=152）板块。",
+                    size = 12.sp,
+                    color = colors.onSurfaceVariant,
+                    lineHeight = 1.55f
+                )
+                Spacer(Modifier.height(10.dp))
+                Pill("访问站点", { onExternal("https://www.gamemale.com/") }, primary = false)
+            }
         }
     }
 }
