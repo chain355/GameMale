@@ -11,7 +11,19 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
-    <application
+    <queries>
+    <!-- Android 11+ 包可见性：不声明就查不到任何浏览器，导致「用浏览器打开」失败 -->
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="https" />
+    </intent>
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="http" />
+    </intent>
+</queries>
+
+<application
         android:largeHeap="true"
         android:name=".App"
         android:allowBackup="true"

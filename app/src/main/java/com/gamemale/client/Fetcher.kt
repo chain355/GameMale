@@ -46,6 +46,29 @@ class Fetcher(private val ctx: Context) {
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.webViewClient = object : WebViewClient() {
+            /**
+             * 我们只需要 HTML 文本：图片/CSS/字体/媒体一律拦掉，
+             * 页面能在几百毫秒内到达 onPageFinished，而不是等所有图片下载完。
+             */
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: android.webkit.WebResourceRequest
+            ): android.webkit.WebResourceResponse? {
+                val url = request.url.toString()
+                val path = url.substringBefore('?').lowercase()
+                val block = path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+                    path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".bmp") ||
+                    path.endsWith(".css") || path.endsWith(".woff") || path.endsWith(".woff2") ||
+                    path.endsWith(".ttf") || path.endsWith(".otf") ||
+                    path.endsWith(".mp4") || path.endsWith(".webm") || path.endsWith(".mp3") ||
+                    (!request.isForMainFrame && request.requestHeaders["Accept"]?.contains("image/") == true)
+                if (!block) return null
+                blocked += 1
+                return android.webkit.WebResourceResponse(
+                    "text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0))
+                )
+            }
+
             override fun onPageFinished(view: WebView, url: String?) {
                 if (done) return
                 if (url == null || currentUrl == null) return
@@ -117,6 +140,7 @@ class Fetcher(private val ctx: Context) {
 
     /** 每次请求一个代号：旧请求残留的定时器/回调一律作废，避免把新请求判成超时 */
     private var gen = 0
+    private var blocked = 0
 
     private fun newGen(): Int { gen++; return gen }
 
@@ -322,7 +346,7 @@ class Fetcher(private val ctx: Context) {
 
     private fun finish(result: Result<String>) {
         if (done) return
-        result.onSuccess { Diag.log("fetch", "完成 bytes=" + it.length + " url=" + currentUrl) }
+        result.onSuccess { Diag.log("fetch", "完成 bytes=" + it.length + " 拦截资源=" + blocked + " url=" + currentUrl) }
             .onFailure { Diag.log("fetch", "失败 " + it.message + " url=" + currentUrl) }
         done = true
         val cb = callback
