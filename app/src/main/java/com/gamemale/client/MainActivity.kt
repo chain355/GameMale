@@ -174,6 +174,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         fetcher.attach(browserHost)
+        fetcher.keepRunning()
+    }
+
+    override fun onPause() {
+        // 不主动暂停 WebView：切后台时保持当前加载继续跑
+        fetcher.keepRunning()
+        super.onPause()
     }
 
     // ---------------- 数据加载 ----------------
@@ -334,7 +341,26 @@ class MainActivity : ComponentActivity() {
                             is Nav.Thread -> threadPage = Site.parseThread(html)
                             is Nav.Forum -> {
                                 loadedForumUrl = url
-                                val fp = Site.parseForumPage(html)
+                                var fp = Site.parseForumPage(html)
+                                if (fp.threads.isEmpty() && url.contains("search.php")) {
+                                    val hits = Site.parseSearchResults(html)
+                                    if (hits.isNotEmpty()) {
+                                        fp = fp.copy(threads = hits)
+                                    }
+                                }
+                                if (fp.threads.isEmpty() && url.contains("typeid=")) {
+                                    // 分类参数失效时，退回不带 typeid 的版块页再抓一次
+                                    val base = Regex("(https?://[^&]+mod=forumdisplay&fid=\\d+)").find(url)?.groupValues?.get(1)
+                                    if (base != null) {
+                                        val tid2 = Regex("fid=(\\d+)").find(base)?.groupValues?.get(1)
+                                        val baseUrl = base + "&filter=dateline&orderby=dateline"
+                                        dumpText("forum-empty", html)
+                                        if (tid2 != null && nav is Nav.Forum && (nav as Nav.Forum).url != baseUrl) {
+                                            load(baseUrl)
+                                            return@onSuccess
+                                        }
+                                    }
+                                }
                                 forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
                                 if (fp.threads.isEmpty()) {
                                     val tp = Site.parseThread(html)
@@ -385,7 +411,7 @@ class MainActivity : ComponentActivity() {
 
     /** 搜索：直接走站内搜索页，再用版块页解析（列表结构与版块页一致） */
     private fun doSearch(q: String) {
-        val url = SITE + "search.php?mod=forum&srchtxt=" + Uri.encode(q)
+        val url = SITE + "search.php?mod=forum&srchtxt=" + Uri.encode(q) + "&searchsubmit=yes&mobile=no"
         backStack.add(nav)
         nav = Nav.Forum(url, "搜索：" + q)
         forumPage = null

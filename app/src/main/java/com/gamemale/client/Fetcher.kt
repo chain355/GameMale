@@ -55,6 +55,14 @@ class Fetcher(private val ctx: Context) {
         }
     }
 
+    /** 让隐藏 WebView 在前后台切换时继续跑（避免切后台后加载卡死） */
+    fun keepRunning() {
+        runCatching {
+            web.resumeTimers()
+            web.onResume()
+        }
+    }
+
     fun attach(host: FrameLayout) {
         if (web.parent == null) {
             host.addView(web, FrameLayout.LayoutParams(1, 1))

@@ -52,7 +52,8 @@ data class PostItem(
     val blocks: List<Block>,
     val attachments: List<AttachItem>,
     val rating: RatingSummary?,
-    val isOp: Boolean
+    val isOp: Boolean,
+    val links: List<Pair<String, String>> = emptyList()
 )
 
 data class ThreadPage(
@@ -221,6 +222,16 @@ object Site {
             if (content != null) collectBlocks(content, blocks)
 
             val attachments = ArrayList<AttachItem>()
+            // 正文内部插入的附件（[attach] 标签）也要能点开下载
+            if (content != null) {
+                for (a in content.select("a[href*=mod=attachment]")) {
+                    val name = a.text().trim().ifEmpty { "正文内附件" }
+                    val url = a.absUrl("href")
+                    if (url.isNotBlank() && attachments.none { it.url == url }) {
+                        attachments.add(AttachItem(name, url, "正文内附件", null))
+                    }
+                }
+            }
             for (dl in plc.select(".pattl dl.tattl")) {
                 val a = dl.selectFirst("dd p.attnm a") ?: continue
                 val name = a.text().trim()
@@ -234,11 +245,53 @@ object Site {
             val rating = parseRating(plc.selectFirst(".rate .ratl, dl.rate .ratl"))
             val pid = table.attr("id").removePrefix("pid")
 
-            posts.add(PostItem(pid, author, avatar, time, floor, blocks, attachments, rating, posts.isEmpty()))
+            val links = ArrayList<Pair<String, String>>()
+            if (content != null) {
+                for (a in content.select("a[href]")) {
+                    val href = a.absUrl("href")
+                    val text = a.text().trim()
+                    if (!href.startsWith("http")) continue
+                    if (href.contains("mod=attachment") || href.contains("forum.php?mod=viewthread")) continue
+                    if (text.length < 4) continue
+                    if (links.any { it.first == href }) continue
+                    links.add(text to href)
+                    if (links.size >= 12) break
+                }
+            }
+            posts.add(PostItem(pid, author, avatar, time, floor, blocks, attachments, rating, posts.isEmpty(), links))
         }
 
         val (pages, pageNo, pageCount) = pagination(doc)
         return ThreadPage(subject, typeName, posts, pages, pageNo, pageCount, forumUrl)
+    }
+
+    /**
+     * 搜索结果兜底解析：搜索页模板和版块页不一样，直接抓所有 thread-<tid> 链接，
+     * 用链接文字当标题，去重后按出现顺序返回。
+     */
+    fun parseSearchResults(html: String): List<ThreadItem> {
+        val doc = Jsoup.parse(html, SITE)
+        val out = LinkedHashMap<String, ThreadItem>()
+        for (a in doc.select("a[href*=thread-]")) {
+            val href = a.absUrl("href")
+            val tid = Regex("thread-(\\d+)").find(href)?.groupValues?.get(1) ?: continue
+            val title = a.text().trim()
+            if (title.length < 6) continue
+            if (out.containsKey(tid)) continue
+            out[tid] = ThreadItem(
+                tid = tid,
+                title = title,
+                url = SITE + "thread-" + tid + "-1-1.html",
+                typeName = null,
+                author = "",
+                date = "",
+                replies = "",
+                views = "",
+                sticky = false
+            )
+            if (out.size >= 60) break
+        }
+        return out.values.toList()
     }
 
     /** 抽取某个表单：action 绝对化，收集 input/textarea/select 的当前值 */

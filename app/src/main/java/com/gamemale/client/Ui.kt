@@ -430,7 +430,7 @@ fun AppUi(
         // 隐藏的取数 WebView（1dp，不渲染任何可见内容）
         AndroidView(factory = { host }, modifier = Modifier.size(1.dp))
 
-        if (busy) LoadingLayer("处理中…")
+        if (busy && !rateOpen && !replyOpen) LoadingLayer("处理中…")
 
         if (nav is Nav.Thread && !replyOpen) {
             Box(
@@ -751,7 +751,7 @@ private fun ForumView(
         LazyColumn(
             Modifier.fillMaxSize(),
             state = listState,
-            contentPadding = PaddingValues(12.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val list = page?.threads ?: emptyList()
@@ -974,6 +974,27 @@ private fun ThreadView(
                                 )
                             }
                             else -> {}
+                        }
+                    }
+                    // 正文里的链接（网页链接可直接唤起浏览器）
+                    if (post.links.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        Txt("相关链接", size = 12.sp, weight = FontWeight.SemiBold, color = colors.onSurfaceVariant)
+                        post.links.forEach { (text, url) ->
+                            Spacer(Modifier.height(6.dp))
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(colors.card)
+                                    .clickable { onExternal(url) }
+                                    .padding(10.dp)
+                            ) {
+                                Column {
+                                    Txt(text, size = 14.sp, color = colors.accent, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Txt(url, size = 11.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
                         }
                     }
                     // 附件
