@@ -693,8 +693,8 @@ class MainActivity : ComponentActivity() {
         toast("正在下载图片…")
         Thread {
             runCatching {
-                val dir = java.io.File(cacheDir, "images").apply { mkdirs() }
-                val name = (url.hashCode().toString() + ".jpg")
+                val name = Integer.toHexString(url.hashCode()) + ".img"
+                val dir = java.io.File(filesDir, "images").apply { mkdirs() }
                 val f = ImageStore.local(url) ?: java.io.File(dir, name)
                 if (!f.exists()) {
                     val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
@@ -707,8 +707,14 @@ class MainActivity : ComponentActivity() {
                     conn.inputStream.use { input -> f.outputStream().use { out -> input.copyTo(out) } }
                     ImageStore.save(url, f.readBytes())
                 }
+                // 确保文件位于已声明的 root 内（filesDir/images）
+                if (!f.absolutePath.contains("/files/images/")) {
+                    val dst = java.io.File(dir, name)
+                    f.copyTo(dst, overwrite = true)
+                }
+                val target = java.io.File(dir, name)
                 val uri = androidx.core.content.FileProvider.getUriForFile(
-                    this, packageName + ".fileprovider", f
+                    this, packageName + ".fileprovider", target
                 )
                 runOnUiThread {
                     runCatching {
@@ -993,7 +999,7 @@ class MainActivity : ComponentActivity() {
             form.set("message", text)
             form.set("posttime", (System.currentTimeMillis() / 1000).toString())
             busy = true
-            submit(form, onDone = { replyOpen = false; busy = false }, okText = "回复成功")
+            submit(form, onDone = { replyOpen = false; busy = false }, okText = "回复成功", pageFirst = true)
             return
         }
         // 页面里没有快速回复框时，用 formhash + tid 自己拼一次提交
@@ -1062,7 +1068,9 @@ class MainActivity : ComponentActivity() {
         val clean = cdataText(xml)
         val hasErr = xml.contains("errorhandle_") || xml.contains("alert_error")
         // 站点成功时可能附带“回复奖励”等文案，只要没有错误处理脚本就算成功
-        val ok = !hasErr || xml.contains("succeedhandle_")
+        var ok = !hasErr || xml.contains("succeedhandle_")
+        // “已经回复过本帖”说明这条回复其实已经在站上了，按成功处理，避免重复提交
+        if (clean.contains("已经回复过")) ok = true
         return ok to clean
     }
 
@@ -1163,14 +1171,48 @@ class MainActivity : ComponentActivity() {
     /** 提交一个表单并解析 XML 结果 */
     private var submitOkText: String = "提交成功"
 
-    private fun submit(form: FormDef, onDone: () -> Unit, okText: String = "评分成功") {
+    private fun submit(
+        form: FormDef,
+        onDone: () -> Unit,
+        okText: String = "评分成功",
+        pageFirst: Boolean = false
+    ) {
         submitOkText = okText
         prefetchToken++
         busy = true
         val raw = form.action
         val url = (if (raw.startsWith("http")) raw else SITE + raw) +
             (if (raw.contains("?")) "&" else "?") + "inajax=1"
-        fetcher.post(url, form.body()) { r ->
+        val pageCb: ((Result<String>) -> Unit) = { r ->
+            runOnUiThread {
+                busy = false
+                r.onSuccess { xml ->
+                    dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
+                    val (ok, detail) = judgeXml(xml)
+                    val msg = if (ok) submitOkText else detail.ifEmpty { "提交失败" }
+                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    if (ok) {
+                        onDone()
+                        reload()
+                    }
+                }.onFailure {
+                    fetcher.snapshotHtml { snap -> runOnUiThread { dumpText("submit-timeout", snap) } }
+                    toast("提交失败：" + (it.message ?: "") + "，返回页已存到下载/gamemale-submit-timeout.html")
+                }
+            }
+        }
+        val post = { fetcher.post(url, form.body(), pageCb) }
+        if (pageFirst) fetcher.submitOnPage(url, form.body()) { r ->
+            runOnUiThread {
+                busy = false
+                r.onSuccess { xml ->
+                    dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
+                    val (ok, detail) = judgeXml(xml)
+                    toast(if (ok) submitOkText else detail.ifEmpty { "提交失败" })
+                    if (ok) { onDone(); reload() }
+                }.onFailure { post() }
+            }
+        } else fetcher.post(url, form.body()) { r ->
             runOnUiThread {
                 busy = false
                 r.onSuccess { xml ->
