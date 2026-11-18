@@ -430,6 +430,15 @@ class MainActivity : ComponentActivity() {
                         when (nav) {
                             is Nav.Thread -> {
                                 val tp = Site.parseThread(html)
+                                if (tp.posts.isEmpty()) {
+                                    dumpText("thread-empty", html)
+                                    val canonical = canonicalThreadUrl(url)
+                                    if (retryCount < 1 && canonical != url) {
+                                        retryCount++
+                                        load(canonical)
+                                        return@onSuccess
+                                    }
+                                }
                                 threadPage = tp
                                 loadedThreadUrl = url
                                 prefetchThreadImages(tp)
@@ -606,12 +615,32 @@ class MainActivity : ComponentActivity() {
         load(url)
     }
 
+    private fun tidOf(url: String): String? =
+        Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
+            ?: Regex("tid=(\\d+)").find(url)?.groupValues?.get(1)
+
+    /** 统一成帖子正文页地址，丢掉 highlight 之类的搜索参数，避免拿到奇怪的页面 */
+    private fun canonicalThreadUrl(url: String): String {
+        val tid = tidOf(url) ?: return url
+        return "https://www.gamemale.com/thread-$tid-1-1.html"
+    }
+
+    private fun looksLikeThread(html: String): Boolean =
+        html.contains("id=\"postlist\"") || html.contains("id='postlist'")
+
     private fun openThread(item: ThreadItem) {
         backStack.add(nav)
-        nav = Nav.Thread(item.url, item.title)
-        val tid = Regex("thread-(\\d+)").find(item.url)?.groupValues?.get(1)
+        val url = canonicalThreadUrl(item.url)
+        nav = Nav.Thread(url, item.title)
+        val tid = tidOf(url)
         val disk = tid?.let { cache.read(it) }
         val cached = tid?.let { threadCache[it] } ?: disk?.first
+        if (cached != null && !looksLikeThread(cached)) {
+            threadCache.remove(tid)
+            threadPage = null
+            load(url)
+            return
+        }
         if (cached != null) {
             // 本地已有整页，立即还原；随后后台核对标题/编辑时间，有变化才替换
             runCatching {
@@ -619,7 +648,7 @@ class MainActivity : ComponentActivity() {
                 lastHtml = cached
                 refreshLogin(cached)
             }
-            verifyThreadLater(item.url, cached)
+            verifyThreadLater(url, cached)
             return
         }
         threadPage = null
@@ -971,7 +1000,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun rememberThreadHtml(tid: String, html: String) {
-        if (html.length > 900_000) return
+        if (html.length > 900_000 || !looksLikeThread(html)) return
         threadCache[tid] = html
     }
     /** url -> 已加载好的列表页（回退时不重载，搜索页也各存各的） */

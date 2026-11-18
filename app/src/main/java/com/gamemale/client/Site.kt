@@ -211,7 +211,11 @@ object Site {
         val forumUrl = doc.selectFirst("#pt a[href*=forumdisplay], #pt a[href*=forum-]")?.absUrl("href")
 
         val posts = ArrayList<PostItem>()
-        for (table in doc.select("#postlist table.plhin")) {
+        // 正常帖子是 table.plhin；个别页面（比如带 highlight 参数、或某些模板）会退化成别的 table/div
+        var postTables = doc.select("#postlist table.plhin")
+        if (postTables.isEmpty()) postTables = doc.select("#postlist table:has(td.plc)")
+        if (postTables.isEmpty()) postTables = doc.select("table.plhin")
+        for (table in postTables) {
             val plc = table.selectFirst("td.plc") ?: continue
             val pi = plc.selectFirst(".pi")
             val authi = pi?.selectFirst(".authi")
@@ -222,7 +226,7 @@ object Site {
             val floor = pi?.selectFirst("strong")?.text()?.trim() ?: ""
             val avatarEl = table.selectFirst("td.pls img[src*=avatar]") ?: authi?.selectFirst("img[src*=avatar]")
             val avatar = avatarEl?.absUrl("src")?.takeIf { it.startsWith("http") }
-            val content = plc.selectFirst("td.t_f")
+            val content = plc.selectFirst("td.t_f") ?: plc.nextElementSibling()?.selectFirst("td.t_f")
             val blocks = ArrayList<Block>()
             if (content != null) collectBlocks(content, blocks)
 
