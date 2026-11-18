@@ -407,6 +407,11 @@ class MainActivity : ComponentActivity() {
             rawUrl + "&orderby=dateline" else rawUrl
         loading = true
         error = null
+        if (nav is Nav.Forum && loadedForumUrl == url) retryCount = 0
+        if (nav is Nav.Forum) {
+            loadedForumUrl = url
+            loadedForumTitle = (nav as Nav.Forum).title
+        }
         runCatching { fetcher.fetch(url) { r ->
             runOnUiThread {
                 loading = false
@@ -436,12 +441,26 @@ class MainActivity : ComponentActivity() {
                             }
                             is Nav.Forum -> {
                                 loadedForumUrl = url
+                                loadedForumTitle = (nav as Nav.Forum).title
                                 var fp = Site.parseForumPage(html)
                                 if (fp.threads.isEmpty() && url.contains("search.php")) {
                                     val hits = Site.parseSearchResults(html)
-                                    if (hits.isNotEmpty()) {
-                                        fp = fp.copy(threads = hits)
+                                    if (hits.isNotEmpty()) fp = fp.copy(threads = hits)
+                                }
+                                if (url.contains("search.php") && fp.threads.isEmpty()) {
+                                    // 搜索结果空：先重抓一次（站点偶尔还在生成结果），仍空就给明确文案
+                                    val q = Regex("srchtxt=([^&]+)").find(url)?.groupValues?.get(1)
+                                        ?.let { runCatching { Uri.decode(it) }.getOrNull() } ?: ""
+                                    if (retryCount < 1) {
+                                        retryCount++
+                                        load(url)
+                                        return@onSuccess
                                     }
+                                    retryCount = 0
+                                    dumpText("search-empty", html)
+                                    error = if (q.isEmpty()) "没有搜到相关帖子"
+                                    else "没有搜到与「$q」相关的帖子（也可能被站点限流，稍后再试）"
+                                    return@onSuccess
                                 }
                                 if (fp.threads.isEmpty() && url.contains("typeid=") && !url.contains("search.php")) {
                                     // 分类参数失效时，退回不带 typeid 的版块页再抓一次
@@ -479,7 +498,15 @@ class MainActivity : ComponentActivity() {
                         error = "解析失败：" + (it.message ?: it.javaClass.simpleName)
                     }
                     if (nav is Nav.Forum) forumPage?.let { prefetchThumbs(it) }
-                }.onFailure { error = it.message ?: "加载失败" }
+                }.onFailure {
+                    if (nav is Nav.Forum && retryCount < 1) {
+                        retryCount++
+                        load(url)
+                    } else {
+                        retryCount = 0
+                        error = (it.message ?: "加载失败") + "（可以下拉再试一次）"
+                    }
+                }
             }
         } }.onFailure {
             loading = false
@@ -570,8 +597,12 @@ class MainActivity : ComponentActivity() {
         if (q.isBlank()) return
         pushSearchHistory(q.trim())
         val url = SITE + "search.php?mod=forum&srchtxt=" + Uri.encode(q.trim()) + "&searchsubmit=yes&mobile=no"
+        prefetchToken++          // 作废上一页还在跑的预览图预取
+        fetcher.dropPending()     // 别让搜索请求排在它们后面超时
         nav = Nav.Forum(url, "搜索：" + q.trim())
         forumPage = null
+        threadPage = null
+        loadedForumUrl = url
         load(url)
     }
 
@@ -670,7 +701,7 @@ class MainActivity : ComponentActivity() {
 
     /** 下拉刷新：不动现有列表，成功后再整体替换 */
     private fun refreshCurrentForum() {
-        val url = loadedForumUrl ?: return
+        val url = (nav as? Nav.Forum)?.url ?: loadedForumUrl ?: return
         if (refreshing) return
         refreshing = true
         prefetchToken++          // 停掉这一轮的预览图预取
@@ -914,6 +945,8 @@ class MainActivity : ComponentActivity() {
 
     private var prefetchToken = 0
     private var loadedForumUrl: String? = null
+    private var loadedForumTitle: String = ""
+    private var retryCount = 0
     private var loadedThreadUrl: String? = null
     private var refreshing by mutableStateOf(false)
     private var searchOpen by mutableStateOf(false)
