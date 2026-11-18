@@ -4,4 +4,5 @@
     <files-path name="images" path="images/" />
     <cache-path name="cache_images" path="images/" />
     <files-path name="threadcache" path="threadcache/" />
+    <files-path name="logs" path="logs/" />
 </paths>

@@ -101,9 +101,11 @@ class Fetcher(private val ctx: Context) {
 
     fun fetch(url: String, cb: (Result<String>) -> Unit) {
         if (running && jobs.size >= 5) {
+            Diag.log("fetch", "队列已满，丢弃 " + url)
             cb(Result.failure(IllegalStateException("请求太密集，稍后再试")))
             return
         }
+        Diag.log("fetch", "排队 " + url + " 队列=" + jobs.size)
         enqueue {
             callback = cb
             currentUrl = url
@@ -280,6 +282,8 @@ class Fetcher(private val ctx: Context) {
 
     private fun finish(result: Result<String>) {
         if (done) return
+        result.onSuccess { Diag.log("fetch", "完成 bytes=" + it.length + " url=" + currentUrl) }
+            .onFailure { Diag.log("fetch", "失败 " + it.message + " url=" + currentUrl) }
         done = true
         val cb = callback
         callback = null

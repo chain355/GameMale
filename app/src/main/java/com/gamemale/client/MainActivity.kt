@@ -94,6 +94,8 @@ class MainActivity : ComponentActivity() {
         fontScale = prefs.getFloat("fontScale", 1f)
         ImageStore.init(this)
         ThumbStore.init(this)
+        Diag.init(this)
+        Diag.init(this)
         cache = ThreadCache(this)
         cacheMb = cache.limitMb
         refreshCacheStats()
@@ -165,6 +167,7 @@ class MainActivity : ComponentActivity() {
                         cache.limitMb = v
                         refreshCacheStats()
                     },
+                    onExportLogs = { Diag.export(this) },
                     onClearCache = {
                         prefetchToken++
                         fetcher.dropPending()
@@ -407,6 +410,7 @@ class MainActivity : ComponentActivity() {
             rawUrl + "&orderby=dateline" else rawUrl
         loading = true
         error = null
+        Diag.log("load", "start nav=" + nav + " url=" + url)
         if (nav is Nav.Forum && loadedForumUrl == url) retryCount = 0
         if (nav is Nav.Forum) {
             loadedForumUrl = url
@@ -429,12 +433,19 @@ class MainActivity : ComponentActivity() {
                         refreshLogin(html)
                         when (nav) {
                             is Nav.Thread -> {
+                                if ((nav as Nav.Thread).url != url) {
+                                    Diag.log("load", "丢弃过期帖子响应 url=" + url)
+                                    return@onSuccess
+                                }
                                 val tp = Site.parseThread(html)
+                                Diag.log("thread", "posts=" + tp.posts.size + " bytes=" + html.length + " url=" + url)
                                 if (tp.posts.isEmpty()) {
                                     dumpText("thread-empty", html)
                                     val canonical = canonicalThreadUrl(url)
                                     if (retryCount < 1 && canonical != url) {
                                         retryCount++
+                                        Diag.log("thread", "正文为空，改用规范地址重试 " + canonical)
+                                        nav = Nav.Thread(canonical, tp.subject)
                                         load(canonical)
                                         return@onSuccess
                                     }
@@ -449,6 +460,10 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             is Nav.Forum -> {
+                                if ((nav as Nav.Forum).url != url) {
+                                    Diag.log("load", "丢弃过期响应 url=" + url + " 当前=" + (nav as Nav.Forum).url)
+                                    return@onSuccess
+                                }
                                 loadedForumUrl = url
                                 loadedForumTitle = (nav as Nav.Forum).title
                                 var fp = Site.parseForumPage(html)
@@ -479,6 +494,8 @@ class MainActivity : ComponentActivity() {
                                         val baseUrl = base + "&filter=dateline&orderby=dateline"
                                         dumpText("forum-empty", html)
                                         if (tid2 != null && nav is Nav.Forum && (nav as Nav.Forum).url != baseUrl) {
+                                            Diag.log("load", "分类为空，回退 " + baseUrl)
+                                            nav = Nav.Forum(baseUrl, (nav as Nav.Forum).title)
                                             load(baseUrl)
                                             return@onSuccess
                                         }
@@ -490,6 +507,7 @@ class MainActivity : ComponentActivity() {
                                         if (cachedThumbs.isNotEmpty()) item.copy(thumbs = cachedThumbs) else item
                                     } else item
                                 })
+                                Diag.log("load", "forum ok threads=" + fp.threads.size + " bytes=" + html.length + " url=" + url)
                                 forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
                                 forumCache[url] = forumPage!!
                                 if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
@@ -508,6 +526,7 @@ class MainActivity : ComponentActivity() {
                     }
                     if (nav is Nav.Forum) forumPage?.let { prefetchThumbs(it) }
                 }.onFailure {
+                    Diag.log("load", "fail url=" + url + " reason=" + (it.message ?: it.javaClass.simpleName))
                     if (nav is Nav.Forum && retryCount < 1) {
                         retryCount++
                         load(url)
@@ -564,6 +583,7 @@ class MainActivity : ComponentActivity() {
 
     /** 底部导航直达版块（动漫/游戏） */
     private fun openQuick(url: String, title: String) {
+        Diag.log("nav", "switch forum -> " + title + " 缓存=" + (forumCache[url] != null))
         // 一级页之间切换：不压栈，底栏保持可见；有缓存就直接换过去
         val isTopLevel = backStack.isEmpty()
         if (!isTopLevel) backStack.add(nav)
@@ -608,6 +628,7 @@ class MainActivity : ComponentActivity() {
         val url = SITE + "search.php?mod=forum&srchtxt=" + Uri.encode(q.trim()) + "&searchsubmit=yes&mobile=no"
         prefetchToken++          // 作废上一页还在跑的预览图预取
         fetcher.dropPending()     // 别让搜索请求排在它们后面超时
+        Diag.log("search", "query=" + q.trim())
         nav = Nav.Forum(url, "搜索：" + q.trim())
         forumPage = null
         threadPage = null
@@ -730,6 +751,7 @@ class MainActivity : ComponentActivity() {
 
     /** 下拉刷新：不动现有列表，成功后再整体替换 */
     private fun refreshCurrentForum() {
+        Diag.log("refresh", "nav=" + nav)
         val url = (nav as? Nav.Forum)?.url ?: loadedForumUrl ?: return
         if (refreshing) return
         refreshing = true
@@ -759,13 +781,17 @@ class MainActivity : ComponentActivity() {
                         forumCache[url] = merged
                         prefetchToken++
                         prefetchThumbs(merged)
-                    }.onFailure { toast("刷新失败，列表保持不变") }
+                    }.onFailure { e ->
+                        Diag.log("refresh", "parse fail " + e.message)
+                        toast("刷新失败，列表保持不变")
+                    }
                 }.onFailure {
                     if (attempt < 1) {
                         fetchForumForRefresh(url, attempt + 1)
                         return@onFailure
                     }
                     refreshing = false
+                    Diag.log("refresh", "fetch fail " + (r.exceptionOrNull()?.message))
                     toast("刷新失败，列表保持不变")
                 }
                 if (r.isSuccess) refreshing = false

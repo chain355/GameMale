@@ -419,6 +419,7 @@ fun AppUi(
     onSetFontScale: (Float) -> Unit = {},
     onSetCacheMb: (Int) -> Unit = {},
     onClearCache: () -> Unit = {},
+    onExportLogs: () -> Unit = {},
     canGoBack: Boolean = false,
     showThemeToggle: Boolean = true,
     refreshing: Boolean = false,
@@ -503,6 +504,7 @@ fun AppUi(
                             onSetFontScale = onSetFontScale,
                             onSetCacheMb = onSetCacheMb,
                             onClearCache = onClearCache,
+                            onExportLogs = onExportLogs,
                             onExternal = onExternal
                         )
                     }
@@ -1638,6 +1640,7 @@ private fun SettingsView(
     onSetFontScale: (Float) -> Unit,
     onSetCacheMb: (Int) -> Unit,
     onClearCache: () -> Unit,
+    onExportLogs: () -> Unit = {},
     onExternal: (String) -> Unit
 ) {
     val colors = CouiTheme.colorScheme
@@ -1703,6 +1706,15 @@ private fun SettingsView(
                 choices(limits.map { "$it MB" to (cacheMb == it) }) { i -> onSetCacheMb(limits[i]) }
                 Spacer(Modifier.height(10.dp))
                 Pill("清除全部缓存", onClearCache, primary = false)
+                Spacer(Modifier.height(8.dp))
+                Pill("导出诊断日志", onExportLogs, primary = false)
+                Spacer(Modifier.height(4.dp))
+                Txt(
+                    "遇到加载异常时点这里，把日志发给我排查；日志只记录请求地址、耗时和解析结果，不含账号密码。",
+                    size = 12.sp,
+                    color = colors.onSurfaceVariant,
+                    lineHeight = 1.5f
+                )
             }
         }
         item {
