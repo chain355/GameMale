@@ -40,6 +40,8 @@ data class RatingSummary(val people: Int, val parts: List<String>)
 sealed interface Block {
     data class Text(val text: String) : Block
     data class Image(val url: String) : Block
+    /** 正文里的内联超链接（点一下直接调浏览器） */
+    data class Link(val text: String, val url: String) : Block
     data object Break : Block
 }
 
@@ -225,7 +227,10 @@ object Site {
             // 正文内部插入的附件（[attach] 标签）也要能点开下载
             if (content != null) {
                 for (a in content.select("a[href*=mod=attachment]")) {
-                    val name = a.text().trim().ifEmpty { "正文内附件" }
+                    // 图片附件（[attach]img[/attach]）不当作可下载文件，也不显示附件说明
+                    if (a.selectFirst("img") != null) continue
+                    val name = a.text().trim()
+                    if (name.isEmpty() || name.length < 2) continue
                     val url = a.absUrl("href")
                     if (url.isNotBlank() && attachments.none { it.url == url }) {
                         attachments.add(AttachItem(name, url, "正文内附件", null))
@@ -271,27 +276,41 @@ object Site {
      */
     fun parseSearchResults(html: String): List<ThreadItem> {
         val doc = Jsoup.parse(html, SITE)
-        val out = LinkedHashMap<String, ThreadItem>()
-        for (a in doc.select("a[href*=thread-]")) {
+        val out = ArrayList<ThreadItem>()
+        val root = doc.selectFirst("#threadlist") ?: doc
+        for (li in root.select("li.pbw, li")) {
+            val a = li.selectFirst("h3 a[href], a[href*=mod=viewthread], a[href*=thread-]") ?: continue
             val href = a.absUrl("href")
-            val tid = Regex("thread-(\\d+)").find(href)?.groupValues?.get(1) ?: continue
+            val tid = Regex("tid=(\\d+)").find(href)?.groupValues?.get(1)
+                ?: Regex("thread-(\\d+)").find(href)?.groupValues?.get(1)
+                ?: continue
             val title = a.text().trim()
-            if (title.length < 6) continue
-            if (out.containsKey(tid)) continue
-            out[tid] = ThreadItem(
-                tid = tid,
-                title = title,
-                url = SITE + "thread-" + tid + "-1-1.html",
-                typeName = null,
-                author = "",
-                date = "",
-                replies = "",
-                views = "",
-                sticky = false
+            if (title.length < 4) continue
+            val nums = li.selectFirst("p.xg1")?.text().orEmpty()
+            val replies = Regex("(\\d+)\\s*个回复").find(nums)?.groupValues?.get(1)
+                ?: Regex("回复\\s*(\\d+)").find(nums)?.groupValues?.get(1).orEmpty()
+            val views = Regex("(\\d+)\\s*次查看").find(nums)?.groupValues?.get(1).orEmpty()
+            val author = li.select("p a[href*=space-uid]").lastOrNull()?.text()?.trim().orEmpty()
+            val date = li.select("p span").firstOrNull { it.text().contains("-") || it.text().contains(":") }
+                ?.text()?.trim().orEmpty()
+            val typeName = li.selectFirst("p a[href*=forum-]")?.text()?.trim()
+            if (out.any { it.tid == tid }) continue
+            out.add(
+                ThreadItem(
+                    tid = tid,
+                    title = title,
+                    url = SITE + "thread-" + tid + "-1-1.html",
+                    typeName = typeName,
+                    author = author,
+                    date = date,
+                    replies = replies,
+                    views = views,
+                    sticky = false
+                )
             )
             if (out.size >= 60) break
         }
-        return out.values.toList()
+        return out
     }
 
     /** 抽取某个表单：action 绝对化，收集 input/textarea/select 的当前值 */
@@ -484,6 +503,18 @@ object Site {
                             !u.contains("static/image/smiley") &&
                             !u.contains("static/image/common")
                         ) out.add(Block.Image(u))
+                    }
+                    "a" -> {
+                        val href = node.absUrl("href")
+                        val text = node.text().trim()
+                        when {
+                            // 包着图片的附件链接（正文穿插附图）不当文件，也不显示附件信息
+                            node.selectFirst("img") != null -> collectBlocks(node, out)
+                            href.contains("mod=attachment") -> collectBlocks(node, out)
+                            href.startsWith("http") && text.length >= 2 ->
+                                out.add(Block.Link(text, href))
+                            else -> collectBlocks(node, out)
+                        }
                     }
                     "div", "p", "center", "blockquote", "li", "tr", "h1", "h2", "h3" -> {
                         collectBlocks(node, out)

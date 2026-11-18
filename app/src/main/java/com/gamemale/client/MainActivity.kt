@@ -348,7 +348,7 @@ class MainActivity : ComponentActivity() {
                                         fp = fp.copy(threads = hits)
                                     }
                                 }
-                                if (fp.threads.isEmpty() && url.contains("typeid=")) {
+                                if (fp.threads.isEmpty() && url.contains("typeid=") && !url.contains("search.php")) {
                                     // 分类参数失效时，退回不带 typeid 的版块页再抓一次
                                     val base = Regex("(https?://[^&]+mod=forumdisplay&fid=\\d+)").find(url)?.groupValues?.get(1)
                                     if (base != null) {
@@ -362,6 +362,8 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                                 forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
+                                forumCache[url] = forumPage!!
+                                if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
                                 if (fp.threads.isEmpty()) {
                                     val tp = Site.parseThread(html)
                                     if (tp.posts.isNotEmpty()) {
@@ -479,8 +481,15 @@ class MainActivity : ComponentActivity() {
             when (val n = nav) {
                 is Nav.Home -> loadHome()
                 is Nav.Forum -> {
-                    // 一级页有缓存就不重新拉，避免每次回退都重载
-                    if (forumPage == null || loadedForumUrl != n.url || error != null) load(n.url)
+                    // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
+                    val cached = forumCache[n.url]
+                    if (cached != null) {
+                        forumPage = cached
+                        loadedForumUrl = n.url
+                        error = null
+                    } else if (forumPage == null || loadedForumUrl != n.url || error != null) {
+                        load(n.url)
+                    }
                 }
                 is Nav.Thread -> load(n.url)
             }
@@ -527,6 +536,8 @@ class MainActivity : ComponentActivity() {
     private var loadedForumUrl: String? = null
     /** tid -> 已抓到的帖子 HTML（预取时顺手存下，再次打开直接用） */
     private val threadCache = LinkedHashMap<String, String>()
+    /** url -> 已加载好的列表页（回退时不重载，搜索页也各存各的） */
+    private val forumCache = LinkedHashMap<String, ForumPage>()
     private var rateSourceHtml: String? = null
 
     /** 列表页本身没有缩略图（这个模板没开图文插件），就用正文首图补，最多补 6 条 */
@@ -649,9 +660,10 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 r.onSuccess { xml ->
                     dumpText("reply", xml)
-                    val msg = cdataText(xml)
+                    val ok = xml.contains("succeedhandle_") || isSuccess(cdataText(xml))
+                    val msg = if (xml.contains("succeedhandle_")) "回复成功" else cdataText(xml)
                     toast(msg)
-                    if (isSuccess(msg)) {
+                    if (ok) {
                         replyOpen = false
                         reload()
                     }
@@ -800,9 +812,10 @@ class MainActivity : ComponentActivity() {
                         runOnUiThread {
                             r2.onSuccess { xml2 ->
                                 dumpText("submit", xml2)
-                                val msg = cdataText(xml2)
+                                val ok2 = xml2.contains("succeedhandle_") || isSuccess(cdataText(xml2))
+                                val msg = if (xml2.contains("succeedhandle_")) "提交成功" else cdataText(xml2)
                                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-                                if (isSuccess(msg)) {
+                                if (ok2) {
                                     onDone()
                                     reload()
                                 }

@@ -963,6 +963,16 @@ private fun ThreadView(
                                 color = colors.onSurface,
                                 lineHeight = 1.55f
                             )
+                            is Block.Link -> Txt(
+                                item.text,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { onExternal(item.url) }
+                                    .padding(horizontal = 2.dp, vertical = 1.dp),
+                                size = 15.sp,
+                                color = colors.accent,
+                                lineHeight = 1.55f
+                            )
                             is Block.Image -> {
                                 NetImage(
                                     url = item.url,
@@ -974,27 +984,6 @@ private fun ThreadView(
                                 )
                             }
                             else -> {}
-                        }
-                    }
-                    // 正文里的链接（网页链接可直接唤起浏览器）
-                    if (post.links.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
-                        Txt("相关链接", size = 12.sp, weight = FontWeight.SemiBold, color = colors.onSurfaceVariant)
-                        post.links.forEach { (text, url) ->
-                            Spacer(Modifier.height(6.dp))
-                            Box(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(colors.card)
-                                    .clickable { onExternal(url) }
-                                    .padding(10.dp)
-                            ) {
-                                Column {
-                                    Txt(text, size = 14.sp, color = colors.accent, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                    Txt(url, size = 11.sp, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                            }
                         }
                     }
                     // 附件
@@ -1220,6 +1209,7 @@ private fun buildParagraphs(blocks: List<Block>): List<Block> {
                 sb.append(b.text).append(' ')
             }
             is Block.Image -> { flush(); out.add(b) }
+            is Block.Link -> { flush(); out.add(b) }
             Block.Break -> flush()
         }
     }
