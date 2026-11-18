@@ -421,6 +421,7 @@ fun AppUi(
     onClearCache: () -> Unit = {},
     onExportLogs: () -> Unit = {},
     onRefreshThread: () -> Unit = {},
+    onOpenBrowser: () -> Unit = {},
     canGoBack: Boolean = false,
     showThemeToggle: Boolean = true,
     refreshing: Boolean = false,
@@ -444,6 +445,7 @@ fun AppUi(
                 canShare = nav is Nav.Thread,
                 canRefresh = nav is Nav.Thread,
                 onRefresh = onRefreshThread,
+                onOpenBrowser = onOpenBrowser,
                 avatarUrl = avatarUrl,
                 onShare = onShare,
                 onDump = onDump,
@@ -630,6 +632,7 @@ private fun TopBar(
     canShare: Boolean,
     canRefresh: Boolean = false,
     onRefresh: () -> Unit = {},
+    onOpenBrowser: () -> Unit = {},
     avatarUrl: String?,
     onBack: () -> Unit,
     onToggleDark: () -> Unit,
@@ -667,15 +670,10 @@ private fun TopBar(
             overflow = TextOverflow.Ellipsis
         )
         if (canRefresh) {
-            Txt(
-                "刷新",
-                modifier = Modifier.clip(RoundedCornerShape(14.dp))
-                    .clickable { onRefresh() }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                size = 13.sp,
-                color = colors.accent
-            )
-            Spacer(Modifier.width(4.dp))
+            CircleSlotBtn(onRefresh) { IconRefresh() }
+            Spacer(Modifier.width(6.dp))
+            CircleSlotBtn(onOpenBrowser) { IconBrowser() }
+            Spacer(Modifier.width(6.dp))
         }
         if (canShare) {
             CircleBtn(ShareVector, onShare)
@@ -696,6 +694,68 @@ private fun TopBar(
             CircleBtn(CouiIcons.Filled.UserCircle, onLogin)
         }
     }
+    }
+}
+
+
+/** 只有图标的圆形按钮（图标用 Canvas 画，COUI 图标集里没有刷新/浏览器） */
+@Composable
+private fun CircleSlotBtn(onClick: () -> Unit, content: @Composable () -> Unit) {
+    Box(
+        Modifier
+            .size(40.dp)
+            .then(glassModifier(CircleShape))
+            .lightPress(onClick),
+        contentAlignment = Alignment.Center
+    ) { content() }
+}
+
+@Composable
+private fun IconRefresh() {
+    val c = CouiTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(20.dp)) {
+        val sw = 2.0.dp.toPx()
+        drawArc(
+            color = c,
+            startAngle = -50f,
+            sweepAngle = 300f,
+            useCenter = false,
+            topLeft = androidx.compose.ui.geometry.Offset(sw, sw),
+            size = androidx.compose.ui.geometry.Size(size.width - sw * 2, size.height - sw * 2),
+            style = Stroke(width = sw)
+        )
+        // 箭头
+        val tip = androidx.compose.ui.geometry.Offset(size.width * 0.80f, size.height * 0.10f)
+        val p1 = androidx.compose.ui.geometry.Offset(size.width * 0.52f, size.height * 0.02f)
+        val p2 = androidx.compose.ui.geometry.Offset(size.width * 0.95f, size.height * 0.06f)
+        val p3 = androidx.compose.ui.geometry.Offset(size.width * 0.86f, size.height * 0.46f)
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(p1.x, p1.y); lineTo(p2.x, p2.y); lineTo(p3.x, p3.y); close()
+        }
+        drawPath(path, c)
+        // 让箭头与弧线衔接
+        drawLine(c, tip, androidx.compose.ui.geometry.Offset(size.width * 0.62f, size.height * 0.16f), strokeWidth = sw)
+    }
+}
+
+@Composable
+private fun IconBrowser() {
+    val c = CouiTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(20.dp)) {
+        val sw = 1.8.dp.toPx()
+        // 方框（左下）
+        val left = size.width * 0.08f
+        val top = size.height * 0.34f
+        val right = size.width * 0.62f
+        val bottom = size.height * 0.94f
+        drawLine(c, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Offset(left, bottom), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(left, bottom), androidx.compose.ui.geometry.Offset(right, bottom), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(right, bottom), androidx.compose.ui.geometry.Offset(right, size.height * 0.66f), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(left, top), androidx.compose.ui.geometry.Offset(size.width * 0.34f, top), sw)
+        // 外跳箭头
+        drawLine(c, androidx.compose.ui.geometry.Offset(size.width * 0.38f, size.height * 0.62f), androidx.compose.ui.geometry.Offset(size.width * 0.94f, size.height * 0.06f), sw * 1.1f)
+        drawLine(c, androidx.compose.ui.geometry.Offset(size.width * 0.66f, size.height * 0.06f), androidx.compose.ui.geometry.Offset(size.width * 0.94f, size.height * 0.06f), sw * 1.1f)
+        drawLine(c, androidx.compose.ui.geometry.Offset(size.width * 0.94f, size.height * 0.06f), androidx.compose.ui.geometry.Offset(size.width * 0.94f, size.height * 0.34f), sw * 1.1f)
     }
 }
 

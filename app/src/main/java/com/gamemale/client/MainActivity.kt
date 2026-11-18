@@ -169,6 +169,13 @@ class MainActivity : ComponentActivity() {
                     },
                     onExportLogs = { Diag.export(this) },
                     onRefreshThread = { (nav as? Nav.Thread)?.url?.let { reloadThread(it) } },
+                    onOpenBrowser = {
+                        (nav as? Nav.Thread)?.url?.let { u ->
+                            runCatching {
+                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
+                            }.onFailure { toast("没有可用的浏览器") }
+                        }
+                    },
                     onClearCache = {
                         prefetchToken++
                         fetcher.dropPending()
