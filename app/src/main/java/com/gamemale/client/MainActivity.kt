@@ -92,6 +92,7 @@ class MainActivity : ComponentActivity() {
             else -> systemDark
         }
         fontScale = prefs.getFloat("fontScale", 1f)
+        ImageStore.init(this)
         cache = ThreadCache(this)
         cacheMb = cache.limitMb
         refreshCacheStats()
@@ -105,10 +106,13 @@ class MainActivity : ComponentActivity() {
             CouiTheme(darkTheme = darkMode, colorScheme = rememberScheme(darkMode)) {
                 // 预测性返回：手指拖动时内容跟着右移，松手提交后退
                 PredictiveBackHandler(enabled = true) { progress ->
-                    runCatching {
+                    // 手势被取消时 collect 会抛 CancellationException，不会走到 goBack
+                    try {
                         progress.collect { e -> backProgress = e.progress }
+                    } finally {
+                        backProgress = 0f
                     }
-                    backProgress = 0f
+                    goBack()
                 }
                 AppUi(
                     nav = nav,
@@ -168,7 +172,6 @@ class MainActivity : ComponentActivity() {
                     },
                     canGoBack = backStack.isNotEmpty() || nav is Nav.Thread ||
                         nav is Nav.Settings || nav is Nav.Search,
-                    showThemeToggle = nav !is Nav.Forum || backStack.isNotEmpty(),
                     refreshing = refreshing,
                     onRefresh = { refreshCurrentForum() },
                     onOpenSearch = { openSearch() },
@@ -403,6 +406,14 @@ class MainActivity : ComponentActivity() {
                 loading = false
                 r.onSuccess { html ->
                     lastHtml = html
+                    if (url.contains("search.php")) {
+                        val limited = listOf("两次搜索", "搜索间隔", "搜索太频繁", "频率限制", "请稍后再试")
+                            .any { html.contains(it) }
+                        if (limited) {
+                            error = "搜索太频繁了，站点限制了搜索间隔，请等十几秒再试"
+                            return@onSuccess
+                        }
+                    }
                     runCatching {
                         refreshLogin(html)
                         when (nav) {
@@ -410,6 +421,7 @@ class MainActivity : ComponentActivity() {
                                 val tp = Site.parseThread(html)
                                 threadPage = tp
                                 loadedThreadUrl = url
+                                prefetchThreadImages(tp)
                                 val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
                                 if (tid != null) {
                                     cache.save(tid, tp.subject, tp.lastEdit, html)
@@ -682,7 +694,7 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 val dir = java.io.File(cacheDir, "images").apply { mkdirs() }
                 val name = (url.hashCode().toString() + ".jpg")
-                val f = java.io.File(dir, name)
+                val f = ImageStore.local(url) ?: java.io.File(dir, name)
                 if (!f.exists()) {
                     val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
                     conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -692,6 +704,7 @@ class MainActivity : ComponentActivity() {
                     conn.connectTimeout = 15000
                     conn.readTimeout = 20000
                     conn.inputStream.use { input -> f.outputStream().use { out -> input.copyTo(out) } }
+                    ImageStore.save(url, f.readBytes())
                 }
                 val uri = androidx.core.content.FileProvider.getUriForFile(
                     this, packageName + ".fileprovider", f
@@ -709,6 +722,30 @@ class MainActivity : ComponentActivity() {
             }.onFailure {
                 runOnUiThread { toast("图片下载失败：" + (it.message ?: "")) }
             }
+        }.start()
+    }
+
+    /** 把帖子正文（含末尾附图）的图片存成本地文件，之后展示和相册都用本地图 */
+    private fun prefetchThreadImages(page: ThreadPage) {
+        val urls = page.posts.flatMap { p ->
+            p.blocks.mapNotNull { (it as? Block.Image)?.url }
+        }.distinct().filter { !ImageStore.hasUrl(it) }.take(14)
+        if (urls.isEmpty()) return
+        Thread {
+            for (u in urls) {
+                runCatching {
+                    val conn = java.net.URL(u).openConnection() as java.net.HttpURLConnection
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+                    conn.setRequestProperty("Referer", "https://www.gamemale.com/")
+                    android.webkit.CookieManager.getInstance().getCookie(u)
+                        ?.let { conn.setRequestProperty("Cookie", it) }
+                    conn.connectTimeout = 12000
+                    conn.readTimeout = 15000
+                    val bytes = conn.inputStream.use { it.readBytes() }
+                    if (bytes.size in 1..(6 * 1024 * 1024)) ImageStore.save(u, bytes)
+                }
+            }
+            runOnUiThread { refreshCacheStats() }
         }.start()
     }
 
@@ -908,7 +945,8 @@ class MainActivity : ComponentActivity() {
         if (form != null) {
             form.set("message", text)
             form.set("posttime", (System.currentTimeMillis() / 1000).toString())
-            submit(form, onDone = { replyOpen = false })
+            busy = true
+            submit(form, onDone = { replyOpen = false; busy = false })
             return
         }
         // 页面里没有快速回复框时，用 formhash + tid 自己拼一次提交
@@ -929,20 +967,25 @@ class MainActivity : ComponentActivity() {
             "usesig" to "1",
             "message" to text
         )
+        busy = true
         fetcher.post(url, fields.joinToString("&") { (k, v) ->
             java.net.URLEncoder.encode(k, "UTF-8") + "=" + java.net.URLEncoder.encode(v, "UTF-8")
         }) { r ->
             runOnUiThread {
                 r.onSuccess { xml ->
-                    dumpText("reply", xml)
-                    val ok = xml.contains("succeedhandle_") || isSuccess(cdataText(xml))
-                    val msg = if (xml.contains("succeedhandle_")) "回复成功" else cdataText(xml)
-                    toast(msg)
+                    dumpText("submit-reply", xml)
+                    val (ok, detail) = judgeXml(xml)
+                    toast(if (ok) "回复成功" else detail.ifEmpty { "提交失败" })
                     if (ok) {
                         replyOpen = false
+                        busy = false
                         reload()
-                    }
-                }.onFailure { toast("提交失败：" + (it.message ?: "")) }
+                    } else busy = false
+                }.onFailure {
+                    busy = false
+                    dumpText("submit-reply-timeout", it.message.orEmpty())
+                    toast("提交失败：" + (it.message ?: ""))
+                }
             }
         }
     }
@@ -965,6 +1008,17 @@ class MainActivity : ComponentActivity() {
             if (!title.isNullOrBlank()) return ("站点返回：" + title).take(140)
         }
         return "站点没有返回结果（已保存返回页：下载/gamemale-submit.html）"
+    }
+
+    /** 站点 ajax 返回的统一判定：只看有没有 errorhandle_/alert_error */
+    private fun judgeXml(xml: String): Pair<Boolean, String> {
+        val clean = cdataText(xml)
+        val hasErr = xml.contains("errorhandle_") || xml.contains("alert_error")
+        val hasOk = xml.contains("succeedhandle_")
+        val ok = hasOk || (!hasErr &&
+            !clean.contains("失败") && !clean.contains("抱歉") && !clean.contains("不能") &&
+            !clean.contains("无权") && !clean.contains("间隔") && !clean.contains("频繁"))
+        return ok to clean
     }
 
     private fun isSuccess(msg: String): Boolean {
@@ -1072,9 +1126,9 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 busy = false
                 r.onSuccess { xml ->
-                    dumpText("submit", xml)
-                    val ok = xml.contains("succeedhandle_") || isSuccess(cdataText(xml))
-                    val msg = if (xml.contains("succeedhandle_")) "提交成功" else cdataText(xml)
+                    dumpText("submit-rate", xml)
+                    val (ok, detail) = judgeXml(xml)
+                    val msg = if (ok) "评分成功" else detail.ifEmpty { "提交失败" }
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     if (ok) {
                         onDone()
@@ -1089,9 +1143,9 @@ class MainActivity : ComponentActivity() {
                     fetcher.submitOnPage(url, form.body()) { r2 ->
                         runOnUiThread {
                             r2.onSuccess { xml2 ->
-                                dumpText("submit", xml2)
-                                val ok2 = xml2.contains("succeedhandle_") || isSuccess(cdataText(xml2))
-                                val msg = if (xml2.contains("succeedhandle_")) "提交成功" else cdataText(xml2)
+                                dumpText("submit-rate", xml2)
+                                val (ok2, detail2) = judgeXml(xml2)
+                                val msg = if (ok2) "评分成功" else detail2.ifEmpty { "提交失败" }
                                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                                 if (ok2) {
                                     onDone()

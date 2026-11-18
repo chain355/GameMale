@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.Density
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -118,9 +119,9 @@ import androidx.compose.ui.layout.ContentScale
 import com.itos.coui.theme.CouiTheme
 
 private const val ANIME_URL =
-    "https://www.gamemale.com/forum.php?mod=forumdisplay&fid=150&filter=lastpost&orderby=lastpost&typeid=831"
+    "https://www.gamemale.com/forum.php?mod=forumdisplay&fid=150&filter=dateline&orderby=dateline&typeid=831"
 private const val GAME_URL =
-    "https://www.gamemale.com/forum.php?mod=forumdisplay&fid=152&filter=lastpost&orderby=lastpost&typeid=737"
+    "https://www.gamemale.com/forum.php?mod=forumdisplay&fid=152&filter=dateline&orderby=dateline&typeid=737"
 
 /** 列表的“回复气泡”图标（COUI 图标集没有评论类图标，这里自绘一个） */
 private val ReplyVector: ImageVector by lazy {
@@ -449,7 +450,6 @@ fun AppUi(
                 },
                 canBack = canGoBack,
                 dark = dark,
-                showTheme = showThemeToggle,
                 onSettings = onSettings,
                 onBack = onBack,
                 onToggleDark = onToggleDark,
@@ -606,7 +606,7 @@ fun AppUi(
                 }
             )
         }
-        if (replyOpen) ReplyDialog(onCancelReply, onSendReply)
+        if (replyOpen) ReplyDialog(busy, onCancelReply, onSendReply)
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) ImageDialog(imageUrl, onCloseImage)
     }
@@ -624,7 +624,6 @@ private fun TopBar(
     onBack: () -> Unit,
     onToggleDark: () -> Unit,
     onSettings: () -> Unit,
-    showTheme: Boolean,
     onLogin: () -> Unit,
     onShare: () -> Unit,
     onDump: () -> Unit
@@ -659,10 +658,6 @@ private fun TopBar(
         )
         if (canShare) {
             CircleBtn(ShareVector, onShare)
-            Spacer(Modifier.width(8.dp))
-        }
-        if (showTheme) {
-            CircleBtn(if (dark) CouiIcons.Filled.Sun else CouiIcons.Filled.DarkLight, onToggleDark)
             Spacer(Modifier.width(8.dp))
         }
         if (!avatarUrl.isNullOrBlank()) {
@@ -750,13 +745,22 @@ private fun ErrorView(
 }
 
 @Composable
-private fun CardBox(content: @Composable () -> Unit) {
+private fun CardBox(onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
     val colors = CouiTheme.colorScheme
+    val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
     Box(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(colors.container)
+            .background(if (pressed) colors.card else colors.container)
+            .then(
+                if (onClick != null) Modifier.clickable(
+                    interactionSource = interaction,
+                    indication = androidx.compose.foundation.LocalIndication.current,
+                    onClick = onClick
+                ) else Modifier
+            )
             .padding(14.dp)
     ) { content() }
 }
@@ -774,8 +778,8 @@ private fun HomeList(forums: List<ForumItem>, loading: Boolean, onOpen: (ForumIt
             Txt("版块", size = 13.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(6.dp))
         }
         items(forums) { f ->
-            CardBox {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { onOpen(f) }) {
+            CardBox(onClick = { onOpen(f) }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     if (!f.icon.isNullOrEmpty()) {
                         AsyncImage(
                             model = f.icon,
@@ -898,8 +902,8 @@ private fun ForumView(
         ) {
             val list = page?.threads ?: emptyList()
             items(list) { t ->
-                CardBox {
-                    Column(Modifier.clickable { onThread(t) }) {
+                CardBox(onClick = { onThread(t) }) {
+                    Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (!t.typeName.isNullOrEmpty()) {
                                 Box(
@@ -1170,9 +1174,15 @@ private fun ThreadView(
 }
 
 @Composable
-private fun ReplyDialog(onCancel: () -> Unit, onSend: (String) -> Unit) {
+private fun ReplyDialog(submitting: Boolean, onCancel: () -> Unit, onSend: (String) -> Unit) {
     val colors = CouiTheme.colorScheme
     var text by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        runCatching { focus.requestFocus() }
+        keyboard?.show()
+    }
     Dialog(onDismissRequest = onCancel) {
         Column(
             Modifier
@@ -1198,15 +1208,27 @@ private fun ReplyDialog(onCancel: () -> Unit, onSend: (String) -> Unit) {
                     value = text,
                     onValueChange = { text = it },
                     textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 110.dp)
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 110.dp).focusRequester(focus)
                 )
+            }
+            if (submitting) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MiniSpinner()
+                    Spacer(Modifier.width(10.dp))
+                    Txt("回复提交中…", size = 13.sp, color = colors.onSurfaceVariant)
+                }
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
                 Pill("取消", onCancel, primary = false)
                 Spacer(Modifier.width(10.dp))
-                Pill("发送", {
-                    if (text.isNotBlank()) onSend(text.trim()) else {}
+                Pill(if (submitting) "提交中…" else "发送", {
+                    if (!submitting && text.isNotBlank()) onSend(text.trim())
                 }, primary = true)
             }
         }
@@ -1301,7 +1323,7 @@ private fun ImageDialog(url: String, onClose: () -> Unit) {
                 .background(Color.Black)
         ) {
             AsyncImage(
-                model = url,
+                model = ImageStore.local(url) ?: url,
                 contentDescription = null,
                 modifier = Modifier
                     .fillMaxWidth()
