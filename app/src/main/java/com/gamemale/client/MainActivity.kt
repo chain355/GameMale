@@ -170,13 +170,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onExportLogs = { Diag.export(this) },
                     onRefreshThread = { (nav as? Nav.Thread)?.url?.let { reloadThread(it) } },
-                    onOpenBrowser = {
-                        (nav as? Nav.Thread)?.url?.let { u ->
-                            runCatching {
-                                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)))
-                            }.onFailure { toast("没有可用的浏览器") }
-                        }
-                    },
+                    onOpenBrowser = { (nav as? Nav.Thread)?.url?.let { openInBrowser(it) } },
                     onClearCache = {
                         prefetchToken++
                         fetcher.dropPending()
@@ -558,6 +552,32 @@ class MainActivity : ComponentActivity() {
             loading = false
             error = "打不开这个页面：" + (it.message ?: "")
         }
+    }
+
+    /**
+     * 明确交给「别的」浏览器打开：
+     * 本站帖子链接命中我们的深链（且系统默认「在应用内打开支持的链接」），
+     * 直接 ACTION_VIEW 会被路由回自己，这里按包名挑一个真正的浏览器。
+     */
+    private fun openInBrowser(url: String) {
+        val uri = Uri.parse(url)
+        val probe = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
+        val candidates = packageManager.queryIntentActivities(probe, 0)
+            .mapNotNull { it.activityInfo?.packageName }
+            .filter { it != packageName }
+            .distinct()
+        if (candidates.isEmpty()) {
+            toast("这台设备没有可用的浏览器")
+            return
+        }
+        for (pkg in candidates) {
+            val i = Intent(Intent.ACTION_VIEW, uri)
+                .addCategory(Intent.CATEGORY_BROWSABLE)
+                .setPackage(pkg)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (runCatching { startActivity(i) }.isSuccess) return
+        }
+        toast("没能调起浏览器，请检查默认应用设置")
     }
 
     /** 帖子页手动刷新：重抓正文并保留当前页，失败只提示 */
