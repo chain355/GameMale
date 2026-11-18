@@ -437,6 +437,21 @@ fun AppUi(
         LocalDensity provides Density(baseDensity.density, fontScale)
     ) {
     val forumListState = rememberLazyListState()
+    // 每个板块各自记住上次停留的位置；翻到新的一页则回到顶部
+    val forumPositions = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
+    var lastForumUrl by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(currentUrl) {
+        val prev = lastForumUrl
+        if (prev != null && prev != currentUrl) {
+            if (!prev.contains("&page=")) {
+                forumPositions[prev.substringBefore("&page=")] = forumListState.firstVisibleItemIndex
+            }
+            val target = if (currentUrl.contains("&page=")) 0
+            else forumPositions[currentUrl.substringBefore("&page=")] ?: 0
+            forumListState.scrollToItem(target)
+        }
+        lastForumUrl = currentUrl
+    }
     var searchOpen by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize()) {

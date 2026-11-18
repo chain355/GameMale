@@ -453,15 +453,15 @@ class MainActivity : ComponentActivity() {
                         refreshLogin(html)
                         when (nav) {
                             is Nav.Thread -> {
-                                if ((nav as Nav.Thread).url != url) {
-                                    Diag.log("load", "丢弃过期帖子响应 url=" + url)
+                                if (!sameTarget((nav as Nav.Thread).url, url)) {
+                                    Diag.log("load", "丢弃过期帖子响应 url=" + url + " 当前=" + (nav as Nav.Thread).url)
                                     return@onSuccess
                                 }
                                 // 650KB 页面的 jsoup 解析和落盘都放后台，UI 先把已有内容铺出来
                                 applyThreadHtml(html, url)
                             }
                             is Nav.Forum -> {
-                                if ((nav as Nav.Forum).url != url) {
+                                if (!sameTarget((nav as Nav.Forum).url, url)) {
                                     Diag.log("load", "丢弃过期响应 url=" + url + " 当前=" + (nav as Nav.Forum).url)
                                     return@onSuccess
                                 }
@@ -508,6 +508,7 @@ class MainActivity : ComponentActivity() {
                                         if (cachedThumbs.isNotEmpty()) item.copy(thumbs = cachedThumbs) else item
                                     } else item
                                 })
+                                refreshing = false
                                 Diag.log("load", "forum ok threads=" + fp.threads.size + " bytes=" + html.length + " url=" + url)
                                 forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
                                 forumCache[url] = forumPage!!
@@ -747,7 +748,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         threadPage = null
-        load(item.url)
+        // 请求地址必须跟 nav 里的规范地址一致，否则回包会被判成「过期响应」而整页空白
+        load(url)
     }
 
     /** 切分类 / 翻页：仍在当前列表页内换数据 */
@@ -1064,6 +1066,21 @@ class MainActivity : ComponentActivity() {
 
     /** jsoup 解析一律放到后台单线程：650KB 级页面在主线程解析很容易 OOM */
     private val parsePool = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** 两个地址指向同一个目标页：帖子比 tid，版块比 fid+页码（忽略 mobile=no、highlight 这类装饰参数） */
+    private fun sameTarget(a: String?, b: String?): Boolean {
+        if (a == null || b == null) return false
+        val tidA = Regex("thread-(\\d+)").find(a)?.groupValues?.get(1)
+            ?: Regex("[?&]tid=(\\d+)").find(a)?.groupValues?.get(1)
+        val tidB = Regex("thread-(\\d+)").find(b)?.groupValues?.get(1)
+            ?: Regex("[?&]tid=(\\d+)").find(b)?.groupValues?.get(1)
+        if (tidA != null && tidB != null) return tidA == tidB
+        val fidA = Regex("[?&]fid=(\\d+)").find(a)?.groupValues?.get(1)
+        val fidB = Regex("[?&]fid=(\\d+)").find(b)?.groupValues?.get(1)
+        val pageA = Regex("[?&]page=(\\d+)").find(a)?.groupValues?.get(1) ?: "1"
+        val pageB = Regex("[?&]page=(\\d+)").find(b)?.groupValues?.get(1) ?: "1"
+        return fidA == fidB && pageA == pageB
+    }
 
     /** 帖子页：后台解析 + 后台落盘，只在最后一刻回主线程更新界面 */
     private fun applyThreadHtml(html: String, url: String) {
