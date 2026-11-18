@@ -49,8 +49,11 @@ class Fetcher(private val ctx: Context) {
             override fun onPageFinished(view: WebView, url: String?) {
                 if (done) return
                 if (url == null || currentUrl == null) return
-                if (!samePage(url, currentUrl!!)) return
-                main.postDelayed({ extract() }, 350)
+                if (!matchesRequest(url)) return
+                main.postDelayed({
+                    // 页面切换瞬间可能还有上一页的 finish 事件，这里再确认一次当前文档
+                    if (!done && matchesRequest(view.url)) extract()
+                }, 350)
             }
         }
     }
@@ -99,6 +102,24 @@ class Fetcher(private val ctx: Context) {
         jobs.clear()
     }
 
+    /** 回包的地址必须真是这次请求的目标：帖子看 tid、版块看 fid，否则一律当成上一页的迟到事件 */
+    private fun matchesRequest(loaded: String?): Boolean {
+        val target = currentUrl ?: return false
+        if (loaded == null) return false
+        if (!samePage(loaded, target)) return false
+        val tid = Regex("thread-(\\d+)").find(target)?.groupValues?.get(1)
+            ?: Regex("tid=(\\d+)").find(target)?.groupValues?.get(1)
+        if (tid != null) return loaded.contains("thread-$tid") || loaded.contains("tid=$tid")
+        val fid = Regex("fid=(\\d+)").find(target)?.groupValues?.get(1)
+        if (fid != null) return loaded.contains("fid=$fid") || loaded.contains("forum-$fid-")
+        return true
+    }
+
+    /** 每次请求一个代号：旧请求残留的定时器/回调一律作废，避免把新请求判成超时 */
+    private var gen = 0
+
+    private fun newGen(): Int { gen++; return gen }
+
     fun fetch(url: String, cb: (Result<String>) -> Unit) {
         if (running && jobs.size >= 5) {
             Diag.log("fetch", "队列已满，丢弃 " + url)
@@ -111,7 +132,11 @@ class Fetcher(private val ctx: Context) {
             currentUrl = url
             done = false
             attempt = 0
-            main.postDelayed({ if (!done) finish(Result.failure(IllegalStateException("超时"))) }, 30_000)
+            val g = newGen()
+            main.postDelayed({
+                if (g == gen && !done) finish(Result.failure(IllegalStateException("超时")))
+            }, 30_000)
+            runCatching { web.stopLoading() }
             web.loadUrl(forceDesktop(url))
         }
     }
@@ -150,7 +175,10 @@ class Fetcher(private val ctx: Context) {
         currentUrl = url
         done = false
         attempt = 0
-        main.postDelayed({ if (!done) finish(Result.failure(IllegalStateException("超时"))) }, 30_000)
+        val g = newGen()
+        main.postDelayed({
+            if (g == gen && !done) finish(Result.failure(IllegalStateException("超时")))
+        }, 30_000)
         val pairs = body.split("&").mapNotNull { kv ->
             val i = kv.indexOf('=')
             if (i < 0) null else URLDecoder.decode(kv.substring(0, i), "UTF-8") to
@@ -194,7 +222,10 @@ class Fetcher(private val ctx: Context) {
         currentUrl = url
         done = false
         attempt = 0
-        main.postDelayed({ if (!done) finish(Result.failure(IllegalStateException("超时"))) }, 30_000)
+        val g = newGen()
+        main.postDelayed({
+            if (g == gen && !done) finish(Result.failure(IllegalStateException("超时")))
+        }, 30_000)
         web.postUrl(url, body.toByteArray(Charsets.UTF_8))
     }
 
@@ -211,7 +242,10 @@ class Fetcher(private val ctx: Context) {
         currentUrl = action
         done = false
         attempt = 0
-        main.postDelayed({ if (!done) finish(Result.failure(IllegalStateException("超时"))) }, 30_000)
+        val g = newGen()
+        main.postDelayed({
+            if (g == gen && !done) finish(Result.failure(IllegalStateException("超时")))
+        }, 30_000)
         val sb = StringBuilder()
         sb.append("<html><head><meta charset=\"utf-8\"></head><body>")
         sb.append("<form id=\"f\" method=\"post\" action=\"").append(htmlEscape(action)).append("\">")
@@ -243,14 +277,17 @@ class Fetcher(private val ctx: Context) {
     }
 
     private fun extract() {
+        val g = gen
         web.evaluateJavascript("(function(){return document.documentElement.outerHTML;})()") { value ->
-            if (done) return@evaluateJavascript
+            if (done || g != gen) return@evaluateJavascript
             val html = runCatching {
                 (JSONTokener(value).nextValue() as? String) ?: ""
             }.getOrDefault("")
+            val tid = currentUrl?.let { Regex("thread-(\\d+)").find(it)?.groupValues?.get(1) }
             when {
                 html.isBlank() -> retryOrFail("页面为空")
                 isChallenge(html) -> retryOrFail("遇到 Cloudflare 验证")
+                tid != null && !html.contains("thread-$tid") -> retryOrFail("拿到的不是目标帖子")
                 else -> finish(Result.success(html))
             }
         }
@@ -267,6 +304,7 @@ class Fetcher(private val ctx: Context) {
             html.contains("Verifying you are human")
 
     private fun retryOrFail(reason: String) {
+        val g = gen
         if (attempt >= 2) {
             finish(Result.failure(IllegalStateException(reason)))
             return
@@ -276,7 +314,9 @@ class Fetcher(private val ctx: Context) {
         if (url == null) {
             finish(Result.failure(IllegalStateException(reason)))
         } else {
-            main.postDelayed({ if (!done) web.loadUrl(forceDesktop(url)) }, 1200)
+            main.postDelayed({
+                if (g == gen && !done) web.loadUrl(forceDesktop(url))
+            }, 1200)
         }
     }
 

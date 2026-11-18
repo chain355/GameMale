@@ -420,6 +420,7 @@ fun AppUi(
     onSetCacheMb: (Int) -> Unit = {},
     onClearCache: () -> Unit = {},
     onExportLogs: () -> Unit = {},
+    onRefreshThread: () -> Unit = {},
     canGoBack: Boolean = false,
     showThemeToggle: Boolean = true,
     refreshing: Boolean = false,
@@ -441,6 +442,8 @@ fun AppUi(
             TopBar(
                 loginName = loginName,
                 canShare = nav is Nav.Thread,
+                canRefresh = nav is Nav.Thread,
+                onRefresh = onRefreshThread,
                 avatarUrl = avatarUrl,
                 onShare = onShare,
                 onDump = onDump,
@@ -479,7 +482,8 @@ fun AppUi(
                     label = "nav"
                 ) { cur ->
                     when {
-                        error != null -> ErrorView(error, onRetry, onDump, onLogin)
+                        error != null && (nav is Nav.Forum || nav is Nav.Thread) ->
+                            ErrorView(error, onRetry, onDump, onLogin)
                         cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
                         cur is Nav.Search -> SearchScreen(
                             history = searchHistory,
@@ -624,6 +628,8 @@ private fun TopBar(
     canBack: Boolean,
     dark: Boolean,
     canShare: Boolean,
+    canRefresh: Boolean = false,
+    onRefresh: () -> Unit = {},
     avatarUrl: String?,
     onBack: () -> Unit,
     onToggleDark: () -> Unit,
@@ -660,6 +666,17 @@ private fun TopBar(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+        if (canRefresh) {
+            Txt(
+                "刷新",
+                modifier = Modifier.clip(RoundedCornerShape(14.dp))
+                    .clickable { onRefresh() }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                size = 13.sp,
+                color = colors.accent
+            )
+            Spacer(Modifier.width(4.dp))
+        }
         if (canShare) {
             CircleBtn(ShareVector, onShare)
             Spacer(Modifier.width(8.dp))

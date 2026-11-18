@@ -168,6 +168,7 @@ class MainActivity : ComponentActivity() {
                         refreshCacheStats()
                     },
                     onExportLogs = { Diag.export(this) },
+                    onRefreshThread = { (nav as? Nav.Thread)?.url?.let { reloadThread(it) } },
                     onClearCache = {
                         prefetchToken++
                         fetcher.dropPending()
@@ -539,6 +540,38 @@ class MainActivity : ComponentActivity() {
         } }.onFailure {
             loading = false
             error = "打不开这个页面：" + (it.message ?: "")
+        }
+    }
+
+    /** 帖子页手动刷新：重抓正文并保留当前页，失败只提示 */
+    private fun reloadThread(url: String) {
+        Diag.log("thread", "手动刷新 " + url)
+        toast("正在刷新正文…")
+        val keep = threadPage
+        fetcher.fetch(url) { r ->
+            runOnUiThread {
+                r.onSuccess { html ->
+                    if (!looksLikeThread(html)) {
+                        toast("刷新失败：这次没拿到正文，稍后再试")
+                        return@onSuccess
+                    }
+                    val tp = Site.parseThread(html)
+                    if (tp.posts.isEmpty()) {
+                        toast("刷新失败：页面里没有楼层")
+                        return@onSuccess
+                    }
+                    threadPage = tp
+                    lastHtml = html
+                    error = null
+                    tidOf(url)?.let { cache.save(it, tp.subject, tp.lastEdit, html) }
+                    refreshCacheStats()
+                    prefetchThreadImages(tp)
+                    toast("正文已刷新")
+                }.onFailure {
+                    threadPage = keep
+                    toast("刷新失败：" + (it.message ?: ""))
+                }
+            }
         }
     }
 
