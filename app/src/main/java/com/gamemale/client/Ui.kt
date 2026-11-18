@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Density
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.background
@@ -424,7 +425,8 @@ fun AppUi(
     onRefresh: () -> Unit = {},
     onOpenSearch: () -> Unit = {},
     searchHistory: List<String> = emptyList(),
-    backProgress: Float = 0f
+    backProgress: Float = 0f,
+    onThumbNeeded: (ThreadItem) -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -485,7 +487,7 @@ fun AppUi(
                         )
                         cur is Nav.Forum -> ForumView(
                             forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
-                            refreshing, onRefresh
+                            refreshing, onRefresh, onThumbNeeded
                         )
                         cur is Nav.Thread -> ThreadView(
                             threadPage, loading, onLoad, onExternal,
@@ -816,7 +818,8 @@ private fun ForumView(
     onImage: (String) -> Unit,
     listState: LazyListState,
     refreshing: Boolean = false,
-    onRefresh: () -> Unit = {}
+    onRefresh: () -> Unit = {},
+    onThumbNeeded: (ThreadItem) -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     var pull by remember { mutableStateOf(0f) }
@@ -847,10 +850,11 @@ private fun ForumView(
                 return androidx.compose.ui.geometry.Offset.Zero
             }
 
-            override suspend fun onPreFling(
+            override suspend fun onPostFling(
+                consumed: androidx.compose.ui.unit.Velocity,
                 available: androidx.compose.ui.unit.Velocity
             ): androidx.compose.ui.unit.Velocity {
-                if (pull > 90f) onRefresh()
+                // 惯性滑动结束后复位提示，避免残留“松开刷新”
                 pull = 0f
                 return androidx.compose.ui.unit.Velocity.Zero
             }
@@ -895,13 +899,29 @@ private fun ForumView(
             }
         }
         LazyColumn(
-            Modifier.fillMaxSize().nestedScroll(scrollConn),
+            Modifier
+                .fillMaxSize()
+                .nestedScroll(scrollConn)
+                .pointerInput(refreshing) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val e = awaitPointerEvent()
+                            if (e.changes.isNotEmpty() && e.changes.all { !it.pressed }) {
+                                if (pull > 90f && !refreshing && !listState.canScrollBackward) onRefresh()
+                                pull = 0f
+                            }
+                        }
+                    }
+                },
             state = listState,
             contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val list = page?.threads ?: emptyList()
-            items(list) { t ->
+            items(list, key = { it.tid }) { t ->
+                LaunchedEffect(t.tid, t.thumbs.size) {
+                    if (t.thumbs.isEmpty()) onThumbNeeded(t)
+                }
                 CardBox(onClick = { onThread(t) }) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1129,6 +1149,7 @@ private fun ThreadView(
                                     onClick = { onImage(item.url) }
                                 )
                             }
+                            is Block.Spoiler -> SpoilerBox(item, onImage, onExternal)
                             else -> {}
                         }
                     }
@@ -1307,6 +1328,54 @@ private fun RateDialog(
     }
 }
 
+
+@Composable
+private fun SpoilerBox(spoiler: Block.Spoiler, onImage: (String) -> Unit, onExternal: (String) -> Unit) {
+    val colors = CouiTheme.colorScheme
+    var open by remember { mutableStateOf(false) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(colors.card)
+            .padding(12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                .clickable { open = !open }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Txt(if (open) "收起" else spoiler.title, size = 14.sp, weight = FontWeight.Medium, color = colors.accent)
+            Spacer(Modifier.width(6.dp))
+            Txt(if (open) "▴" else "▾", size = 12.sp, color = colors.accent)
+        }
+        if (open) {
+            Spacer(Modifier.height(8.dp))
+            buildParagraphs(spoiler.blocks).forEachIndexed { i, b ->
+                if (i > 0) Spacer(Modifier.height(10.dp))
+                when (b) {
+                    is Block.Text -> Txt(b.text, size = 15.sp, color = colors.onSurface, lineHeight = 1.55f)
+                    is Block.Link -> Txt(
+                        b.text,
+                        modifier = Modifier.clip(RoundedCornerShape(6.dp))
+                            .clickable { onExternal(b.url) }
+                            .padding(horizontal = 2.dp, vertical = 1.dp),
+                        size = 15.sp,
+                        color = colors.accent
+                    )
+                    is Block.Image -> NetImage(
+                        url = b.url,
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)),
+                        onClick = { onImage(b.url) }
+                    )
+                    else -> {}
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ImageDialog(url: String, onClose: () -> Unit) {
     var scale by remember { mutableStateOf(1f) }
@@ -1388,6 +1457,7 @@ private fun buildParagraphs(blocks: List<Block>): List<Block> {
             }
             is Block.Image -> { flush(); out.add(b) }
             is Block.Link -> { flush(); out.add(b) }
+            is Block.Spoiler -> { flush(); out.add(b) }
             Block.Break -> flush()
         }
     }

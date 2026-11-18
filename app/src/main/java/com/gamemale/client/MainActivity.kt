@@ -177,6 +177,7 @@ class MainActivity : ComponentActivity() {
                     onOpenSearch = { openSearch() },
                     searchHistory = searchHistory,
                     backProgress = backProgress,
+                    onThumbNeeded = { t -> ensureThumb(t) },
                     onLogin = { openLogin() },
                     onReply = { replyOpen = true },
                     onRate = { pid -> openRate(pid) },
@@ -844,16 +845,62 @@ class MainActivity : ComponentActivity() {
     private var rateSourceHtml: String? = null
 
     /** 列表页本身没有缩略图（这个模板没开图文插件），就用正文首图补，最多补 6 条 */
+    /** 单条帖子的预览图：本地有缓存就直接解析出来，不再联网 */
+    fun ensureThumb(t: ThreadItem) {
+        if (t.thumbs.isNotEmpty() || !t.url.contains("thread-")) return
+        val local = cache.read(t.tid)?.first ?: threadCache[t.tid]
+        if (local != null) {
+            applyThumb(t, Site.parseFirstImages(local, 3))
+            return
+        }
+        fetchThumb(t)
+    }
+
+    private var thumbQueue = 0
+
+    private fun fetchThumb(t: ThreadItem) {
+        if (thumbQueue > 2) return
+        thumbQueue++
+        fetcher.fetch(t.url) { r ->
+            runOnUiThread {
+                thumbQueue--
+                r.onSuccess { html ->
+                    val tid = Regex("thread-(\\d+)").find(t.url)?.groupValues?.get(1)
+                    if (tid != null) {
+                        if (threadCache.size > 8) threadCache.remove(threadCache.keys.first())
+                        threadCache[tid] = html
+                    }
+                    applyThumb(t, Site.parseFirstImages(html, 3))
+                }
+            }
+        }
+    }
+
+    private fun applyThumb(t: ThreadItem, imgs: List<String>) {
+        if (imgs.isEmpty()) return
+        val cur = forumPage ?: return
+        val updated = cur.copy(threads = cur.threads.map { item ->
+            if (item.tid == t.tid) item.copy(thumbs = imgs) else item
+        })
+        forumPage = updated
+        loadedForumUrl?.let { forumCache[it] = updated }
+    }
+
     private fun prefetchThumbs(page: ForumPage) {
         val token = ++prefetchToken
         val targets = page.threads
             .filter { it.thumbs.isEmpty() && it.url.contains("thread-") }
-            .filter { t -> !cache.has(t.tid) }
             .take(6)
         if (targets.isEmpty()) return
         fun step(i: Int) {
             if (i >= targets.size || token != prefetchToken || nav !is Nav.Forum) return
             val t = targets[i]
+            val local = cache.read(t.tid)?.first ?: threadCache[t.tid]
+            if (local != null) {
+                applyThumb(t, Site.parseFirstImages(local, 3))
+                step(i + 1)
+                return
+            }
             fetcher.fetch(t.url) { r ->
                 runOnUiThread {
                     r.onSuccess { html ->
@@ -946,7 +993,7 @@ class MainActivity : ComponentActivity() {
             form.set("message", text)
             form.set("posttime", (System.currentTimeMillis() / 1000).toString())
             busy = true
-            submit(form, onDone = { replyOpen = false; busy = false })
+            submit(form, onDone = { replyOpen = false; busy = false }, okText = "回复成功")
             return
         }
         // 页面里没有快速回复框时，用 formhash + tid 自己拼一次提交
@@ -1014,10 +1061,8 @@ class MainActivity : ComponentActivity() {
     private fun judgeXml(xml: String): Pair<Boolean, String> {
         val clean = cdataText(xml)
         val hasErr = xml.contains("errorhandle_") || xml.contains("alert_error")
-        val hasOk = xml.contains("succeedhandle_")
-        val ok = hasOk || (!hasErr &&
-            !clean.contains("失败") && !clean.contains("抱歉") && !clean.contains("不能") &&
-            !clean.contains("无权") && !clean.contains("间隔") && !clean.contains("频繁"))
+        // 站点成功时可能附带“回复奖励”等文案，只要没有错误处理脚本就算成功
+        val ok = !hasErr || xml.contains("succeedhandle_")
         return ok to clean
     }
 
@@ -1116,7 +1161,10 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 提交一个表单并解析 XML 结果 */
-    private fun submit(form: FormDef, onDone: () -> Unit) {
+    private var submitOkText: String = "提交成功"
+
+    private fun submit(form: FormDef, onDone: () -> Unit, okText: String = "评分成功") {
+        submitOkText = okText
         prefetchToken++
         busy = true
         val raw = form.action
@@ -1126,9 +1174,9 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 busy = false
                 r.onSuccess { xml ->
-                    dumpText("submit-rate", xml)
+                    dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
                     val (ok, detail) = judgeXml(xml)
-                    val msg = if (ok) "评分成功" else detail.ifEmpty { "提交失败" }
+                    val msg = if (ok) submitOkText else detail.ifEmpty { "提交失败" }
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     if (ok) {
                         onDone()
@@ -1145,7 +1193,7 @@ class MainActivity : ComponentActivity() {
                             r2.onSuccess { xml2 ->
                                 dumpText("submit-rate", xml2)
                                 val (ok2, detail2) = judgeXml(xml2)
-                                val msg = if (ok2) "评分成功" else detail2.ifEmpty { "提交失败" }
+                                val msg = if (ok2) submitOkText else detail2.ifEmpty { "提交失败" }
                                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                                 if (ok2) {
                                     onDone()

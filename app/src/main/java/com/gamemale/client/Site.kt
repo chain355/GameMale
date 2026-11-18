@@ -42,6 +42,8 @@ sealed interface Block {
     data class Image(val url: String) : Block
     /** 正文里的内联超链接（点一下直接调浏览器） */
     data class Link(val text: String, val url: String) : Block
+    /** [spoiler] 折叠按钮块 */
+    data class Spoiler(val title: String, val blocks: List<Block>) : Block
     data object Break : Block
 }
 
@@ -554,6 +556,15 @@ object Site {
                     if (t.isNotEmpty()) out.add(Block.Text(t))
                 }
                 is Element -> when {
+                    node.hasClass("spoiler") -> {
+                        val title = node.selectFirst("input.spoilerbutton")?.attr("value")
+                            ?.takeIf { it.isNotBlank() } ?: "展开"
+                        val body = node.selectFirst(".spoilerbody")
+                        val inner = ArrayList<Block>()
+                        if (body != null) collectBlocks(body, inner)
+                        out.add(Block.Spoiler(title, inner))
+                        out.add(Block.Break)
+                    }
                     node.hasClass("tip") || node.hasClass("aimg_tip") -> {}
                     else -> when (node.tagName().lowercase()) {
                     "script", "style" -> {}
@@ -564,8 +575,8 @@ object Site {
                             .firstOrNull { it.startsWith("http") && !it.contains("none.gif") }
                             .orEmpty()
                         if (u.isNotEmpty() &&
-                            !u.contains("static/image/") &&
-                            u.contains("img.gamemale.com")
+                            !u.contains("/static/image/") &&
+                            !u.contains("static/image/common")
                         ) out.add(Block.Image(u))
                     }
                     "a" -> {
