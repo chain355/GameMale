@@ -563,16 +563,16 @@ fun AppUi(
                 val cur = currentUrl
                 NavButton(
                     icon = CouiIcons.Outlined.Album,
-                    label = "动漫",
+                    label = "和谐动漫",
                     active = cur.contains("fid=150"),
                     modifier = Modifier.width(66.dp)
-                ) { onQuickForum(ANIME_URL, "动漫") }
+                ) { onQuickForum(ANIME_URL, "和谐动漫") }
                 NavButton(
                     icon = CouiIcons.Filled.Gamepad,
-                    label = "游戏",
+                    label = "和谐游戏",
                     active = cur.contains("fid=152"),
                     modifier = Modifier.width(66.dp)
-                ) { onQuickForum(GAME_URL, "游戏") }
+                ) { onQuickForum(GAME_URL, "和谐游戏") }
                 }
             }
 
@@ -1717,13 +1717,23 @@ private fun SettingsView(
                 )
                 Spacer(Modifier.height(6.dp))
                 Txt(
-                    "底部导航两个按钮分别指向「和谐动漫」（fid=150）与「和谐游戏」（fid=152）板块。",
+                    "首页默认进入「和谐动漫」的兽人漫分类（fid=150 / typeid=831），「和谐游戏」默认进入兽人向游戏分类（fid=152 / typeid=737）。",
                     size = 12.sp,
                     color = colors.onSurfaceVariant,
                     lineHeight = 1.55f
                 )
                 Spacer(Modifier.height(10.dp))
                 Pill("访问站点", { onExternal("https://www.gamemale.com/") }, primary = false)
+                Spacer(Modifier.height(8.dp))
+                Pill("开源地址 · chain355/GameMale",
+                    { onExternal("https://github.com/chain355/GameMale") }, primary = true)
+                Spacer(Modifier.height(6.dp))
+                Txt(
+                    "github.com/chain355/GameMale",
+                    size = 12.sp,
+                    color = colors.accent,
+                    modifier = Modifier.clickable { onExternal("https://github.com/chain355/GameMale") }
+                )
             }
         }
     }

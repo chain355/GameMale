@@ -73,13 +73,36 @@ class Fetcher(private val ctx: Context) {
         runCatching { (web.parent as? FrameLayout)?.removeView(web) }
     }
 
+    // 只有一个 WebView，两个请求同时发会互相覆盖回调，导致“拿到的是另一个页面的内容”。
+    // 所有请求一律排队串行执行。
+    private val jobs = ArrayDeque<() -> Unit>()
+    private var running = false
+
+    private fun enqueue(start: () -> Unit) {
+        jobs.addLast(start)
+        if (!running) {
+            val next = jobs.removeFirstOrNull() ?: return
+            running = true
+            next()
+        }
+    }
+
+    private fun pump() {
+        if (running) return
+        val next = jobs.removeFirstOrNull() ?: return
+        running = true
+        next()
+    }
+
     fun fetch(url: String, cb: (Result<String>) -> Unit) {
-        callback = cb
-        currentUrl = url
-        done = false
-        attempt = 0
-        main.postDelayed({ if (!done) finish(Result.failure(IllegalStateException("超时"))) }, 30_000)
-        web.loadUrl(forceDesktop(url))
+        enqueue {
+            callback = cb
+            currentUrl = url
+            done = false
+            attempt = 0
+            main.postDelayed({ if (!done) finish(Result.failure(IllegalStateException("超时"))) }, 30_000)
+            web.loadUrl(forceDesktop(url))
+        }
     }
 
     /** 给站点加 mobile=no：不改 UA（避免 Cloudflare 判定机器人），只改模板偏好 */
@@ -108,6 +131,10 @@ class Fetcher(private val ctx: Context) {
             post(url, body, cb)
             return
         }
+        enqueue { doSubmitOnPage(url, body, cb) }
+    }
+
+    private fun doSubmitOnPage(url: String, body: String, cb: (Result<String>) -> Unit) {
         callback = cb
         currentUrl = url
         done = false
@@ -148,6 +175,10 @@ class Fetcher(private val ctx: Context) {
 
     /** 直接 POST 表单串（Content-Type 由 WebView 按 x-www-form-urlencoded 处理） */
     fun post(url: String, body: String, cb: (Result<String>) -> Unit) {
+        enqueue { doPost(url, body, cb) }
+    }
+
+    private fun doPost(url: String, body: String, cb: (Result<String>) -> Unit) {
         callback = cb
         currentUrl = url
         done = false
@@ -161,6 +192,10 @@ class Fetcher(private val ctx: Context) {
      * 比 postUrl 稳：Content-Type、Accept、Referer 都由浏览器按真实表单行为生成。
      */
     fun postForm(action: String, fields: List<Pair<String, String>>, cb: (Result<String>) -> Unit) {
+        enqueue { doPostForm(action, fields, cb) }
+    }
+
+    private fun doPostForm(action: String, fields: List<Pair<String, String>>, cb: (Result<String>) -> Unit) {
         callback = cb
         currentUrl = action
         done = false
@@ -239,6 +274,8 @@ class Fetcher(private val ctx: Context) {
         done = true
         val cb = callback
         callback = null
+        running = false
         cb?.invoke(result)
+        main.post { pump() }
     }
 }

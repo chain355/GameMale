@@ -216,7 +216,7 @@ class MainActivity : ComponentActivity() {
             nav = Nav.Thread(deep, "帖子")
             load(deep)
         } else {
-            nav = Nav.Forum(ANIME_URL, "动漫")
+            nav = Nav.Forum(ANIME_URL, "和谐动漫")
             load(ANIME_URL)
         }
     }
@@ -537,8 +537,9 @@ class MainActivity : ComponentActivity() {
             error = null
             return
         }
-        val keep = forumPage
-        forumPage = keep?.copy(threads = emptyList(), title = title)
+        // 只换标题，先保留上一屏的帖子，新数据到了再整体替换，动画期间不会白屏闪烁
+        forumPage = forumPage?.copy(title = title)
+        loadedForumUrl = null
         load(url)
     }
 
@@ -878,14 +879,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshLogin(html: String) {
-        loggedIn = Site.isLoggedIn(html)
-        if (loggedIn) {
-            loginName = Site.parseLoginName(html)
-            avatarUrl = Site.parseLoginAvatar(html)
-        } else {
-            loginName = null
-            avatarUrl = null
-        }
+        if (!Site.isLoggedIn(html)) return          // 页面没有登录信息时不动，避免把头像刷回默认
+        loggedIn = true
+        Site.parseLoginName(html)?.takeIf { it.isNotBlank() }?.let { loginName = it }
+        val newAvatar = Site.parseLoginAvatar(html)
+        if (!newAvatar.isNullOrBlank() && !newAvatar.contains("uid=0")) avatarUrl = newAvatar
     }
 
     private var prefetchToken = 0
@@ -928,10 +926,10 @@ class MainActivity : ComponentActivity() {
                 thumbQueue--
                 r.onSuccess { html ->
                     val tid = Regex("thread-(\\d+)").find(t.url)?.groupValues?.get(1)
-                    if (tid != null) {
-                        if (threadCache.size > 8) threadCache.remove(threadCache.keys.first())
-                        threadCache[tid] = html
-                    }
+                    // 内容必须属于这个 tid，否则说明拿到的是别的页面，直接丢弃
+                    if (tid == null || !html.contains("thread-$tid")) return@onSuccess
+                    if (threadCache.size > 8) threadCache.remove(threadCache.keys.first())
+                    threadCache[tid] = html
                     applyThumb(t, Site.parseFirstImages(html, 3))
                 }
             }
@@ -970,6 +968,7 @@ class MainActivity : ComponentActivity() {
                         if (token != prefetchToken) return@onSuccess
                         val imgs = Site.parseFirstImages(html, 3)
                         val tid = Regex("thread-(\\d+)").find(t.url)?.groupValues?.get(1)
+                        if (tid == null || !html.contains("thread-$tid")) { step(i + 1); return@onSuccess }
                         if (tid != null) {
                             if (threadCache.size > 8) threadCache.remove(threadCache.keys.first())
                             threadCache[tid] = html
