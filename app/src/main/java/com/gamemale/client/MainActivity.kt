@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
         fontScale = prefs.getFloat("fontScale", 1f)
         ImageStore.init(this)
         ThumbStore.init(this)
+        SnapshotStore.init(this)
         Diag.init(this)
         Diag.init(this)
         cache = ThreadCache(this)
@@ -182,6 +183,7 @@ class MainActivity : ComponentActivity() {
                         cache.clear()
                         threadCache.clear()
                         forumCache.clear()
+                        SnapshotStore.clear()
                         ThumbStore.clear()
                         refreshCacheStats()
                         toast("缓存已清除")
@@ -419,6 +421,13 @@ class MainActivity : ComponentActivity() {
         loading = true
         error = null
         Diag.log("load", "start nav=" + nav + " url=" + url)
+        if (nav is Nav.Forum && forumPage == null) {
+            val snap = forumCache[url] ?: SnapshotStore.get(url)
+            if (snap != null) {
+                Diag.log("load", "先用磁盘快照铺屏 threads=" + snap.threads.size)
+                forumPage = snap.copy(cats = mergeCats(emptyList(), snap.cats), title = (nav as Nav.Forum).title)
+            }
+        }
         if (nav is Nav.Forum && loadedForumUrl == url) retryCount = 0
         if (nav is Nav.Forum) {
             loadedForumUrl = url
@@ -518,6 +527,7 @@ class MainActivity : ComponentActivity() {
                                 Diag.log("load", "forum ok threads=" + fp.threads.size + " bytes=" + html.length + " url=" + url)
                                 forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
                                 forumCache[url] = forumPage!!
+                                SnapshotStore.put(url, forumPage!!)
                                 if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
                                 if (fp.threads.isEmpty()) {
                                     val tp = Site.parseThread(html)
@@ -629,7 +639,7 @@ class MainActivity : ComponentActivity() {
         if (!isTopLevel) backStack.add(nav)
         nav = Nav.Forum(url, title)
         threadPage = null
-        val cached = forumCache[url]
+        val cached = forumCache[url] ?: SnapshotStore.get(url)
         if (cached != null) {
             forumPage = cached
             loadedForumUrl = url
@@ -1038,6 +1048,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
     private var prefetchToken = 0
     private var loadedForumUrl: String? = null
     private var loadedForumTitle: String = ""
@@ -1139,7 +1151,7 @@ class MainActivity : ComponentActivity() {
         val targets = page.threads
             .filter { it.thumbs.isEmpty() && it.url.contains("thread-") }
             .filter { ThumbStore.get(it.tid).isEmpty() }
-            .take(12)
+            .take(8)
         if (targets.isEmpty()) return
         fun step(i: Int) {
             if (i >= targets.size || token != prefetchToken || nav !is Nav.Forum) return
@@ -1177,7 +1189,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        step(0)
+        // 列表先渲染出来，再开始抓预览图，别和首屏抢那一个 WebView
+        handler.postDelayed({ if (token == prefetchToken) step(0) }, 1200)
     }
 
     private fun mergeCats(prev: List<CatTab>, next: List<CatTab>): List<CatTab> {

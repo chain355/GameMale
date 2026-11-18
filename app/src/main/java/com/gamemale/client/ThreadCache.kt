@@ -216,3 +216,94 @@ class ThreadCache(ctx: Context) {
         saveIndex()
     }
 }
+
+/**
+ * 列表快照：把「版块/搜索结果列表」的结构（标题、tid、作者、时间、预览图地址）存到磁盘，
+ * 冷启动先拿它铺一屏，再静默刷新替换，避免每次启动都空等整页加载。
+ */
+object SnapshotStore {
+    private var dir: File? = null
+    private val mem = HashMap<String, ForumPage>()
+
+    fun init(ctx: Context) {
+        dir = File(ctx.applicationContext.filesDir, "lists").apply { mkdirs() }
+    }
+
+    private fun fileOf(url: String): File? {
+        val d = dir ?: return null
+        return File(d, Integer.toHexString(url.hashCode()) + ".json")
+    }
+
+    fun get(url: String): ForumPage? {
+        mem[url]?.let { return it }
+        val f = fileOf(url) ?: return null
+        if (!f.exists()) return null
+        return runCatching {
+            val o = JSONObject(f.readText())
+            if (o.optString("url") != url) return null
+            val arr = o.optJSONArray("threads") ?: return null
+            val threads = ArrayList<ThreadItem>()
+            for (i in 0 until arr.length()) {
+                val t = arr.getJSONObject(i)
+                val thumbs = ArrayList<String>()
+                t.optJSONArray("thumbs")?.let { ta ->
+                    for (j in 0 until ta.length()) thumbs.add(ta.getString(j))
+                }
+                threads.add(
+                    ThreadItem(
+                        tid = t.optString("tid"),
+                        title = t.optString("title"),
+                        url = t.optString("url"),
+                        typeName = t.optString("type").ifEmpty { null },
+                        author = t.optString("author"),
+                        date = t.optString("date"),
+                        replies = t.optString("replies"),
+                        views = t.optString("views"),
+                        sticky = t.optBoolean("sticky"),
+                        thumbs = thumbs
+                    )
+                )
+            }
+            if (threads.isEmpty()) return null
+            ForumPage(
+                title = o.optString("title"),
+                cats = emptyList(),
+                threads = threads,
+                pages = emptyList(),
+                pageNo = o.optInt("pageNo", 1),
+                pageCount = o.optInt("pageCount", 1)
+            ).also { mem[url] = it }
+        }.getOrNull()
+    }
+
+    fun put(url: String, page: ForumPage) {
+        if (page.threads.isEmpty()) return
+        mem[url] = page
+        val f = fileOf(url) ?: return
+        runCatching {
+            val arr = org.json.JSONArray()
+            for (t in page.threads.take(60)) {
+                arr.put(
+                    JSONObject()
+                        .put("tid", t.tid).put("title", t.title).put("url", t.url)
+                        .put("type", t.typeName ?: "").put("author", t.author)
+                        .put("date", t.date).put("replies", t.replies).put("views", t.views)
+                        .put("sticky", t.sticky)
+                        .put("thumbs", org.json.JSONArray(t.thumbs))
+                )
+            }
+            f.writeText(
+                JSONObject().put("url", url).put("title", page.title)
+                    .put("pageNo", page.pageNo).put("pageCount", page.pageCount)
+                    .put("threads", arr).toString()
+            )
+            // 最多留 8 个列表快照
+            dir?.listFiles()?.sortedByDescending { it.lastModified() }?.drop(8)?.forEach { it.delete() }
+        }
+    }
+
+    fun clear() {
+        mem.clear()
+        dir?.listFiles()?.forEach { it.delete() }
+    }
+}
