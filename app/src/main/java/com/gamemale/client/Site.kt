@@ -137,11 +137,25 @@ object Site {
     }
 
     /** 版块页：标题、主题分类、主题列表、分页 */
+    /** 去掉标题里附带的"今日/主题/排名"等站点统计，以及 - 站点名 后缀 */
+    private fun cleanForumTitle(raw: String?): String {
+        var t = (raw ?: "").trim()
+        for (mark in listOf(" 今日:", "今日:", " |主题", "|主题", " 排名", " -  Powered")) {
+            val i = t.indexOf(mark)
+            if (i > 0) t = t.substring(0, i)
+        }
+        return t.trim()
+    }
+
     fun parseForumPage(html: String): ForumPage {
         val doc = Jsoup.parse(html, SITE)
-        val title = doc.selectFirst("#pt .bm_h h1")?.text()
-            ?: doc.selectFirst(".bm_h h1")?.text()
-            ?: doc.title()
+        // 版块页标题后面会挂站点统计（"和谐动漫 今日: 556 |主题: 24173|排名: 1"），
+        // 翻页后这些数字也会变，这里只取版块名本身
+        val title = cleanForumTitle(
+            doc.selectFirst("#pt .bm_h h1")?.text()
+                ?: doc.selectFirst(".bm_h h1")?.text()
+                ?: doc.title()
+        )
 
         val cats = ArrayList<CatTab>()
         val seenCat = HashSet<String>()
