@@ -229,8 +229,10 @@ object Site {
                 for (a in content.select("a[href*=mod=attachment]")) {
                     // 图片附件（[attach]img[/attach]）不当作可下载文件，也不显示附件说明
                     if (a.selectFirst("img") != null) continue
+                    if (a.closest(".tip") != null) continue
                     val name = a.text().trim()
                     if (name.isEmpty() || name.length < 2) continue
+                    if (name == "下载附件" || name == "保存到相册") continue
                     val url = a.absUrl("href")
                     if (url.isNotBlank() && attachments.none { it.url == url }) {
                         attachments.add(AttachItem(name, url, "正文内附件", null))
@@ -463,25 +465,35 @@ object Site {
     }
 
     private fun pagination(doc: org.jsoup.nodes.Document): Triple<List<Pair<Int, String>>, Int, Int> {
-        val pgs = doc.select("#pgt .pg, .pgs .pg")
-        val out = ArrayList<Pair<Int, String>>()
+        val pgs = doc.select("#pgt .pg, .pgs .pg").distinct()
+        val parsed = LinkedHashMap<Int, String>()
         var pageNo = 1
         var pageCount = 1
         for (pg in pgs) {
             pg.selectFirst("strong")?.let { pageNo = it.text().trim().toIntOrNull() ?: pageNo }
             for (a in pg.select("a")) {
                 val n = a.text().trim().toIntOrNull() ?: continue
-                out.add(n to a.absUrl("href"))
+                if (!parsed.containsKey(n)) parsed[n] = a.absUrl("href")
             }
             Regex("共\\s*(\\d+)\\s*页").find(pg.text())?.let {
-                pageCount = it.groupValues[1].toIntOrNull() ?: pageCount
+                pageCount = pageCount.coerceAtLeast(it.groupValues[1].toIntOrNull() ?: pageCount)
             }
         }
-        if (pageCount == 1) {
-            val nums = out.map { it.first }.plus(pageNo)
-            if (nums.isNotEmpty()) pageCount = nums.max()
+        if (pageCount <= 1) pageCount = (parsed.keys + pageNo).max()
+        val sample = parsed.entries.firstOrNull()?.value.orEmpty()
+        val firstNo = parsed.keys.firstOrNull() ?: 0
+        val template = if (sample.isNotEmpty() && firstNo > 0)
+            sample.replaceFirst(Regex("-$firstNo-"), "-{p}-") else ""
+        val out = ArrayList<Pair<Int, String>>()
+        for (n in 1..pageCount) {
+            val url = parsed[n] ?: when {
+                template.isNotEmpty() -> template.replace("{p}", n.toString())
+                sample.isNotEmpty() -> "$sample&page=$n"
+                else -> ""
+            }
+            if (url.isNotEmpty()) out.add(n to url)
         }
-        return Triple(out, pageNo, pageCount)
+        return Triple(out, pageNo.coerceIn(1, pageCount), pageCount)
     }
 
     private fun collectBlocks(el: Element, out: MutableList<Block>) {
@@ -491,7 +503,9 @@ object Site {
                     val t = node.text().replace('\u00a0', ' ').trim()
                     if (t.isNotEmpty()) out.add(Block.Text(t))
                 }
-                is Element -> when (node.tagName().lowercase()) {
+                is Element -> when {
+                    node.hasClass("tip") || node.hasClass("aimg_tip") -> {}
+                    else -> when (node.tagName().lowercase()) {
                     "script", "style" -> {}
                     "br" -> out.add(Block.Break)
                     "img" -> {
@@ -521,6 +535,7 @@ object Site {
                         out.add(Block.Break)
                     }
                     else -> collectBlocks(node, out)
+                    }
                 }
                 else -> {}
             }

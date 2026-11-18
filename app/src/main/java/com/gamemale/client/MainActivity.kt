@@ -390,7 +390,29 @@ class MainActivity : ComponentActivity() {
         when (val n = nav) {
             is Nav.Home -> loadHome()
             is Nav.Forum -> load(n.url)
-            is Nav.Thread -> load(n.url)
+            is Nav.Thread -> {
+                // 评分/回复后刷新正文：失败时保留当前页面，不要变成“加载失败”
+                val keepThread = threadPage
+                fetcher.fetch(n.url) { r ->
+                    runOnUiThread {
+                        r.onSuccess { html ->
+                            lastHtml = html
+                            runCatching {
+                                refreshLogin(html)
+                                threadPage = Site.parseThread(html)
+                                error = null
+                            }.onFailure {
+                                threadPage = keepThread
+                                toast("刷新正文失败，页面仍可正常阅读")
+                            }
+                        }.onFailure {
+                            threadPage = keepThread
+                            toast("刷新正文失败，页面仍可正常阅读")
+                        }
+                        loading = false
+                    }
+                }
+            }
         }
     }
 
@@ -675,6 +697,7 @@ class MainActivity : ComponentActivity() {
     private fun cdataText(xml: String): String {
         Regex("<![CDATA[(.*?)]]>", setOf(RegexOption.DOT_MATCHES_ALL))
             .find(xml)?.groupValues?.get(1)
+            ?.replace(Regex("<script[^>]*>.*?</script>", setOf(RegexOption.DOT_MATCHES_ALL)), " ")
             ?.replace("<br />", " ")
             ?.replace(Regex("<[^>]+>"), "")
             ?.trim()?.takeIf { it.isNotBlank() }

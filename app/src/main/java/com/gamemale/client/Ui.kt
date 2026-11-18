@@ -525,7 +525,7 @@ fun AppUi(
             )
         }
         if (replyOpen) ReplyDialog(onCancelReply, onSendReply)
-        if (rateOpen) RateDialog(rateFields, onCancelRate, onSendRate)
+        if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) ImageDialog(imageUrl, onCloseImage)
     }
 }
@@ -1074,6 +1074,7 @@ private fun ReplyDialog(onCancel: () -> Unit, onSend: (String) -> Unit) {
 @Composable
 private fun RateDialog(
     fields: List<Triple<String, String, String>>,
+    submitting: Boolean,
     onCancel: () -> Unit,
     onSend: (String) -> Unit
 ) {
@@ -1120,10 +1121,23 @@ private fun RateDialog(
                 )
             }
             Spacer(Modifier.height(14.dp))
+            if (submitting) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MiniSpinner()
+                    Spacer(Modifier.width(10.dp))
+                    Txt("评分提交中…", size = 13.sp, color = colors.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
                 Pill("取消", onCancel, primary = false)
                 Spacer(Modifier.width(10.dp))
-                Pill("提交评分", { onSend(reason.trim()) }, primary = true)
+                Pill(if (submitting) "提交中…" else "提交评分", { if (!submitting) onSend(reason.trim()) }, primary = true)
             }
         }
     }
@@ -1262,6 +1276,26 @@ private fun NetImage(
             }
         }
     )
+}
+
+/** 小号转圈（弹窗内用） */
+@Composable
+private fun MiniSpinner(size: Dp = 20.dp, color: Color = CouiTheme.colorScheme.accent) {
+    val transition = rememberInfiniteTransition()
+    val angle by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing))
+    )
+    Canvas(Modifier.size(size)) {
+        drawArc(
+            color = color,
+            startAngle = angle,
+            sweepAngle = 260f,
+            useCenter = false,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f)
+        )
+    }
 }
 
 /** 变暗 + 居中转圈的加载遮罩 */
