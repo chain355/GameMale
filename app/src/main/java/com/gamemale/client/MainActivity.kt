@@ -660,7 +660,10 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 评分：先 GET 评分页拿 #rateform，再按用户理由 POST */
+    private var ratePid: String? = null
+
     private fun openRate(pid: String) {
+        ratePid = pid
         if (!loggedIn) {
             toast("当前会话没有登录，请先登录再评分")
             openLogin()
@@ -678,7 +681,30 @@ class MainActivity : ComponentActivity() {
     private fun tryRate(urls: List<String>, index: Int) {
         prefetchToken++
         if (index >= urls.size) {
-            openRateInWeb(urls[0])
+            // 评分页解析不到时，按本站真实表单结构直接拼一份可提交的表单（不再跳网页）
+            val tid = threadTid() ?: run { toast("拿不到帖子 ID"); return }
+            val pid = ratePid ?: run { toast("拿不到楼层 ID"); return }
+            val hash = Site.parseFormhash(lastHtml) ?: run {
+                toast("会话信息缺失（formhash），请重新登录后再试")
+                return
+            }
+            rateFormDef = FormDef(
+                SITE + "forum.php?mod=misc&action=rate&ratesubmit=yes&infloat=yes&handlekey=rate",
+                mutableListOf(
+                    "formhash" to hash,
+                    "tid" to tid,
+                    "pid" to pid,
+                    "referer" to (navUrl()),
+                    "handlekey" to "rate"
+                )
+            )
+            rateReasonName = "reason"
+            rateFields = listOf(
+                Triple("score3", "血液", "3"),
+                Triple("score4", "追随", "1"),
+                Triple("score8", "堕落", "1")
+            )
+            rateOpen = true
             return
         }
         busy = true
@@ -703,29 +729,6 @@ class MainActivity : ComponentActivity() {
                 }.onFailure { tryRate(urls, index + 1) }
             }
         }
-    }
-
-    /** 拿不到评分表单时的兜底：在 App 内弹网页让用户完成（至少功能不丢） */
-    private fun openRateInWeb(url: String) {
-        toast("改用应用内网页评分")
-        val web = WebView(this)
-        web.settings.javaScriptEnabled = true
-        web.settings.domStorageEnabled = true
-        web.webViewClient = WebViewClient()
-        web.loadUrl(url)
-        val dialog = Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar)
-        val container = FrameLayout(this)
-        container.addView(web, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        dialog.setContentView(container)
-        dialog.setOnDismissListener {
-            runCatching {
-                (web.parent as? ViewGroup)?.removeView(web)
-                web.destroy()
-            }
-            reload()
-        }
-        dialog.show()
     }
 
     private fun sendRate(reason: String) {
@@ -754,9 +757,10 @@ class MainActivity : ComponentActivity() {
                 busy = false
                 r.onSuccess { xml ->
                     dumpText("submit", xml)
-                    val msg = cdataText(xml)
+                    val ok = xml.contains("succeedhandle_") || isSuccess(cdataText(xml))
+                    val msg = if (xml.contains("succeedhandle_")) "提交成功" else cdataText(xml)
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-                    if (isSuccess(msg)) {
+                    if (ok) {
                         onDone()
                         reload()
                     } else {
