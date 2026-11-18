@@ -94,7 +94,16 @@ class Fetcher(private val ctx: Context) {
         next()
     }
 
+    /** 丢掉排队中的请求（刷新/换页时清掉积压的预览图抓取） */
+    fun dropPending() {
+        jobs.clear()
+    }
+
     fun fetch(url: String, cb: (Result<String>) -> Unit) {
+        if (running && jobs.size >= 5) {
+            cb(Result.failure(IllegalStateException("请求太密集，稍后再试")))
+            return
+        }
         enqueue {
             callback = cb
             currentUrl = url

@@ -166,8 +166,11 @@ class MainActivity : ComponentActivity() {
                         refreshCacheStats()
                     },
                     onClearCache = {
+                        prefetchToken++
+                        fetcher.dropPending()
                         cache.clear()
                         threadCache.clear()
+                        forumCache.clear()
                         ThumbStore.clear()
                         refreshCacheStats()
                         toast("缓存已清除")
@@ -670,6 +673,12 @@ class MainActivity : ComponentActivity() {
         val url = loadedForumUrl ?: return
         if (refreshing) return
         refreshing = true
+        prefetchToken++          // 停掉这一轮的预览图预取
+        fetcher.dropPending()     // 清掉积压请求，别让刷新排在它们后面超时
+        fetchForumForRefresh(url, attempt = 0)
+    }
+
+    private fun fetchForumForRefresh(url: String, attempt: Int) {
         fetcher.fetch(url) { r ->
             runOnUiThread {
                 r.onSuccess { html ->
@@ -691,8 +700,15 @@ class MainActivity : ComponentActivity() {
                         prefetchToken++
                         prefetchThumbs(merged)
                     }.onFailure { toast("刷新失败，列表保持不变") }
-                }.onFailure { toast("刷新失败，列表保持不变") }
-                refreshing = false
+                }.onFailure {
+                    if (attempt < 1) {
+                        fetchForumForRefresh(url, attempt + 1)
+                        return@onFailure
+                    }
+                    refreshing = false
+                    toast("刷新失败，列表保持不变")
+                }
+                if (r.isSuccess) refreshing = false
             }
         }
     }
@@ -886,6 +902,16 @@ class MainActivity : ComponentActivity() {
         if (!newAvatar.isNullOrBlank() && !newAvatar.contains("uid=0")) avatarUrl = newAvatar
     }
 
+    /** jsoup 解析一律放到后台单线程：650KB 级页面在主线程解析很容易 OOM */
+    private val parsePool = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    private fun <T> bgParse(work: () -> T, done: (Result<T>) -> Unit) {
+        parsePool.execute {
+            val r = runCatching(work)
+            runOnUiThread { done(r) }
+        }
+    }
+
     private var prefetchToken = 0
     private var loadedForumUrl: String? = null
     private var loadedThreadUrl: String? = null
@@ -893,8 +919,28 @@ class MainActivity : ComponentActivity() {
     private var searchOpen by mutableStateOf(false)
     private var backProgress by mutableStateOf(0f)
     private var searchHistory by mutableStateOf<List<String>>(emptyList())
-    /** tid -> 已抓到的帖子 HTML（预取时顺手存下，再次打开直接用） */
-    private val threadCache = LinkedHashMap<String, String>()
+    /** tid -> 已抓到的帖子 HTML（预取时顺手存下），按总体积限制，避免把堆吃满 */
+    private val threadCache = object : LinkedHashMap<String, String>() {
+        override fun put(key: String, value: String): String? {
+            val old = super.put(key, value)
+            trimToBytes(3 * 1024 * 1024)
+            return old
+        }
+    }
+
+    private fun trimToBytes(max: Long) {
+        var total = threadCache.values.sumOf { it.length.toLong() }
+        while (total > max && threadCache.isNotEmpty()) {
+            val firstKey = threadCache.keys.first()
+            total -= (threadCache[firstKey]?.length ?: 0)
+            threadCache.remove(firstKey)
+        }
+    }
+
+    private fun rememberThreadHtml(tid: String, html: String) {
+        if (html.length > 900_000) return
+        threadCache[tid] = html
+    }
     /** url -> 已加载好的列表页（回退时不重载，搜索页也各存各的） */
     private val forumCache = LinkedHashMap<String, ForumPage>()
     private var rateSourceHtml: String? = null
@@ -908,13 +954,23 @@ class MainActivity : ComponentActivity() {
             applyThumb(t, saved)
             return
         }
-        val local = cache.read(t.tid)?.first ?: threadCache[t.tid]
-        if (local != null) {
-            applyThumb(t, Site.parseFirstImages(local, 3))
-            return
+        if (thumbBusy) return
+        thumbBusy = true
+        bgParse({
+            val local = cache.read(t.tid)?.first ?: threadCache[t.tid]
+            if (local != null) Site.parseFirstImages(local, 3) else null
+        }) { r ->
+            thumbBusy = false
+            val imgs = r.getOrNull()
+            if (imgs != null) {
+                applyThumb(t, imgs)
+            } else {
+                fetchThumb(t)
+            }
         }
-        fetchThumb(t)
     }
+
+    private var thumbBusy = false
 
     private var thumbQueue = 0
 
@@ -928,9 +984,12 @@ class MainActivity : ComponentActivity() {
                     val tid = Regex("thread-(\\d+)").find(t.url)?.groupValues?.get(1)
                     // 内容必须属于这个 tid，否则说明拿到的是别的页面，直接丢弃
                     if (tid == null || !html.contains("thread-$tid")) return@onSuccess
-                    if (threadCache.size > 8) threadCache.remove(threadCache.keys.first())
-                    threadCache[tid] = html
-                    applyThumb(t, Site.parseFirstImages(html, 3))
+                    bgParse({ Site.parseFirstImages(html, 3) }) { pr ->
+                        pr.getOrNull()?.takeIf { it.isNotEmpty() }?.let { imgs ->
+                            rememberThreadHtml(tid, html)
+                            applyThumb(t, imgs)
+                        }
+                    }
                 }
             }
         }
@@ -952,38 +1011,41 @@ class MainActivity : ComponentActivity() {
         val targets = page.threads
             .filter { it.thumbs.isEmpty() && it.url.contains("thread-") }
             .filter { ThumbStore.get(it.tid).isEmpty() }
+            .take(12)
         if (targets.isEmpty()) return
         fun step(i: Int) {
             if (i >= targets.size || token != prefetchToken || nav !is Nav.Forum) return
             val t = targets[i]
             val local = cache.read(t.tid)?.first ?: threadCache[t.tid]
             if (local != null) {
-                applyThumb(t, Site.parseFirstImages(local, 3))
-                step(i + 1)
+                bgParse({ Site.parseFirstImages(local, 3) }) { pr ->
+                    pr.getOrNull()?.let { applyThumb(t, it) }
+                    step(i + 1)
+                }
                 return
             }
             fetcher.fetch(t.url) { r ->
                 runOnUiThread {
                     r.onSuccess { html ->
                         if (token != prefetchToken) return@onSuccess
-                        val imgs = Site.parseFirstImages(html, 3)
                         val tid = Regex("thread-(\\d+)").find(t.url)?.groupValues?.get(1)
                         if (tid == null || !html.contains("thread-$tid")) { step(i + 1); return@onSuccess }
-                        if (tid != null) {
-                            if (threadCache.size > 8) threadCache.remove(threadCache.keys.first())
-                            threadCache[tid] = html
-                        }
-                        val cur = forumPage
-                        if (imgs.isNotEmpty() && cur != null) {
-                            val updated = cur.copy(threads = cur.threads.map { item ->
-                                if (item.tid == t.tid) item.copy(thumbs = imgs) else item
-                            })
-                            forumPage = updated
-                            // 预览图也要写回缓存，否则从帖子返回搜索结果时又会丢
-                            loadedForumUrl?.let { forumCache[it] = updated }
+                        bgParse({ Site.parseFirstImages(html, 3) }) { pr ->
+                            rememberThreadHtml(tid, html)
+                            pr.getOrNull()?.takeIf { it.isNotEmpty() }?.let { thumbs ->
+                                ThumbStore.put(t.tid, thumbs)
+                                val cur = forumPage
+                                if (cur != null) {
+                                    val updated = cur.copy(threads = cur.threads.map { item ->
+                                        if (item.tid == t.tid) item.copy(thumbs = thumbs) else item
+                                    })
+                                    forumPage = updated
+                                    loadedForumUrl?.let { forumCache[it] = updated }
+                                }
+                            }
+                            step(i + 1)
                         }
                     }
-                    step(i + 1)
                 }
             }
         }
