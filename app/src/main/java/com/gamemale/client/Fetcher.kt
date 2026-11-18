@@ -69,8 +69,27 @@ class Fetcher(private val ctx: Context) {
                 )
             }
 
+            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                if (done) return
+                Diag.log("fetch", "开始 " + url)
+            }
+
+            /**
+             * 主文档一到就先试着取 HTML：Discuz 的正文/列表其实早就在 DOM 里了，
+             * 没必要等那些被拦掉的长尾资源把 onPageFinished 拖到十几秒。
+             */
+            override fun onPageCommitVisible(view: WebView, url: String?) {
+                if (done || currentUrl == null) return
+                if (!matchesRequest(url)) return
+                val g = gen
+                main.postDelayed({
+                    if (!done && g == gen && matchesRequest(view.url)) extract(early = true)
+                }, 120)
+            }
+
             override fun onPageFinished(view: WebView, url: String?) {
                 if (done) return
+                Diag.log("fetch", "finish 事件 " + url)
                 if (url == null || currentUrl == null) return
                 if (!matchesRequest(url)) return
                 main.postDelayed({
@@ -300,7 +319,7 @@ class Fetcher(private val ctx: Context) {
         return ha != null && ha.equals(hb, ignoreCase = true)
     }
 
-    private fun extract() {
+    private fun extract(early: Boolean = false) {
         val g = gen
         web.evaluateJavascript("(function(){return document.documentElement.outerHTML;})()") { value ->
             if (done || g != gen) return@evaluateJavascript
@@ -308,11 +327,20 @@ class Fetcher(private val ctx: Context) {
                 (JSONTokener(value).nextValue() as? String) ?: ""
             }.getOrDefault("")
             val tid = currentUrl?.let { Regex("thread-(\\d+)").find(it)?.groupValues?.get(1) }
+            val looksComplete = html.contains("id=\"postlist\"") ||
+                html.contains("id=\"threadlist\"") || html.contains("normalthread_")
             when {
-                html.isBlank() -> retryOrFail("页面为空")
-                isChallenge(html) -> retryOrFail("遇到 Cloudflare 验证")
-                tid != null && !html.contains("thread-$tid") -> retryOrFail("拿到的不是目标帖子")
-                else -> finish(Result.success(html))
+                html.isBlank() -> if (early) return@evaluateJavascript else retryOrFail("页面为空")
+                isChallenge(html) -> if (early) return@evaluateJavascript
+                    else retryOrFail("遇到 Cloudflare 验证")
+                tid != null && !html.contains("thread-$tid") ->
+                    if (early) return@evaluateJavascript else retryOrFail("拿到的不是目标帖子")
+                // 提前取到的可能只是半截 DOM，没看到正文容器就等 onPageFinished 再取
+                early && (html.length < 40_000 || !looksComplete) -> return@evaluateJavascript
+                else -> {
+                    if (early) Diag.log("fetch", "提前取到 bytes=" + html.length)
+                    finish(Result.success(html))
+                }
             }
         }
     }

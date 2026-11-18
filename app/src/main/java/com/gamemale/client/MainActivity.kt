@@ -457,27 +457,8 @@ class MainActivity : ComponentActivity() {
                                     Diag.log("load", "丢弃过期帖子响应 url=" + url)
                                     return@onSuccess
                                 }
-                                val tp = Site.parseThread(html)
-                                Diag.log("thread", "posts=" + tp.posts.size + " bytes=" + html.length + " url=" + url)
-                                if (tp.posts.isEmpty()) {
-                                    dumpText("thread-empty", html)
-                                    val canonical = canonicalThreadUrl(url)
-                                    if (retryCount < 1 && canonical != url) {
-                                        retryCount++
-                                        Diag.log("thread", "正文为空，改用规范地址重试 " + canonical)
-                                        nav = Nav.Thread(canonical, tp.subject)
-                                        load(canonical)
-                                        return@onSuccess
-                                    }
-                                }
-                                threadPage = tp
-                                loadedThreadUrl = url
-                                prefetchThreadImages(tp)
-                                val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
-                                if (tid != null) {
-                                    cache.save(tid, tp.subject, tp.lastEdit, html)
-                                    refreshCacheStats()
-                                }
+                                // 650KB 页面的 jsoup 解析和落盘都放后台，UI 先把已有内容铺出来
+                                applyThreadHtml(html, url)
                             }
                             is Nav.Forum -> {
                                 if ((nav as Nav.Forum).url != url) {
@@ -1083,6 +1064,45 @@ class MainActivity : ComponentActivity() {
 
     /** jsoup 解析一律放到后台单线程：650KB 级页面在主线程解析很容易 OOM */
     private val parsePool = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /** 帖子页：后台解析 + 后台落盘，只在最后一刻回主线程更新界面 */
+    private fun applyThreadHtml(html: String, url: String) {
+        val t0 = System.currentTimeMillis()
+        bgParse({ Site.parseThread(html) }) { res ->
+            val tp = res.getOrNull()
+            if (tp == null) {
+                Diag.log("thread", "解析失败 " + (res.exceptionOrNull()?.message ?: ""))
+                error = "解析失败：" + (res.exceptionOrNull()?.message ?: "未知")
+                loading = false
+                return@bgParse
+            }
+            if ((nav as? Nav.Thread)?.url != url) {
+                Diag.log("load", "丢弃过期帖子结果 url=" + url)
+                return@bgParse
+            }
+            Diag.log("thread", "posts=" + tp.posts.size + " bytes=" + html.length +
+                " 解析耗时=" + (System.currentTimeMillis() - t0) + "ms")
+            if (tp.posts.isEmpty()) {
+                dumpText("thread-empty", html)
+                val canonical = canonicalThreadUrl(url)
+                if (retryCount < 1 && canonical != url) {
+                    retryCount++
+                    Diag.log("thread", "正文为空，改用规范地址重试 " + canonical)
+                    nav = Nav.Thread(canonical, tp.subject)
+                    load(canonical)
+                    return@bgParse
+                }
+            }
+            threadPage = tp
+            loadedThreadUrl = url
+            refreshing = false
+            prefetchThreadImages(tp)
+            val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
+            if (tid != null) {
+                bgParse({ cache.save(tid, tp.subject, tp.lastEdit, html); true }) { refreshCacheStats() }
+            }
+        }
+    }
 
     private fun <T> bgParse(work: () -> T, done: (Result<T>) -> Unit) {
         parsePool.execute {

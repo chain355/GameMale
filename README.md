@@ -86,6 +86,10 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 **3.0-M32（vc51）**
 - 帖子页顶栏：刷新改为圆形图标按钮，新增「用浏览器打开」圆形按钮（调系统默认浏览器打开帖子链接）
 
+**3.0-M38（vc57）**
+- WebView 主文档一提交（`onPageCommitVisible`）就先尝试抽 HTML，够完整就直接用，不再死等 `onPageFinished`；日志会打「提前取到」和「finish 事件」对比耗时
+- 帖子页的 jsoup 解析与落盘移到后台单线程，正文不再被主线程解析卡住
+
 **3.0-M37（vc56）**
 - 清单补 `<queries>`（Android 11+ 包可见性），「用浏览器打开」才能真正枚举到 Via / FV 等浏览器
 - 取数时拦截图片/CSS/字体/媒体请求，只留 HTML，整页抓取从 6~8 秒降到 1~2 秒左右，冷启动静默刷新明显变快
