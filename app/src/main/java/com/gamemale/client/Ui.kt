@@ -51,7 +51,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -654,7 +654,7 @@ fun AppUi(
                 Column(Modifier.fillMaxSize().imePadding()) {
                     Row(
                         Modifier.fillMaxWidth()
-                            .windowInsetsPadding(WindowInsets.safeDrawing)
+                            .windowInsetsPadding(WindowInsets.systemBars)
                             .height(56.dp)
                             .padding(horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -707,7 +707,7 @@ fun AppUi(
                 Column(Modifier.fillMaxSize()) {
                     Row(
                         Modifier.fillMaxWidth()
-                            .windowInsetsPadding(WindowInsets.safeDrawing)
+                            .windowInsetsPadding(WindowInsets.systemBars)
                             .height(56.dp)
                             .padding(horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -752,7 +752,7 @@ fun AppUi(
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(end = 18.dp, bottom = if (showBottomBar) 92.dp else 22.dp)
                     .size(56.dp)
                     .clip(CircleShape)
@@ -775,7 +775,7 @@ fun AppUi(
             Box(
                 Modifier
                     .align(Alignment.BottomStart)
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(start = 14.dp, bottom = 10.dp)
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
@@ -819,7 +819,7 @@ fun AppUi(
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(end = 16.dp, bottom = 10.dp)
                     .size(56.dp)
                     .clip(CircleShape)
@@ -890,7 +890,7 @@ private fun TopBar(
         Modifier
             .fillMaxWidth()
             .background(colors.background)
-            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .windowInsetsPadding(WindowInsets.systemBars)
     ) {
         Row(
             Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
@@ -969,7 +969,7 @@ private fun AvatarMenu(
             exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .windowInsetsPadding(WindowInsets.systemBars)
                 .padding(top = 52.dp, end = 12.dp)
         ) {
             Column(
