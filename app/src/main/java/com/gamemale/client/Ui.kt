@@ -146,6 +146,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.scale
 import com.itos.coui.backdrop.rememberCouiBackdrop
 import com.itos.coui.backdrop.couiBackdrop
 import com.itos.coui.backdrop.drawCouiBackdrop
@@ -642,6 +643,14 @@ fun AppUi(
     val zoomProg = remember { Animatable(1f) }
     var zoomRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var zoomBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var zoomLayer by remember { mutableStateOf<androidx.compose.ui.graphics.layer.GraphicsLayer?>(null) }
+    var zoomSrc by remember { mutableStateOf(androidx.compose.ui.geometry.Size.Zero) }
+    val screenWpx = with(LocalDensity.current) {
+        androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx()
+    }
+    val screenHpx = with(LocalDensity.current) {
+        androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx()
+    }
     var zoomMode by remember { mutableStateOf(1) }
     var threadOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var prevNavZoom by remember { mutableStateOf<Nav>(nav) }
@@ -664,12 +673,14 @@ fun AppUi(
     LaunchedEffect(nav) {
         val from = prevNavZoom
         prevNavZoom = nav
-        if (nav is Nav.Thread && from !is Nav.Thread) {
+        if (nav is Nav.Thread && (from is Nav.Forum || from is Nav.History || from == Nav.Home)) {
             val r = CardZoom.origin
             if (r != null && r.width > 1f && r.height > 1f) {
                 threadOrigin = r
                 zoomRect = r
                 zoomBitmap = CardZoom.bitmap
+                zoomLayer = CardZoom.layer
+                zoomSrc = androidx.compose.ui.geometry.Size(r.width, r.height)
                 zoomMode = 1
                 zoomProg.snapTo(0f)
                 zoomProg.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
@@ -681,6 +692,8 @@ fun AppUi(
             if (r != null) {
                 zoomRect = r
                 zoomBitmap = runCatching { pageGl.toImageBitmap() }.getOrNull()
+                zoomLayer = pageGl
+                zoomSrc = androidx.compose.ui.geometry.Size(screenWpx, screenHpx)
                 zoomMode = -1
                 zoomProg.snapTo(1f)
                 zoomProg.animateTo(0f, tween(500, easing = FastOutSlowInEasing))
@@ -960,18 +973,27 @@ fun AppUi(
                 }
             }
             val shape = RoundedCornerShape(corner.dp)
-            val bmp = zoomBitmap
-            if (bmp != null) {
-                androidx.compose.foundation.Image(
-                    bitmap = bmp,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
+            val layer = zoomLayer
+            if (layer != null && zoomSrc.width > 1f && zoomSrc.height > 1f) {
+                // 直接绘制录好的图层，等比铺满目标矩形，不做非等比拉伸
+                Box(
+                    Modifier
                         .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
                         .size(with(density) { w.toDp() }, with(density) { h.toDp() })
                         .clip(shape)
                         .alpha(alpha)
-                )
+                ) {
+                    androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+                        val k = maxOf(w / zoomSrc.width, h / zoomSrc.height)
+                        val dx = (w - zoomSrc.width * k) / 2f
+                        val dy = (h - zoomSrc.height * k) / 2f
+                        translate(dx, dy) {
+                            scale(k, k, pivot = androidx.compose.ui.geometry.Offset.Zero) {
+                                drawLayer(layer)
+                            }
+                        }
+                    }
+                }
             } else {
                 Box(
                     Modifier
@@ -1116,9 +1138,7 @@ fun AppUi(
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) {
             val allImages = remember(threadPage) {
-                threadPage?.posts?.flatMap { p ->
-                    p.blocks.mapNotNull { (it as? Block.Image)?.url }
-                }?.distinct().orEmpty()
+                threadPage?.posts?.flatMap { p -> collectImageUrls(p.blocks) }?.distinct().orEmpty()
             }
             ImageDialog(allImages, imageUrl, onCloseImage)
         }
@@ -1177,9 +1197,9 @@ private fun TopBar(
                         .drawCouiBackdrop(
                             backdrop,
                             shape = { RectangleShape },
-                            effects = { blur(44f, TileMode.Clamp) },
+                            effects = { blur(32f, TileMode.Clamp) },
                             onDrawSurface = {
-                                drawRect(colors.background.copy(alpha = 0.42f))
+                                drawRect(colors.background.copy(alpha = 0.22f))
                             }
                         )
                 )
@@ -1554,6 +1574,7 @@ private fun ErrorView(
 object CardZoom {
     var origin: androidx.compose.ui.geometry.Rect? = null
     var bitmap: androidx.compose.ui.graphics.ImageBitmap? = null
+    var layer: androidx.compose.ui.graphics.layer.GraphicsLayer? = null
 }
 
 private data class ZoomScopes(
@@ -1649,6 +1670,7 @@ private fun CardBox(
                         val act = onClick
                         if (act != null) {
                             CardZoom.origin = rectRoot
+                            CardZoom.layer = gl
                             cardScope.launch {
                                 CardZoom.bitmap = runCatching { gl.toImageBitmap() }.getOrNull()
                                 act()
@@ -2417,6 +2439,14 @@ private fun SpoilerBox(spoiler: Block.Spoiler, onImage: (String) -> Unit, onExte
                 }
             }
         }
+    }
+}
+
+private fun collectImageUrls(blocks: List<Block>): List<String> = blocks.flatMap { b ->
+    when (b) {
+        is Block.Image -> listOf(b.url)
+        is Block.Spoiler -> collectImageUrls(b.blocks)
+        else -> emptyList()
     }
 }
 
