@@ -484,13 +484,28 @@ fun AppUi(
     }
     var searchOpen by remember { mutableStateOf(false) }
     var topMenuOpen by remember { mutableStateOf(false) }
+    // 菜单项：未登录先给「登录」；分享/浏览器/刷新只在帖子页；设置始终有
+    val topMenuItems = buildList {
+        if (avatarUrl.isNullOrBlank()) add(Triple("登录", 4) { onLogin() })
+        if (nav is Nav.Thread) add(Triple("分享", 0) { onShare() })
+        if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
+        if (nav is Nav.Thread) add(Triple("刷新", 2) { onRefreshThread() })
+        add(Triple("设置", 3) { onSettings() })
+    }
     // 切换页面/弹窗时自动收起菜单
     LaunchedEffect(nav, loginPage, verifyPage, accountsOpen) { topMenuOpen = false }
     Box(Modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize()) {
             TopBar(
                 menuOpen = topMenuOpen,
-                onToggleMenu = { topMenuOpen = !topMenuOpen },
+                onToggleMenu = {
+                    // 只有一项时没必要展开菜单，直接执行
+                    if (topMenuItems.size == 1 && topMenuOpen.not()) {
+                        topMenuItems.first().third()
+                    } else {
+                        topMenuOpen = !topMenuOpen
+                    }
+                },
                 loginName = loginName,
                 canShare = nav is Nav.Thread,
                 canRefresh = nav is Nav.Thread,
@@ -628,7 +643,7 @@ fun AppUi(
                 onDismissRequest = onLoginClose,
                 properties = androidx.compose.ui.window.DialogProperties(
                     usePlatformDefaultWidth = false,
-                    decorFitsSystemWindows = false
+                    decorFitsSystemWindows = true
                 )
             ) {
             Box(Modifier.fillMaxSize().background(colors.background)) {
@@ -770,13 +785,7 @@ fun AppUi(
         }
         AvatarMenu(
             visible = topMenuOpen,
-            items = buildList {
-                if (avatarUrl.isNullOrBlank()) add(Triple("登录", 4) { topMenuOpen = false; onLogin() })
-                if (nav is Nav.Thread) add(Triple("分享", 0) { topMenuOpen = false; onShare() })
-                if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { topMenuOpen = false; onOpenBrowser() })
-                if (nav is Nav.Thread) add(Triple("刷新", 2) { topMenuOpen = false; onRefreshThread() })
-                add(Triple("设置", 3) { topMenuOpen = false; onSettings() })
-            },
+            items = topMenuItems,
             onDismiss = { topMenuOpen = false }
         )
         if (accountsOpen) AccountDialog(
@@ -871,20 +880,28 @@ private fun AvatarMenu(
     items: List<Triple<String, Int, () -> Unit>>,
     onDismiss: () -> Unit
 ) {
-    if (!visible) return
     val colors = CouiTheme.colorScheme
     Box(Modifier.fillMaxSize()) {
         // 透明遮罩：点空白收起
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.001f))
-                .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { onDismiss() }
-        )
         AnimatedVisibility(
-            visible = true,
+            visible = visible,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(140))
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.001f))
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null
+                    ) { onDismiss() }
+            )
+        }
+        AnimatedVisibility(
+            visible = visible,
             enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
-            exit = fadeOut(tween(60)),
+            exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
