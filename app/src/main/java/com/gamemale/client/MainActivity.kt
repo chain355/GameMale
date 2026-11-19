@@ -712,7 +712,14 @@ class MainActivity : ComponentActivity() {
                                 refreshLogin(html)
                                 threadPage = Site.parseThread(html)
                                 threadPage?.let { tp ->
-                                    tidOf(n.url)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, tp.subject, n.url) }
+                                    tidOf(n.url)?.toLongOrNull()?.let { tid ->
+                                        history = HistoryStore.record(this, tid, tp.subject, n.url)
+                                        // 顺手把这篇帖子的首图记成它的预览图，浏览记录/列表都能用
+                                        val imgs = tp.posts.flatMap { p ->
+                                            p.blocks.mapNotNull { (it as? Block.Image)?.url }
+                                        }.distinct()
+                                        if (imgs.isNotEmpty()) ThumbStore.put(tid.toString(), imgs.take(3))
+                                    }
                                 }
                                 error = null
                             }.onFailure {

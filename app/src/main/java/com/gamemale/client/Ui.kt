@@ -1301,43 +1301,31 @@ private fun HistoryView(
             }
         }
         items(history, key = { it.tid }) { e ->
-            // 预览图只从本地库里取（ThumbStore 记录首图地址，ImageStore 存字节），不联网
-            val thumb = remember(e.tid) {
-                ThumbStore.get(e.tid.toString()).firstOrNull()?.let { url ->
-                    ImageStore.local(url)?.let { url to it }
-                }
+            // 预览图优先用本地字节（ImageStore），没有本地文件才退回地址，由 Coil 读它自己的磁盘缓存
+            val thumbs = remember(e.tid) {
+                ThumbStore.get(e.tid.toString()).take(3).map { url -> ImageStore.local(url) ?: url }
             }
-            Row(
+            Column(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(colors.card)
                     .lightPress { onOpen(e.url, e.title) }
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
             ) {
-                Column(Modifier.weight(1f)) {
-                    Txt(
-                        e.title.ifBlank { "帖子 " + e.tid },
-                        size = 15.sp,
-                        weight = FontWeight.SemiBold,
-                        color = colors.onSurface,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
-                }
-                if (thumb != null) {
-                    Spacer(Modifier.width(12.dp))
-                    AsyncImage(
-                        model = thumb.second,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(84.dp, 62.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                    )
+                Txt(
+                    e.title.ifBlank { "帖子 " + e.tid },
+                    size = 15.sp,
+                    weight = FontWeight.SemiBold,
+                    color = colors.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(6.dp))
+                Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
+                if (thumbs.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    ThumbsGrid(thumbs, {})
                 }
             }
         }
@@ -1502,7 +1490,7 @@ private fun ForumView(
 }
 
 @Composable
-private fun ThumbsGrid(thumbs: List<String>, onImage: (String) -> Unit) {
+private fun ThumbsGrid(thumbs: List<Any>, onImage: ((String) -> Unit)? = null) {
     val items9 = thumbs.take(9)
     val shape = RoundedCornerShape(10.dp)
     when {
@@ -1512,7 +1500,7 @@ private fun ThumbsGrid(thumbs: List<String>, onImage: (String) -> Unit) {
                 .fillMaxWidth()
                 .height(180.dp)
                 .clip(shape),
-            onClick = { onImage(items9[0]) },
+            onClick = (items9[0] as? String)?.let { u -> { onImage?.invoke(u) } },
             crop = true
         )
         items9.size <= 3 -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1523,7 +1511,7 @@ private fun ThumbsGrid(thumbs: List<String>, onImage: (String) -> Unit) {
                         .weight(1f)
                         .height(104.dp)
                         .clip(shape),
-                    onClick = { onImage(u) },
+                    onClick = (u as? String)?.let { s0 -> { onImage?.invoke(s0) } },
                     crop = true
                 )
             }
@@ -1538,7 +1526,7 @@ private fun ThumbsGrid(thumbs: List<String>, onImage: (String) -> Unit) {
                                 .weight(1f)
                                 .height(96.dp)
                                 .clip(shape),
-                            onClick = { onImage(u) },
+                            onClick = (u as? String)?.let { s0 -> { onImage?.invoke(s0) } },
                             crop = true
                         )
                     }
@@ -1997,7 +1985,7 @@ private fun buildParagraphs(blocks: List<Block>): List<Block> {
 /** 带明显兜底的网络图片：加载中显示占位，成功后自动替换成原图，失败显示可点提示 */
 @Composable
 private fun NetImage(
-    url: String,
+    url: Any,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     crop: Boolean = false
@@ -2005,6 +1993,21 @@ private fun NetImage(
     val colors = CouiTheme.colorScheme
     SubcomposeAsyncImage(
         model = url,
+        onSuccess = { st ->
+            // 远程图加载成功后把字节写进 ImageStore，浏览记录等页面以后就能纯本地读
+            if (url is String) {
+                val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                if (bmp != null) {
+                    Thread {
+                        runCatching {
+                            val bos = java.io.ByteArrayOutputStream()
+                            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, bos)
+                            ImageStore.save(url, bos.toByteArray())
+                        }
+                    }.start()
+                }
+            }
+        },
         contentDescription = null,
         contentScale = if (crop) ContentScale.Crop else ContentScale.FillWidth,
         modifier = modifier.then(
