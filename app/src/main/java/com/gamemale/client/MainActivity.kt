@@ -246,6 +246,8 @@ class MainActivity : ComponentActivity() {
                     onClearHistory = { history = HistoryStore.clear(this) },
                     historySelectionCount = historySelectionCount,
                     onHistorySelectionCount = { historySelectionCount = it },
+                    historySelecting = historySelecting,
+                    onHistorySelecting = { historySelecting = it },
                     onDeleteHistory = { tids ->
                         history = HistoryStore.removeMany(this, tids)
                         toast("已删除 " + tids.size + " 条浏览记录")
@@ -1359,6 +1361,7 @@ class MainActivity : ComponentActivity() {
     private var history by mutableStateOf<List<HistoryStore.Entry>>(emptyList())
     /** 浏览记录选择模式下已选中的条数（显示在顶栏标题） */
     private var historySelectionCount by mutableStateOf(0)
+    private var historySelecting by mutableStateOf(false)
     private var currentAccountId: String? = null
     private var accountsOpen by mutableStateOf(false)
     private var pendingCookie: String? = null

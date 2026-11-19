@@ -3,6 +3,7 @@ package com.gamemale.client
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -68,6 +69,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -455,6 +459,8 @@ fun AppUi(
     onShare: () -> Unit,
     onCopyLink: () -> Unit = {},
     historySelectionCount: Int = 0,
+    historySelecting: Boolean = false,
+    onHistorySelecting: (Boolean) -> Unit = {},
     onHistorySelectionCount: (Int) -> Unit = {},
     onDeleteHistory: (List<Long>) -> Unit = {},
     onReply: () -> Unit,
@@ -544,7 +550,7 @@ fun AppUi(
     var topMenuOpen by remember { mutableStateOf(false) }
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
-    val inHistorySelection = nav is Nav.History && historySelectionCount > 0
+    val inHistorySelection = nav is Nav.History && historySelecting
     if (inHistorySelection) {
         androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
     }
@@ -585,7 +591,7 @@ fun AppUi(
                     is Nav.Home -> "GameMale"
                     Nav.Settings -> "设置"
                     Nav.Search -> "搜索"
-                    Nav.History -> if (historySelectionCount > 0) "已选择 " + historySelectionCount + " 项" else "浏览记录"
+                    Nav.History -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
                     is Nav.Thread -> nav.title.ifEmpty { "帖子" }
                 },
@@ -626,6 +632,7 @@ fun AppUi(
                             history, historyListState, onOpenHistory, onClearHistory,
                             exitSignal = historyExitSignal,
                             onSelectionCount = onHistorySelectionCount,
+                            onSelectionMode = onHistorySelecting,
                             onDeleteSelected = onDeleteHistory
                         )
                         cur is Nav.Search -> SearchScreen(
@@ -1355,6 +1362,7 @@ private fun HistoryView(
     onClear: () -> Unit,
     onSelectionCount: (Int) -> Unit = {},
     onDeleteSelected: (List<Long>) -> Unit = {},
+    onSelectionMode: (Boolean) -> Unit = {},
     exitSignal: Int = 0
 ) {
     val colors = CouiTheme.colorScheme
@@ -1363,6 +1371,7 @@ private fun HistoryView(
     var selected by remember { mutableStateOf(setOf<Long>()) }
     LaunchedEffect(selecting, selected.size) {
         onSelectionCount(if (selecting) selected.size else 0)
+        onSelectionMode(selecting)
     }
     LaunchedEffect(exitSignal) {
         if (exitSignal > 0) {
@@ -1452,8 +1461,8 @@ private fun HistoryView(
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(bottom = 96.dp)
+                    .padding(bottom = 18.dp)
+                    .width(150.dp)
                     .clip(RoundedCornerShape(26.dp))
                     .background(if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f) else colors.accent)
                     .clickable(enabled = selected.isNotEmpty()) {
@@ -1462,7 +1471,7 @@ private fun HistoryView(
                         selecting = false
                         onDeleteSelected(ids)
                     }
-                    .padding(horizontal = 22.dp, vertical = 10.dp),
+                    .padding(vertical = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 IconTrash(tint = colors.onAccent)
@@ -2100,23 +2109,56 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
 @Composable
 private fun ZoomableImage(url: String, onClose: () -> Unit) {
     var scale by remember(url) { mutableStateOf(1f) }
-    var offset by remember(url) { mutableStateOf(Offset.Zero) }
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    var box by remember(url) { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var ratio by remember(url) { mutableStateOf(1f) }
+    var oxv by remember(url) { mutableStateOf(0f) }
+    var oyv by remember(url) { mutableStateOf(0f) }
+    val scope = rememberCoroutineScope()
+
+    // 图片按 Fit 显示后的实际尺寸，用来算可平移的边界
+    val content = remember(box, ratio, scale) {
+        val cw = box.width.toFloat()
+        val ch = box.height.toFloat()
+        if (cw <= 0f || ch <= 0f || ratio <= 0f) FloatArray(4)
+        else {
+            val dw: Float
+            val dh: Float
+            if (cw / ch > ratio) { dh = ch; dw = ch * ratio } else { dw = cw; dh = cw / ratio }
+            val mx = ((dw * scale - cw) / 2f).coerceAtLeast(0f)
+            val my = ((dh * scale - ch) / 2f).coerceAtLeast(0f)
+            floatArrayOf(dw, dh, mx, my)
+        }
+    }
+    val maxX = rememberUpdatedState(content[2])
+    val maxY = rememberUpdatedState(content[3])
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onSizeChanged { box = it },
+        contentAlignment = Alignment.Center
+    ) {
         AsyncImage(
             model = ImageStore.local(url) ?: url,
             contentDescription = null,
             contentScale = ContentScale.Fit,
+            onSuccess = { st ->
+                val d = st.result.drawable
+                if (d.intrinsicWidth > 0 && d.intrinsicHeight > 0) {
+                    ratio = d.intrinsicWidth.toFloat() / d.intrinsicHeight.toFloat()
+                }
+            },
             modifier = Modifier
                 .fillMaxSize()
-                // 手势策略：双指永远缩放；单指拖动只在放大后由图片吃掉，
-                // 未放大时不消费，交回给 Pager 翻页
+                // 双指永远缩放；单指拖动只在放大后由图片吃掉，未放大时交给 Pager 翻页
                 .pointerInput(url) {
                     awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false)
+                        var hadGesture = false
                         do {
                             val event = awaitPointerEvent()
                             val pressed = event.changes.filter { it.pressed }
                             if (pressed.size >= 2) {
+                                hadGesture = true
                                 val p0 = pressed[0]
                                 val p1 = pressed[1]
                                 val curDist = (p0.position - p1.position).getDistance()
@@ -2124,20 +2166,48 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                                 val zoom = if (prevDist > 1f) curDist / prevDist else 1f
                                 val pan = ((p0.position + p1.position) -
                                     (p0.previousPosition + p1.previousPosition)) / 2f
-                                if (zoom != 1f) {
-                                    scale = (scale * zoom).coerceIn(1f, 6f)
-                                    if (scale <= 1.02f) offset = Offset.Zero
+                                scale = (scale * zoom).coerceIn(1f, 6f)
+                                val mx = maxX.value
+                                val my = maxY.value
+                                if (scale <= 1.02f) {
+                                    oxv = 0f; oyv = 0f
+                                } else if (pan != Offset.Zero) {
+                                    oxv = (oxv + pan.x).coerceIn(-mx, mx)
+                                    oyv = (oyv + pan.y).coerceIn(-my, my)
                                 }
-                                if (scale > 1.02f && pan != Offset.Zero) offset += pan
                                 pressed.forEach { it.consume() }
                             } else if (pressed.size == 1 && scale > 1.02f) {
+                                hadGesture = true
                                 val delta = pressed[0].position - pressed[0].previousPosition
+                                val mx = maxX.value
+                                val my = maxY.value
                                 if (delta != Offset.Zero) {
-                                    offset += delta
-                                    pressed[0].consume()
+                                    // 越界时加阻尼，松手再弹回
+                                    val nx = oxv + delta.x
+                                    val cx = when {
+                                        nx > mx -> mx + (nx - mx) / 3f
+                                        nx < -mx -> -mx + (nx + mx) / 3f
+                                        else -> nx
+                                    }
+                                    val ny = oyv + delta.y
+                                    val cy = when {
+                                        ny > my -> my + (ny - my) / 3f
+                                        ny < -my -> -my + (ny + my) / 3f
+                                        else -> ny
+                                    }
+                                    oxv = cx
+                                    oyv = cy
                                 }
+                                pressed[0].consume()
                             }
                         } while (pressed.any { it.pressed })
+
+                        if (hadGesture) {
+                            val tx = oxv.coerceIn(-maxX.value, maxX.value)
+                            val ty = oyv.coerceIn(-maxY.value, maxY.value)
+                            scope.launch { androidx.compose.animation.core.animate(oxv, tx) { v, _ -> oxv = v } }
+                            scope.launch { androidx.compose.animation.core.animate(oyv, ty) { v, _ -> oyv = v } }
+                        }
                     }
                 }
                 .pointerInput(Unit) {
@@ -2145,10 +2215,11 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                         onDoubleTap = {
                             if (scale > 1.05f) {
                                 scale = 1f
-                                offset = Offset.Zero
                             } else {
                                 scale = 2.6f
                             }
+                            scope.launch { androidx.compose.animation.core.animate(oxv, 0f) { v, _ -> oxv = v } }
+                            scope.launch { androidx.compose.animation.core.animate(oyv, 0f) { v, _ -> oyv = v } }
                         },
                         onTap = { if (scale <= 1.05f) onClose() }
                     )
@@ -2156,8 +2227,8 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
-                    translationX = offset.x
-                    translationY = offset.y
+                    translationX = oxv
+                    translationY = oyv
                 }
         )
     }
