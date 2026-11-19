@@ -73,6 +73,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -725,7 +726,7 @@ fun AppUi(
         val barH = WindowInsets.systemBars.asPaddingValues().calculateTopPadding() + 56.dp
         // 列表页让内容从顶栏下方穿过，顶栏才能采到模糊源
         val overlayBar = true
-        BarOverlay.inset = barH
+        CompositionLocalProvider(LocalBarInset provides barH) {
         Box(Modifier.fillMaxSize()) {
             TopBar(
                 selectionMode = inHistorySelection,
@@ -1020,7 +1021,7 @@ fun AppUi(
                 Modifier
                     .align(Alignment.BottomEnd)
                     .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(end = 18.dp, bottom = if (showBottomBar && !inHistorySelection) 92.dp else 22.dp)
+                    .padding(end = 16.dp, bottom = if (showBottomBar && !inHistorySelection) 92.dp else 22.dp)
                     .size(56.dp)
                     .clip(CircleShape)
                     .then(
@@ -1146,6 +1147,7 @@ fun AppUi(
             }
             ImageDialog(allImages, imageUrl, onCloseImage)
         }
+    }
     }
     }
 }
@@ -1588,6 +1590,8 @@ private data class ZoomScopes(
 
 private val LocalZoomScopes = staticCompositionLocalOf<ZoomScopes?> { null }
 private val LocalZoomTid = staticCompositionLocalOf<String?> { null }
+internal val LocalBarInset = compositionLocalOf { 0.dp }
+
 internal object BarOverlay {
     var inset: androidx.compose.ui.unit.Dp by mutableStateOf(0.dp)
 }
@@ -1713,7 +1717,7 @@ private fun HomeList(forums: List<ForumItem>, loading: Boolean, onOpen: (ForumIt
     val colors = CouiTheme.colorScheme
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + BarOverlay.inset, bottom = 100.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + LocalBarInset.current, bottom = 100.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
@@ -1783,7 +1787,7 @@ private fun HistoryView(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp + BarOverlay.inset, bottom = 110.dp),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp + LocalBarInset.current, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             item {
@@ -1928,7 +1932,7 @@ private fun ForumView(
             ): androidx.compose.ui.geometry.Offset {
                 if (available.y > 0 && !listState.canScrollBackward && !refreshing) {
                     pull += available.y * 0.6f
-                    if (pull > 260f) pull = 260f
+                    if (pull > 900f) pull = 900f
                     return androidx.compose.ui.geometry.Offset(0f, available.y)
                 }
                 return androidx.compose.ui.geometry.Offset.Zero
@@ -1946,6 +1950,12 @@ private fun ForumView(
     var spin by remember { mutableStateOf(0f) }
     var spinSpeed by remember { mutableStateOf(0f) }
     var lastPull by remember { mutableStateOf(0f) }
+    val autoOffset = remember { androidx.compose.animation.core.Animatable(0f) }
+    val autoPx = with(LocalDensity.current) { (LocalBarInset.current + 52.dp).toPx() }
+    LaunchedEffect(refreshing, searchUpdating) {
+        if (refreshing || searchUpdating) autoOffset.animateTo(autoPx, tween(300))
+        else autoOffset.animateTo(0f, tween(380, easing = FastOutSlowInEasing))
+    }
     fun settleTo(target: Float) = scope.launch {
         androidx.compose.animation.core.animate(
             initialValue = pull, targetValue = target,
@@ -1960,36 +1970,20 @@ private fun ForumView(
             androidx.compose.runtime.withFrameNanos { _ ->
                 val d = pull - lastPull
                 lastPull = pull
-                spinSpeed = if (refreshing) 5.5f
+                spinSpeed = if (refreshing || searchUpdating) 5.5f
                 else (spinSpeed * 0.86f + d * 0.8f).coerceIn(-45f, 45f)
                 spin = (spin + spinSpeed) % 360f
             }
         }
     }
     Box(Modifier.fillMaxSize()) {
-        if ((loading || searchUpdating) && page != null && page.threads.isNotEmpty()) {
-            Row(
-                Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = BarOverlay.inset + 10.dp)
-                    .zIndex(1f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(colors.container)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                MiniSpinner(14.dp, colors.accent)
-                Spacer(Modifier.width(8.dp))
-                Txt("正在获取最新结果…", size = 12.sp, color = colors.onSurfaceVariant)
-            }
-        }
         // 刷新动画固定藏在列表下面，列表下拉时才露出来
-        Column(
+        Row(
             Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = BarOverlay.inset + 34.dp)
+                .padding(top = LocalBarInset.current + 28.dp)
                 .zIndex(-1f),
-            horizontalAlignment = Alignment.CenterHorizontally
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Canvas(Modifier.size(18.dp)) {
                 drawArc(
@@ -2003,9 +1997,9 @@ private fun ForumView(
                     )
                 )
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.width(8.dp))
             Txt(
-                if (refreshing) "刷新中…" else if (pull > 90f) "松开刷新" else "下拉刷新",
+                if (refreshing || searchUpdating) "刷新中…" else if (pull > 90f) "松开刷新" else "下拉刷新",
                 size = 12.sp,
                 color = colors.onSurfaceVariant
             )
@@ -2013,8 +2007,10 @@ private fun ForumView(
         LazyColumn(
             Modifier
                 .fillMaxSize()
+                .offset {
+                    androidx.compose.ui.unit.IntOffset(0, maxOf(pull, autoOffset.value).toInt())
+                }
                 .background(colors.background)
-                .offset { androidx.compose.ui.unit.IntOffset(0, pull.toInt()) }
                 .nestedScroll(scrollConn)
                 .pointerInput(refreshing) {
                     awaitPointerEventScope {
@@ -2032,7 +2028,7 @@ private fun ForumView(
                     }
                 },
             state = listState,
-            contentPadding = PaddingValues(start = 12.dp, top = 12.dp + BarOverlay.inset, end = 12.dp, bottom = 110.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 12.dp + LocalBarInset.current, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val list = page?.threads ?: emptyList()
@@ -2181,7 +2177,7 @@ private fun ThreadView(
     val colors = CouiTheme.colorScheme
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + BarOverlay.inset, bottom = 96.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + LocalBarInset.current, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         val p = page ?: return@LazyColumn
@@ -2888,7 +2884,7 @@ private fun SearchScreen(
         runCatching { focus.requestFocus() }
         keyboard?.show()
     }
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp).padding(top = BarOverlay.inset)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp).padding(top = LocalBarInset.current)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
@@ -3001,7 +2997,7 @@ private fun SettingsView(
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp + BarOverlay.inset, bottom = 100.dp),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp + LocalBarInset.current, bottom = 100.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         item {

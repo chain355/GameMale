@@ -823,8 +823,10 @@ class MainActivity : ComponentActivity() {
         prefetchToken++          // 作废上一页还在跑的预览图预取
         fetcher.dropPending()     // 别让搜索请求排在它们后面超时
         Diag.log("search", "query=" + q.trim())
-        // 先留着上一次的结果铺屏，同时后台拉新结果
-        searchUpdating = forumPage?.threads?.isNotEmpty() == true
+        // 先拿出这个关键词的旧结果（内存 / 磁盘快照）铺屏，再后台拉新结果替换
+        val cached = forumCache[url] ?: SnapshotStore.get(url)
+        forumPage = cached?.copy(title = "搜索：" + q.trim())
+        searchUpdating = cached != null
         nav = Nav.Forum(url, "搜索：" + q.trim())
         threadPage = null
         loadedForumUrl = url
