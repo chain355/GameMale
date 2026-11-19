@@ -39,6 +39,7 @@ sealed interface Nav {
     data class Thread(val url: String, val title: String) : Nav
     data object Settings : Nav
     data object Search : Nav
+    data object History : Nav
 }
 
 class MainActivity : ComponentActivity() {
@@ -83,6 +84,7 @@ class MainActivity : ComponentActivity() {
         // 账号表：上次用在哪个账号，启动时先按它展示
         accounts = Accounts.load(this)
         currentAccountId = Accounts.currentId(this)
+        history = HistoryStore.load(this)
         // 覆盖升级/进程被杀后，CookieManager 里的登录 Cookie 可能丢，但账号表里有快照
         runCatching {
             val saved = accounts.firstOrNull { it.id == currentAccountId } ?: accounts.firstOrNull()
@@ -238,10 +240,14 @@ class MainActivity : ComponentActivity() {
                     busy = busy,
                     onDump = { dumpHtml("debug") },
                     onQuickForum = { url, title -> openQuick(url, title) },
+                    onOpenHistoryTab = { openHistory() },
+                    history = history,
+                    onOpenHistory = { url, title -> openFromHistory(url, title) },
+                    onClearHistory = { history = HistoryStore.clear(this) },
                     onSearch = { q -> doSearch(q) },
                     onExternal = { openExternal(it) },
                     currentUrl = navUrl(),
-                    showBottomBar = backStack.isEmpty() && nav is Nav.Forum,
+                    showBottomBar = backStack.isEmpty() && (nav is Nav.Forum || nav is Nav.History),
                     loginName = loginName,
                     avatarUrl = avatarUrl,
                     loggedIn = loggedIn,
@@ -254,6 +260,8 @@ class MainActivity : ComponentActivity() {
         // 默认直接进「动漫」版块，省掉版块总览这一层
         val deep = threadUrlFromIntent(intent)
         if (deep != null) {
+            // 外部分享/深链进来的帖子也要记入浏览记录
+            tidOf(deep)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, "帖子", deep) }
             nav = Nav.Thread(deep, "帖子")
             load(deep)
         } else {
@@ -280,6 +288,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         val url = threadUrlFromIntent(intent) ?: return
+        tidOf(url)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, "帖子", url) }
         backStack.clear()
         nav = Nav.Thread(url, "帖子")
         threadPage = null
@@ -689,7 +698,7 @@ class MainActivity : ComponentActivity() {
 
     private fun reload() {
         when (val n = nav) {
-            Nav.Settings, Nav.Search -> {}
+            Nav.Settings, Nav.Search, Nav.History -> {}
             is Nav.Home -> loadHome()
             is Nav.Forum -> load(n.url)
             is Nav.Thread -> {
@@ -702,6 +711,9 @@ class MainActivity : ComponentActivity() {
                             runCatching {
                                 refreshLogin(html)
                                 threadPage = Site.parseThread(html)
+                                threadPage?.let { tp ->
+                                    tidOf(n.url)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, tp.subject, n.url) }
+                                }
                                 error = null
                             }.onFailure {
                                 threadPage = keepThread
@@ -727,6 +739,17 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 底部导航直达版块（动漫/游戏） */
+    /** 切到浏览记录页：与两个板块一样是一级页，不压栈 */
+    private fun openHistory() {
+        history = HistoryStore.load(this)
+        val isTopLevel = backStack.isEmpty()
+        if (!isTopLevel) backStack.add(nav)
+        nav = Nav.History
+        threadPage = null
+        error = null
+        loading = false
+    }
+
     private fun openQuick(url: String, title: String) {
         Diag.log("nav", "switch forum -> " + title + " 缓存=" + (forumCache[url] != null))
         // 一级页之间切换：不压栈，底栏保持可见；有缓存就直接换过去
@@ -794,10 +817,14 @@ class MainActivity : ComponentActivity() {
     private fun looksLikeThread(html: String): Boolean =
         html.contains("id=\"postlist\"") || html.contains("id='postlist'")
 
-    private fun openThread(item: ThreadItem) {
+    private fun openThread(item: ThreadItem) = openThreadUrl(canonicalThreadUrl(item.url), item.title)
+
+    /** 从任意入口（列表 / 搜索 / 浏览记录 / 深链）打开帖子 */
+    private fun openThreadUrl(rawUrl: String, title: String) {
         backStack.add(nav)
-        val url = canonicalThreadUrl(item.url)
-        nav = Nav.Thread(url, item.title)
+        val url = canonicalThreadUrl(rawUrl)
+        tidOf(url)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, title, url) }
+        nav = Nav.Thread(url, title)
         val tid = tidOf(url)
         val disk = tid?.let { cache.read(it) }
         val cached = tid?.let { threadCache[it] } ?: disk?.first
@@ -1067,6 +1094,10 @@ class MainActivity : ComponentActivity() {
         cacheCount = cache.count()
     }
 
+    fun openFromHistory(url: String, title: String) {
+        openThreadUrl(url, title)
+    }
+
     private fun goBack() {
         if (loginPage) { closeLogin(); return }
         if (backStack.isNotEmpty()) {
@@ -1074,6 +1105,7 @@ class MainActivity : ComponentActivity() {
             when (val n = nav) {
                 Nav.Search -> {}
                 Nav.Settings -> {}
+                Nav.History -> {}
                 is Nav.Home -> loadHome()
                 is Nav.Forum -> {
                     // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
@@ -1294,6 +1326,7 @@ class MainActivity : ComponentActivity() {
     /** 未登录导致列表为空 */
     private var needLogin by mutableStateOf(false)
     private var accounts by mutableStateOf<List<Accounts.Acc>>(emptyList())
+    private var history by mutableStateOf<List<HistoryStore.Entry>>(emptyList())
     private var currentAccountId: String? = null
     private var accountsOpen by mutableStateOf(false)
     private var pendingCookie: String? = null
@@ -1486,8 +1519,7 @@ class MainActivity : ComponentActivity() {
         is Nav.Thread -> n.url
         is Nav.Search -> SITE + "search.php?mod=forum"
         Nav.Home -> SITE + "forum.php"
-        Nav.Settings -> ""
-        Nav.Search -> SITE + "search.php?mod=forum"
+        Nav.Settings, Nav.History -> ""
     }
 
     /** 回复：用页面里的 #fastpostform 字段，补上 message 后 POST（带 inajax=1 拿纯文本结果） */

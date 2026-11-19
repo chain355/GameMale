@@ -310,6 +310,49 @@ private fun NavButton(
 }
 
 @Composable
+private fun NavButtonSlot(
+    label: String,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    icon: @Composable () -> Unit,
+    onClick: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    Column(
+        modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (active) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .lightPress(onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        icon()
+        Spacer(Modifier.height(2.dp))
+        Txt(
+            label,
+            size = 11.sp,
+            color = if (active) colors.accent else colors.onSurfaceVariant,
+            weight = if (active) FontWeight.SemiBold else null
+        )
+    }
+}
+
+/** 浏览记录图标：带指针的时钟（COUI 图标集里没有时钟/历史） */
+@Composable
+private fun IconHistory(c: Color) {
+    Canvas(Modifier.size(20.dp)) {
+        val sw = 1.7.dp.toPx()
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val r = size.width * 0.40f
+        drawCircle(c, radius = r, center = androidx.compose.ui.geometry.Offset(cx, cy), style = androidx.compose.ui.graphics.drawscope.Stroke(sw))
+        // 时针 / 分针
+        drawLine(c, androidx.compose.ui.geometry.Offset(cx, cy), androidx.compose.ui.geometry.Offset(cx, cy - r * 0.72f), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(cx, cy), androidx.compose.ui.geometry.Offset(cx + r * 0.62f, cy), sw)
+    }
+}
+
+@Composable
 private fun SearchDialog(onCancel: () -> Unit, onSearch: (String) -> Unit) {
     val colors = CouiTheme.colorScheme
     var text by remember { mutableStateOf("") }
@@ -459,7 +502,11 @@ fun AppUi(
     onSwitchAccount: (Accounts.Acc) -> Unit = {},
     onDeleteAccount: (Accounts.Acc) -> Unit = {},
     onAddAccount: () -> Unit = {},
-    onCloseAccounts: () -> Unit = {}
+    onCloseAccounts: () -> Unit = {},
+    history: List<HistoryStore.Entry> = emptyList(),
+    onOpenHistory: (String, String) -> Unit = { _, _ -> },
+    onClearHistory: () -> Unit = {},
+    onOpenHistoryTab: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -467,6 +514,8 @@ fun AppUi(
         LocalDensity provides Density(baseDensity.density, fontScale)
     ) {
     val forumListState = rememberLazyListState()
+    // 浏览记录页独立的滚动位置
+    val historyListState = rememberLazyListState()
     // 每个板块各自记住上次停留的位置；翻到新的一页则回到顶部
     val forumPositions = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
     var lastForumUrl by remember { mutableStateOf<String?>(null) }
@@ -518,6 +567,7 @@ fun AppUi(
                     is Nav.Home -> "GameMale"
                     Nav.Settings -> "设置"
                     Nav.Search -> "搜索"
+                    Nav.History -> "浏览记录"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
                     is Nav.Thread -> nav.title.ifEmpty { "帖子" }
                 },
@@ -554,6 +604,9 @@ fun AppUi(
                         error != null && (nav is Nav.Forum || nav is Nav.Thread) ->
                             ErrorView(error, onRetry, onDump, onLogin)
                         cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
+                        cur is Nav.History -> HistoryView(
+                            history, historyListState, onOpenHistory, onClearHistory
+                        )
                         cur is Nav.Search -> SearchScreen(
                             history = searchHistory,
                             onCancel = onBack,
@@ -748,6 +801,13 @@ fun AppUi(
                     active = cur.contains("fid=152"),
                     modifier = Modifier.width(66.dp)
                 ) { onQuickForum(GAME_URL, "和谐游戏") }
+                NavButtonSlot(
+                    label = "浏览记录",
+                    active = nav is Nav.History,
+                    modifier = Modifier.width(72.dp),
+                    icon = { IconHistory(if (nav is Nav.History) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
+                    onClick = onOpenHistoryTab
+                )
                 }
             }
 
@@ -1206,6 +1266,77 @@ private fun HomeList(forums: List<ForumItem>, loading: Boolean, onOpen: (ForumIt
 }
 
 // ---------------- 版块页：分类 + 主题列表 ----------------
+@Composable
+private fun HistoryView(
+    history: List<HistoryStore.Entry>,
+    listState: LazyListState,
+    onOpen: (String, String) -> Unit,
+    onClear: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    if (history.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Txt("还没有浏览记录", size = 14.sp, color = colors.onSurfaceVariant)
+        }
+        return
+    }
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 100.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Txt("共 ${history.size} 条", size = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                Txt(
+                    "清空",
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onClear() }.padding(horizontal = 8.dp, vertical = 4.dp),
+                    size = 12.sp,
+                    color = colors.accent
+                )
+            }
+        }
+        items(history, key = { it.tid }) { e ->
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(colors.card)
+                    .lightPress { onOpen(e.url, e.title) }
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+            ) {
+                Txt(
+                    e.title.ifBlank { "帖子 " + e.tid },
+                    size = 15.sp,
+                    weight = FontWeight.SemiBold,
+                    color = colors.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(4.dp))
+                Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/** 浏览记录时间：今天显示「今天 HH:mm」，更早显示「MM-dd HH:mm」，跨年加年份 */
+private fun historyTime(ts: Long): String {
+    val now = java.util.Calendar.getInstance()
+    val t = java.util.Calendar.getInstance().apply { timeInMillis = ts }
+    val hm = String.format("%02d:%02d", t.get(java.util.Calendar.HOUR_OF_DAY), t.get(java.util.Calendar.MINUTE))
+    val sameYear = now.get(java.util.Calendar.YEAR) == t.get(java.util.Calendar.YEAR)
+    return when {
+        sameYear && now.get(java.util.Calendar.DAY_OF_YEAR) == t.get(java.util.Calendar.DAY_OF_YEAR) -> "今天 $hm"
+        sameYear -> String.format("%02d-%02d %s", t.get(java.util.Calendar.MONTH) + 1, t.get(java.util.Calendar.DAY_OF_MONTH), hm)
+        else -> String.format("%d-%02d-%02d %s", t.get(java.util.Calendar.YEAR), t.get(java.util.Calendar.MONTH) + 1, t.get(java.util.Calendar.DAY_OF_MONTH), hm)
+    }
+}
+
 @Composable
 private fun ForumView(
     page: ForumPage?,
