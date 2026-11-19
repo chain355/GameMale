@@ -1209,20 +1209,59 @@ private fun CardBox(onClick: (() -> Unit)? = null, content: @Composable () -> Un
     val colors = CouiTheme.colorScheme
     val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    // 整卡等比缩放：背景和内容一起缩，不做横竖分别拉伸（那会把文字和图片拉变形）
+    val scale by animateFloatAsState(if (pressed) 0.975f else 1f, tween(160))
+    var touch by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Unspecified) }
+    val shape = RoundedCornerShape(18.dp)
     Box(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(shape)
             .background(if (pressed) colors.card else colors.container)
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    touch = down.position
+                    while (true) {
+                        val e = awaitPointerEvent()
+                        val ch = e.changes.firstOrNull { it.id == down.id } ?: break
+                        touch = ch.position
+                        if (!ch.pressed) break
+                    }
+                }
+            }
             .then(
                 if (onClick != null) Modifier.clickable(
                     interactionSource = interaction,
-                    indication = androidx.compose.foundation.LocalIndication.current,
+                    indication = null,
                     onClick = onClick
                 ) else Modifier
             )
-            .padding(14.dp)
-    ) { content() }
+    ) {
+        // 跟随手指的柔光：只在卡片内部画，不参与布局
+        if (pressed && touch != androidx.compose.ui.geometry.Offset.Unspecified) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .drawBehind {
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                colors = listOf(colors.accent.copy(alpha = 0.16f), Color.Transparent),
+                                center = touch,
+                                radius = size.maxDimension * 0.85f
+                            ),
+                            radius = size.maxDimension * 0.85f,
+                            center = touch
+                        )
+                    }
+            )
+        }
+        Box(Modifier.padding(14.dp)) { content() }
+    }
 }
 
 // ---------------- 首页：版块 ----------------
@@ -1305,27 +1344,22 @@ private fun HistoryView(
             val thumbs = remember(e.tid) {
                 ThumbStore.get(e.tid.toString()).take(3).map { url -> ImageStore.local(url) ?: url }
             }
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(colors.card)
-                    .lightPress { onOpen(e.url, e.title) }
-                    .padding(horizontal = 14.dp, vertical = 12.dp)
-            ) {
-                Txt(
-                    e.title.ifBlank { "帖子 " + e.tid },
-                    size = 15.sp,
-                    weight = FontWeight.SemiBold,
-                    color = colors.onSurface,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(6.dp))
-                Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
-                if (thumbs.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    ThumbsGrid(thumbs, {})
+            CardBox(onClick = { onOpen(e.url, e.title) }) {
+                Column {
+                    Txt(
+                        e.title.ifBlank { "帖子 " + e.tid },
+                        size = 15.sp,
+                        weight = FontWeight.SemiBold,
+                        color = colors.onSurface,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
+                    if (thumbs.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        ThumbsGrid(thumbs)
+                    }
                 }
             }
         }
