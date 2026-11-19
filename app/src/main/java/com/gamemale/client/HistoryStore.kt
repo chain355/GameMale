@@ -75,6 +75,9 @@ object HistoryStore {
         return left
     }
 
+    /** 浏览记录占用的字节数（计入全局缓存用量） */
+    fun bytes(ctx: Context): Long = runCatching { file(ctx).length() }.getOrDefault(0L)
+
     fun clear(ctx: Context): List<Entry> {
         runCatching { file(ctx).delete() }
         return emptyList()

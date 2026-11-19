@@ -2241,7 +2241,7 @@ private fun SettingsView(
             section("帖子缓存") {
                 val mb = (cacheBytes / 1024.0 / 1024.0)
                 Txt(
-                    "已用 %.1f MB · %d 篇帖子".format(mb, cacheCount),
+                    "已用 %.1f MB（含浏览记录）· %d 篇帖子".format(mb, cacheCount),
                     size = 13.sp,
                     color = colors.onSurface
                 )
@@ -2252,6 +2252,12 @@ private fun SettingsView(
                 choices(limits.map { "$it MB" to (cacheMb == it) }) { i -> onSetCacheMb(limits[i]) }
                 Spacer(Modifier.height(10.dp))
                 Pill("清除全部缓存", onClearCache, primary = false)
+                Spacer(Modifier.height(4.dp))
+                Txt(
+                    "清空会同时删除浏览记录；帖子缓存、正文图片、预览图、列表快照都算在已用容量里。",
+                    size = 12.sp,
+                    color = colors.onSurfaceVariant
+                )
                 Spacer(Modifier.height(8.dp))
                 Pill("导出诊断日志", onExportLogs, primary = false)
                 Spacer(Modifier.height(4.dp))
