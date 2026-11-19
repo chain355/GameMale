@@ -1301,24 +1301,44 @@ private fun HistoryView(
             }
         }
         items(history, key = { it.tid }) { e ->
-            Column(
+            // 预览图只从本地库里取（ThumbStore 记录首图地址，ImageStore 存字节），不联网
+            val thumb = remember(e.tid) {
+                ThumbStore.get(e.tid.toString()).firstOrNull()?.let { url ->
+                    ImageStore.local(url)?.let { url to it }
+                }
+            }
+            Row(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(colors.card)
                     .lightPress { onOpen(e.url, e.title) }
-                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Txt(
-                    e.title.ifBlank { "帖子 " + e.tid },
-                    size = 15.sp,
-                    weight = FontWeight.SemiBold,
-                    color = colors.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(4.dp))
-                Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
+                Column(Modifier.weight(1f)) {
+                    Txt(
+                        e.title.ifBlank { "帖子 " + e.tid },
+                        size = 15.sp,
+                        weight = FontWeight.SemiBold,
+                        color = colors.onSurface,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
+                }
+                if (thumb != null) {
+                    Spacer(Modifier.width(12.dp))
+                    AsyncImage(
+                        model = thumb.second,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(84.dp, 62.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                    )
+                }
             }
         }
     }
