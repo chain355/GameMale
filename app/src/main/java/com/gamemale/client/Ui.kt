@@ -48,6 +48,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -86,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
@@ -704,7 +707,7 @@ fun AppUi(
             // 嵌在主窗口的 Compose 覆盖层里 WebView 拿不到 IME 连接。
             androidx.compose.ui.window.Dialog(
                 onDismissRequest = onLoginClose,
-                properties = androidx.compose.ui.window.DialogProperties(
+                properties = DialogProperties(
                     usePlatformDefaultWidth = false,
                     decorFitsSystemWindows = true
                 )
@@ -863,7 +866,14 @@ fun AppUi(
         )
         if (replyOpen) ReplyDialog(busy, onCancelReply, onSendReply)
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
-        if (imageUrl != null) ImageDialog(imageUrl, onCloseImage)
+        if (imageUrl != null) {
+            val allImages = remember(threadPage) {
+                threadPage?.posts?.flatMap { p ->
+                    p.blocks.mapNotNull { (it as? Block.Image)?.url }
+                }?.distinct().orEmpty()
+            }
+            ImageDialog(allImages, imageUrl, onCloseImage)
+        }
     }
     }
 }
@@ -2005,59 +2015,56 @@ private fun SpoilerBox(spoiler: Block.Spoiler, onImage: (String) -> Unit, onExte
 }
 
 @Composable
-private fun ImageDialog(url: String, onClose: () -> Unit) {
-    var scale by remember { mutableStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
-    val state = rememberTransformableState { zoomChange, panChange, _ ->
-        scale = (scale * zoomChange).coerceIn(1f, 5f)
-        offset = if (scale <= 1.02f) Offset.Zero else offset + panChange
-    }
-    Dialog(onDismissRequest = onClose) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(Color.Black)
-        ) {
-            AsyncImage(
-                model = ImageStore.local(url) ?: url,
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectDragGestures { change, delta ->
-                            if (scale > 1.02f) {
-                                change.consume()
-                                offset += delta
-                            }
-                        }
-                    }
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onDoubleTap = {
-                                if (scale > 1.05f) {
-                                    scale = 1f
-                                    offset = Offset.Zero
-                                } else {
-                                    scale = 2.4f
-                                }
-                            },
-                            onTap = { if (scale <= 1.05f) onClose() }
+private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> Unit) {
+    val list = images.ifEmpty { listOf(startUrl) }
+    val startIndex = list.indexOf(startUrl).let { if (it >= 0) it else 0 }
+    val pagerState = androidx.compose.foundation.pager.rememberPagerState(initialPage = startIndex) { list.size }
+    Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            androidx.compose.foundation.pager.HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = 1
+            ) { page ->
+                ZoomableImage(list[page], onClose)
+            }
+
+            // 底部页标：圆点，当前页更大
+            if (list.size > 1) {
+                Row(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(bottom = 22.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    for (i in list.indices) {
+                        val active = i == pagerState.currentPage
+                        Box(
+                            Modifier
+                                .size(if (active) 9.dp else 5.dp)
+                                .clip(CircleShape)
+                                .background(if (active) Color.White else Color.White.copy(alpha = 0.42f))
                         )
                     }
-                    .transformable(state, lockRotationOnZoomPan = true)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                    },
-                contentScale = ContentScale.Fit
-            )
+                }
+            }
+
             // 关闭键
             Box(
                 Modifier
                     .align(Alignment.TopEnd)
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(8.dp)
                     .size(36.dp)
                     .clip(CircleShape)
@@ -2066,6 +2073,55 @@ private fun ImageDialog(url: String, onClose: () -> Unit) {
                 contentAlignment = Alignment.Center
             ) { IconImg(CouiIcons.Filled.Close, 18.dp, Color.White) }
         }
+    }
+}
+
+/** 单页图片：双击缩放、放大后拖动；未放大时点一下关闭 */
+@Composable
+private fun ZoomableImage(url: String, onClose: () -> Unit) {
+    var scale by remember(url) { mutableStateOf(1f) }
+    var offset by remember(url) { mutableStateOf(Offset.Zero) }
+    val state = rememberTransformableState { zoomChange, panChange, _ ->
+        scale = (scale * zoomChange).coerceIn(1f, 6f)
+        offset = if (scale <= 1.02f) Offset.Zero else offset + panChange
+    }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        AsyncImage(
+            model = ImageStore.local(url) ?: url,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                // 只有放大后才吃掉拖动，避免和 Pager 的左右翻页抢手势
+                .pointerInput(scale) {
+                    detectDragGestures { change, delta ->
+                        if (scale > 1.02f) {
+                            change.consume()
+                            offset += delta
+                        }
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = {
+                            if (scale > 1.05f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            } else {
+                                scale = 2.6f
+                            }
+                        },
+                        onTap = { if (scale <= 1.05f) onClose() }
+                    )
+                }
+                .transformable(state, lockRotationOnZoomPan = true)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                }
+        )
     }
 }
 

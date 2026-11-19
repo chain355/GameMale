@@ -227,7 +227,7 @@ class MainActivity : ComponentActivity() {
                     onReply = { replyOpen = true },
                     onRate = { pid -> openRate(pid) },
                     onAttach = { at -> openAttach(at) },
-                    onImage = { url -> openImageExternally(url) },
+                    onImage = { url -> imageUrl = url },
                     replyOpen = replyOpen,
                     onCancelReply = { replyOpen = false },
                     onSendReply = { text -> sendReply(text) },

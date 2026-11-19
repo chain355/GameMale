@@ -6,7 +6,7 @@
 
 本仓库初始代码全部由 AI 完成，后续若有其他协作者会写入贡献者名单。公开出来是给同样想改造 Discuz 阅读体验的人做参考，不保证生产可用。
 
-当前版本：`3.0-M63`（versionCode 82），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
+当前版本：`3.0-M64`（versionCode 83），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
 
 ## 它是什么
 
@@ -85,6 +85,10 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 ## 更新日志
 
 只记录对使用有感知的改动，细节看提交记录。
+
+**3.0-M64（vc83）**
+- 图片改回内置全屏查看器：铺满整屏可自由缩放，左右滑动切换同帖的上一张/下一张，底部圆点页标（当前页更大）
+- 不再跳系统相册
 
 **3.0-M63（vc82）**
 - 浏览记录支持长按进入多选：点按切换选中、顶栏显示已选数量，底部居中的胶囊按钮（上垃圾桶、下「删除」）批量删除
