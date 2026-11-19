@@ -200,6 +200,7 @@ class MainActivity : ComponentActivity() {
                     canGoBack = backStack.isNotEmpty() || nav is Nav.Thread ||
                         nav is Nav.Settings || nav is Nav.Search,
                     refreshing = refreshing,
+                    searchUpdating = searchUpdating,
                     onRefresh = { refreshCurrentForum() },
                     onOpenSearch = { openSearch() },
                     searchHistory = searchHistory,
@@ -600,6 +601,7 @@ class MainActivity : ComponentActivity() {
                                     } else item
                                 })
                                 refreshing = false
+                                searchUpdating = false
                                 Diag.log("load", "forum ok threads=" + fp.threads.size + " bytes=" + html.length + " url=" + url)
                                 forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
                                 forumCache[url] = forumPage!!
@@ -622,6 +624,7 @@ class MainActivity : ComponentActivity() {
                 }.onFailure {
                     refreshing = false
                     loading = false
+                    searchUpdating = false
                     Diag.log("load", "fail url=" + url + " reason=" + (it.message ?: it.javaClass.simpleName))
                     if ((it.message ?: "").contains("Cloudflare")) {
                         openVerify(url)
@@ -820,8 +823,9 @@ class MainActivity : ComponentActivity() {
         prefetchToken++          // 作废上一页还在跑的预览图预取
         fetcher.dropPending()     // 别让搜索请求排在它们后面超时
         Diag.log("search", "query=" + q.trim())
+        // 先留着上一次的结果铺屏，同时后台拉新结果
+        searchUpdating = forumPage?.threads?.isNotEmpty() == true
         nav = Nav.Forum(url, "搜索：" + q.trim())
-        forumPage = null
         threadPage = null
         loadedForumUrl = url
         load(url)
@@ -1386,6 +1390,7 @@ class MainActivity : ComponentActivity() {
     private var searchOpen by mutableStateOf(false)
     private var backProgress by mutableStateOf(0f)
     private var searchHistory by mutableStateOf<List<String>>(emptyList())
+    private var searchUpdating by mutableStateOf(false)
     /** tid -> 已抓到的帖子 HTML（预取时顺手存下），按总体积限制，避免把堆吃满 */
     private val threadCache = object : LinkedHashMap<String, String>() {
         override fun put(key: String, value: String): String? {

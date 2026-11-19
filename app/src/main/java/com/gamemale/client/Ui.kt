@@ -543,6 +543,7 @@ fun AppUi(
     avatarUrl: String?,
     onShare: () -> Unit,
     onCopyLink: () -> Unit = {},
+    searchUpdating: Boolean = false,
     historySelectionCount: Int = 0,
     historySelecting: Boolean = false,
     onHistorySelecting: (Boolean) -> Unit = {},
@@ -617,6 +618,9 @@ fun AppUi(
         LocalDensity provides Density(baseDensity.density, fontScale)
     ) {
     val forumListState = rememberLazyListState()
+    LaunchedEffect(nav) {
+        if (nav is Nav.Search) runCatching { forumListState.scrollToItem(0) }
+    }
     // 浏览记录页独立的滚动位置
     val historyListState = rememberLazyListState()
     // 每个板块各自记住上次停留的位置；翻到新的一页则回到顶部
@@ -824,7 +828,7 @@ fun AppUi(
                             LoginPromptView(onLogin)
                         cur is Nav.Forum -> ForumView(
                             forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
-                            refreshing, onRefresh, onThumbNeeded
+                            refreshing, onRefresh, onThumbNeeded, searchUpdating
                         )
                         cur is Nav.Thread -> ThreadView(
                             threadPage, loading, onLoad, onExternal,
@@ -1585,7 +1589,7 @@ private data class ZoomScopes(
 private val LocalZoomScopes = staticCompositionLocalOf<ZoomScopes?> { null }
 private val LocalZoomTid = staticCompositionLocalOf<String?> { null }
 internal object BarOverlay {
-    var inset: androidx.compose.ui.unit.Dp = 0.dp
+    var inset: androidx.compose.ui.unit.Dp by mutableStateOf(0.dp)
 }
 
 /** 卡片与帖子页共享同一 key，交给 Compose 的 sharedBounds 做卡片↔全屏容器变换 */
@@ -1898,7 +1902,8 @@ private fun ForumView(
     listState: LazyListState,
     refreshing: Boolean = false,
     onRefresh: () -> Unit = {},
-    onThumbNeeded: (ThreadItem) -> Unit = {}
+    onThumbNeeded: (ThreadItem) -> Unit = {},
+    searchUpdating: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
     var pull by remember { mutableStateOf(0f) }
@@ -1962,11 +1967,27 @@ private fun ForumView(
         }
     }
     Box(Modifier.fillMaxSize()) {
+        if ((loading || searchUpdating) && page != null && page.threads.isNotEmpty()) {
+            Row(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = BarOverlay.inset + 10.dp)
+                    .zIndex(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(colors.container)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MiniSpinner(14.dp, colors.accent)
+                Spacer(Modifier.width(8.dp))
+                Txt("正在获取最新结果…", size = 12.sp, color = colors.onSurfaceVariant)
+            }
+        }
         // 刷新动画固定藏在列表下面，列表下拉时才露出来
         Column(
             Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = BarOverlay.inset + 8.dp)
+                .padding(top = BarOverlay.inset + 34.dp)
                 .zIndex(-1f),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
