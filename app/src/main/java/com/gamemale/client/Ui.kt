@@ -561,6 +561,9 @@ fun AppUi(
     val zoomProg = remember { Animatable(1f) }
     var zoomRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var threadOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var zoomBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var zoomMode by remember { mutableStateOf(1) }
+    val pageGl = rememberGraphicsLayer()
     var prevNav by remember { mutableStateOf<Nav>(nav) }
     val inHistorySelection = nav is Nav.History && historySelecting
     // 进入帖子：卡片放大到全屏；退回列表：全屏缩回卡片位置
@@ -572,17 +575,24 @@ fun AppUi(
             if (r != null && r.width > 1f && r.height > 1f) {
                 threadOrigin = r
                 zoomRect = r
+                zoomBitmap = CardZoom.bitmap
+                zoomMode = 1
                 zoomProg.snapTo(0f)
                 zoomProg.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
                 zoomRect = null
+                zoomBitmap = null
             }
-        } else if (from is Nav.Thread && nav !is Nav.Thread) {
+        } else if (from is Nav.Thread && nav is Nav.Forum) {
+            // 只有退回列表才做缩小过渡；进设置/搜索不算
             val r = threadOrigin
             if (r != null) {
                 zoomRect = r
+                zoomBitmap = runCatching { pageGl.toImageBitmap() }.getOrNull()
+                zoomMode = -1
                 zoomProg.snapTo(1f)
                 zoomProg.animateTo(0f, tween(500, easing = FastOutSlowInEasing))
                 zoomRect = null
+                zoomBitmap = null
             }
         }
     }
@@ -642,20 +652,25 @@ fun AppUi(
             Box(
                 Modifier
                     .weight(1f)
-                    .graphicsLayer { translationX = backProgress * size.width * 0.35f }
+                    .graphicsLayer {
+                        translationX = backProgress * size.width * 0.35f
+                        val a = if (zoomRect == null) 1f
+                        else if (zoomMode > 0) zoomProg.value else 1f - zoomProg.value
+                        alpha = a.coerceIn(0f, 1f)
+                    }
+                    .drawWithContent {
+                        if (nav is Nav.Thread) {
+                            pageGl.record { this@drawWithContent.drawContent() }
+                            drawLayer(pageGl)
+                        } else {
+                            drawContent()
+                        }
+                    }
             ) {
                 AnimatedContent(
                     targetState = nav,
                     transitionSpec = {
-                        val forward = (targetState is Nav.Thread) || (targetState is Nav.Settings) ||
-                            (targetState is Nav.Search)
-                        if (forward) {
-                            (slideInHorizontally(tween(260)) { it } + fadeIn(tween(180)))
-                                .togetherWith(slideOutHorizontally(tween(260)) { -it / 4 } + fadeOut(tween(180)))
-                        } else {
-                            (slideInHorizontally(tween(260)) { -it / 3 } + fadeIn(tween(180)))
-                                .togetherWith(slideOutHorizontally(tween(260)) { it } + fadeOut(tween(180)))
-                        }
+                        fadeIn(tween(200)).togetherWith(fadeOut(tween(160)))
                     },
                     label = "nav"
                 ) { cur ->
@@ -819,14 +834,28 @@ fun AppUi(
                 p < 0.38f -> (p / 0.38f).coerceIn(0f, 1f)
                 else -> 1f
             }
-            Box(
-                Modifier
-                    .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
-                    .size(with(density) { w.toDp() }, with(density) { h.toDp() })
-                    .clip(RoundedCornerShape(corner.dp))
-                    .background(colors.background)
-                    .alpha(alpha)
-            )
+            val bmp = zoomBitmap
+            if (bmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bmp,
+                    contentDescription = null,
+                    contentScale = ContentScale.FillBounds,
+                    modifier = Modifier
+                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
+                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
+                        .clip(RoundedCornerShape(corner.dp))
+                        .alpha(alpha)
+                )
+            } else {
+                Box(
+                    Modifier
+                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
+                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
+                        .clip(RoundedCornerShape(corner.dp))
+                        .background(colors.background)
+                        .alpha(alpha)
+                )
+            }
         }
 
         // 隐藏的取数 WebView（1dp，不渲染任何可见内容）
@@ -1312,6 +1341,7 @@ private fun ErrorView(
 /** 卡片在窗口中的位置，用于帖子详情页的放大/缩小过渡 */
 object CardZoom {
     var origin: androidx.compose.ui.geometry.Rect? = null
+    var bitmap: androidx.compose.ui.graphics.ImageBitmap? = null
 }
 
 @Composable
@@ -1328,6 +1358,8 @@ private fun CardBox(
     var touch by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Unspecified) }
     var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     var rectRoot by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    val gl = rememberGraphicsLayer()
+    val scope = rememberCoroutineScope()
     val shape = RoundedCornerShape(18.dp)
     Box(
         Modifier
@@ -1339,6 +1371,14 @@ private fun CardBox(
             .onGloballyPositioned {
                 bounds = it.boundsInWindow()
                 rectRoot = it.boundsInRoot()
+            }
+            .drawWithContent {
+                if (pressed) {
+                    gl.record { this@drawWithContent.drawContent() }
+                    drawLayer(gl)
+                } else {
+                    drawContent()
+                }
             }
             .clip(shape)
             .background(if (pressed) colors.card else colors.container)
@@ -1359,8 +1399,14 @@ private fun CardBox(
                     interactionSource = interaction,
                     indication = null,
                     onClick = {
-                        CardZoom.origin = rectRoot
-                        onClick?.invoke()
+                        val act = onClick
+                        if (act != null) {
+                            CardZoom.origin = rectRoot
+                            scope.launch {
+                                CardZoom.bitmap = runCatching { gl.toImageBitmap() }.getOrNull()
+                                act()
+                            }
+                        }
                     },
                     onLongClick = onLongClick
                 ) else Modifier
@@ -2132,7 +2178,7 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
             decorFitsSystemWindows = false
         )
     ) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
+        Box(Modifier.fillMaxSize().background(Color.Black).clipToBounds()) {
             androidx.compose.foundation.pager.HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
@@ -2227,6 +2273,7 @@ private fun ZoomableImage(
     Box(
         Modifier
             .fillMaxSize()
+            .clipToBounds()
             .onSizeChanged { box = it },
         contentAlignment = Alignment.Center
     ) {
