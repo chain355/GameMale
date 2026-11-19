@@ -244,6 +244,12 @@ class MainActivity : ComponentActivity() {
                     history = history,
                     onOpenHistory = { url, title -> openFromHistory(url, title) },
                     onClearHistory = { history = HistoryStore.clear(this) },
+                    historySelectionCount = historySelectionCount,
+                    onHistorySelectionCount = { historySelectionCount = it },
+                    onDeleteHistory = { tids ->
+                        history = HistoryStore.removeMany(this, tids)
+                        toast("已删除 " + tids.size + " 条浏览记录")
+                    },
                     onSearch = { q -> doSearch(q) },
                     onExternal = { openExternal(it) },
                     currentUrl = navUrl(),
@@ -1351,6 +1357,8 @@ class MainActivity : ComponentActivity() {
     private var needLogin by mutableStateOf(false)
     private var accounts by mutableStateOf<List<Accounts.Acc>>(emptyList())
     private var history by mutableStateOf<List<HistoryStore.Entry>>(emptyList())
+    /** 浏览记录选择模式下已选中的条数（显示在顶栏标题） */
+    private var historySelectionCount by mutableStateOf(0)
     private var currentAccountId: String? = null
     private var accountsOpen by mutableStateOf(false)
     private var pendingCookie: String? = null

@@ -69,6 +69,15 @@ object HistoryStore {
         return capped
     }
 
+    /** 批量删除（选择模式用） */
+    fun removeMany(ctx: Context, tids: Collection<Long>): List<Entry> {
+        if (tids.isEmpty()) return load(ctx)
+        val set = tids.toSet()
+        val left = load(ctx).filterNot { it.tid in set }
+        save(ctx, left)
+        return left
+    }
+
     fun remove(ctx: Context, tid: Long): List<Entry> {
         val left = load(ctx).filterNot { it.tid == tid }
         save(ctx, left)
@@ -77,6 +86,13 @@ object HistoryStore {
 
     /** 浏览记录占用的字节数（计入全局缓存用量） */
     fun bytes(ctx: Context): Long = runCatching { file(ctx).length() }.getOrDefault(0L)
+
+    /** 批量删除 */
+    fun removeMany(ctx: Context, tids: Set<Long>): List<Entry> {
+        val left = load(ctx).filterNot { it.tid in tids }
+        save(ctx, left)
+        return left
+    }
 
     fun clear(ctx: Context): List<Entry> {
         runCatching { file(ctx).delete() }

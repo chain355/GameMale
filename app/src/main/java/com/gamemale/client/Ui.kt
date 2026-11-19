@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.Density
 import coil.compose.SubcomposeAsyncImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -450,6 +451,9 @@ fun AppUi(
     avatarUrl: String?,
     onShare: () -> Unit,
     onCopyLink: () -> Unit = {},
+    historySelectionCount: Int = 0,
+    onHistorySelectionCount: (Int) -> Unit = {},
+    onDeleteHistory: (List<Long>) -> Unit = {},
     onReply: () -> Unit,
     onRate: (String) -> Unit,
     onAttach: (AttachItem) -> Unit,
@@ -570,7 +574,7 @@ fun AppUi(
                     is Nav.Home -> "GameMale"
                     Nav.Settings -> "设置"
                     Nav.Search -> "搜索"
-                    Nav.History -> "浏览记录"
+                    Nav.History -> if (historySelectionCount > 0) "已选择 " + historySelectionCount + " 项" else "浏览记录"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
                     is Nav.Thread -> nav.title.ifEmpty { "帖子" }
                 },
@@ -608,7 +612,9 @@ fun AppUi(
                             ErrorView(error, onRetry, onDump, onLogin)
                         cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
                         cur is Nav.History -> HistoryView(
-                            history, historyListState, onOpenHistory, onClearHistory
+                            history, historyListState, onOpenHistory, onClearHistory,
+                            onSelectionCount = onHistorySelectionCount,
+                            onDeleteSelected = onDeleteHistory
                         )
                         cur is Nav.Search -> SearchScreen(
                             history = searchHistory,
@@ -1212,7 +1218,11 @@ private fun ErrorView(
 }
 
 @Composable
-private fun CardBox(onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+private fun CardBox(
+    onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
     val colors = CouiTheme.colorScheme
     val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -1242,10 +1252,11 @@ private fun CardBox(onClick: (() -> Unit)? = null, content: @Composable () -> Un
                 }
             }
             .then(
-                if (onClick != null) Modifier.clickable(
+                if (onClick != null || onLongClick != null) Modifier.combinedClickable(
                     interactionSource = interaction,
                     indication = null,
-                    onClick = onClick
+                    onClick = { onClick?.invoke() },
+                    onLongClick = onLongClick
                 ) else Modifier
             )
     ) {
@@ -1317,57 +1328,116 @@ private fun HistoryView(
     history: List<HistoryStore.Entry>,
     listState: LazyListState,
     onOpen: (String, String) -> Unit,
-    onClear: () -> Unit
+    onClear: () -> Unit,
+    onSelectionCount: (Int) -> Unit = {},
+    onDeleteSelected: (List<Long>) -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
+    // 选择模式：长按进入，点按切换选中；顶栏显示已选数量
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(setOf<Long>()) }
+    LaunchedEffect(selecting, selected.size) {
+        onSelectionCount(if (selecting) selected.size else 0)
+    }
     if (history.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Txt("还没有浏览记录", size = 14.sp, color = colors.onSurfaceVariant)
         }
         return
     }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 100.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        item {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Txt("共 ${history.size} 条", size = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
-                Txt(
-                    "清空",
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onClear() }.padding(horizontal = 8.dp, vertical = 4.dp),
-                    size = 12.sp,
-                    color = colors.accent
-                )
-            }
-        }
-        items(history, key = { it.tid }) { e ->
-            // 预览图优先用本地字节（ImageStore），没有本地文件才退回地址，由 Coil 读它自己的磁盘缓存
-            val thumbs = remember(e.tid) {
-                ThumbStore.get(e.tid.toString()).take(3).map { url -> ImageStore.local(url) ?: url }
-            }
-            CardBox(onClick = { onOpen(e.url, e.title) }) {
-                Column {
-                    Txt(
-                        e.title.ifBlank { "帖子 " + e.tid },
-                        size = 15.sp,
-                        weight = FontWeight.SemiBold,
-                        color = colors.onSurface,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
-                    if (thumbs.isNotEmpty()) {
-                        Spacer(Modifier.height(8.dp))
-                        ThumbsGrid(thumbs)
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 110.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Txt("共 ${history.size} 条", size = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    if (!selecting) {
+                        Txt(
+                            "清空",
+                            modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onClear() }.padding(horizontal = 8.dp, vertical = 4.dp),
+                            size = 12.sp,
+                            color = colors.accent
+                        )
                     }
                 }
+            }
+            items(history, key = { it.tid }) { e ->
+                // 预览图优先用本地字节（ImageStore），没有本地文件才退回地址，由 Coil 读它自己的磁盘缓存
+                val thumbs = remember(e.tid) {
+                    ThumbStore.get(e.tid.toString()).take(3).map { url -> ImageStore.local(url) ?: url }
+                }
+                val picked = e.tid in selected
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (picked) Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .border(1.5.dp, colors.accent, RoundedCornerShape(18.dp))
+                            else Modifier
+                        )
+                ) {
+                    CardBox(
+                        onClick = {
+                            if (selecting) {
+                                selected = if (picked) selected - e.tid else selected + e.tid
+                                if (selected.isEmpty()) selecting = false
+                            } else onOpen(e.url, e.title)
+                        },
+                        onLongClick = {
+                            selecting = true
+                            selected = selected + e.tid
+                        }
+                    ) {
+                        Column {
+                            Txt(
+                                e.title.ifBlank { "帖子 " + e.tid },
+                                size = 15.sp,
+                                weight = FontWeight.SemiBold,
+                                color = colors.onSurface,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Txt(historyTime(e.ts), size = 12.sp, color = colors.onSurfaceVariant)
+                            if (thumbs.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                                ThumbsGrid(thumbs)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 选择模式底部居中的胶囊删除按钮：上垃圾桶图标，下「删除」
+        if (selecting) {
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(bottom = 96.dp)
+                    .clip(RoundedCornerShape(26.dp))
+                    .background(if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f) else colors.accent)
+                    .clickable(enabled = selected.isNotEmpty()) {
+                        val ids = selected.toList()
+                        selected = emptySet()
+                        selecting = false
+                        onDeleteSelected(ids)
+                    }
+                    .padding(horizontal = 22.dp, vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                IconTrash(tint = colors.onAccent)
+                Spacer(Modifier.height(2.dp))
+                Txt("删除", size = 12.sp, color = colors.onAccent)
             }
         }
     }
@@ -2491,8 +2561,8 @@ private fun IconCopy() {
 
 /** 垃圾桶图标（COUI 图标集里没有删除） */
 @Composable
-private fun IconTrash() {
-    val c = CouiTheme.colorScheme.onSurfaceVariant
+private fun IconTrash(tint: Color? = null) {
+    val c = tint ?: CouiTheme.colorScheme.onSurfaceVariant
     Canvas(Modifier.size(18.dp)) {
         val sw = 1.6.dp.toPx()
         val w = size.width
