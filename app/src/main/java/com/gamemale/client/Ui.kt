@@ -1197,9 +1197,9 @@ private fun TopBar(
                         .drawCouiBackdrop(
                             backdrop,
                             shape = { RectangleShape },
-                            effects = { blur(32f, TileMode.Clamp) },
+                            effects = { blur(64f, TileMode.Clamp) },
                             onDrawSurface = {
-                                drawRect(colors.background.copy(alpha = 0.22f))
+                                drawRect(colors.background.copy(alpha = 0.55f))
                             }
                         )
                 )
@@ -1933,53 +1933,85 @@ private fun ForumView(
                 consumed: androidx.compose.ui.unit.Velocity,
                 available: androidx.compose.ui.unit.Velocity
             ): androidx.compose.ui.unit.Velocity {
-                // 惯性滑动结束后复位提示，避免残留“松开刷新”
-                pull = 0f
                 return androidx.compose.ui.unit.Velocity.Zero
             }
         }
     }
-    Box(Modifier.fillMaxSize()) {
-        val density = LocalDensity.current
-        val push = with(density) { (pull * 0.55f).toDp() }
-        // 顶部刷新提示：浮在顶栏下方预留的空白里，不参与布局，不顶列表
-        if (refreshing || pull > 8f) {
-            Row(
-                Modifier
-                    .align(Alignment.TopCenter)
-                    .zIndex(1f)
-                    .fillMaxWidth()
-                    .padding(top = BarOverlay.inset + if (refreshing) 6.dp else push * 0.45f)
-                    .height(36.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (refreshing) {
-                    MiniSpinner(16.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Txt("刷新中…", size = 12.sp, color = colors.onSurfaceVariant)
-                } else {
-                    Txt(if (pull > 90f) "松开刷新" else "下拉刷新", size = 12.sp, color = colors.onSurfaceVariant)
-                }
+    val scope = rememberCoroutineScope()
+    var spin by remember { mutableStateOf(0f) }
+    var spinSpeed by remember { mutableStateOf(0f) }
+    var lastPull by remember { mutableStateOf(0f) }
+    fun settleTo(target: Float) = scope.launch {
+        androidx.compose.animation.core.animate(
+            initialValue = pull, targetValue = target,
+            animationSpec = tween(380, easing = FastOutSlowInEasing)
+        ) { v, _ -> pull = v }
+    }
+    // 刷新完成后，列表再慢慢回顶把动画盖住
+    LaunchedEffect(refreshing) { if (!refreshing && pull > 0f) settleTo(0f) }
+    // 转圈速度跟随手指位移：拉动时转，停手后慢慢停，刷新中匀速
+    LaunchedEffect(Unit) {
+        while (true) {
+            androidx.compose.runtime.withFrameNanos { _ ->
+                val d = pull - lastPull
+                lastPull = pull
+                spinSpeed = if (refreshing) 5.5f
+                else (spinSpeed * 0.86f + d * 0.8f).coerceIn(-45f, 45f)
+                spin = (spin + spinSpeed) % 360f
             }
+        }
+    }
+    Box(Modifier.fillMaxSize()) {
+        // 刷新动画固定藏在列表下面，列表下拉时才露出来
+        Column(
+            Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = BarOverlay.inset + 8.dp)
+                .zIndex(-1f),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Canvas(Modifier.size(18.dp)) {
+                drawArc(
+                    color = colors.onSurfaceVariant,
+                    startAngle = spin,
+                    sweepAngle = 250f,
+                    useCenter = false,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = 2.dp.toPx(),
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round
+                    )
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Txt(
+                if (refreshing) "刷新中…" else if (pull > 90f) "松开刷新" else "下拉刷新",
+                size = 12.sp,
+                color = colors.onSurfaceVariant
+            )
         }
         LazyColumn(
             Modifier
                 .fillMaxSize()
+                .background(colors.background)
+                .offset { androidx.compose.ui.unit.IntOffset(0, pull.toInt()) }
                 .nestedScroll(scrollConn)
                 .pointerInput(refreshing) {
                     awaitPointerEventScope {
                         while (true) {
                             val e = awaitPointerEvent()
                             if (e.changes.isNotEmpty() && e.changes.all { !it.pressed }) {
-                                if (pull > 90f && !refreshing && !listState.canScrollBackward) onRefresh()
-                                pull = 0f
+                                if (pull > 90f && !refreshing && !listState.canScrollBackward) {
+                                    // 保持当前偏移，等刷新结束再回顶
+                                    onRefresh()
+                                } else if (!refreshing) {
+                                    settleTo(0f)
+                                }
                             }
                         }
                     }
                 },
             state = listState,
-            contentPadding = PaddingValues(start = 12.dp, top = 12.dp + BarOverlay.inset + push, end = 12.dp, bottom = 110.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 12.dp + BarOverlay.inset, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val list = page?.threads ?: emptyList()
