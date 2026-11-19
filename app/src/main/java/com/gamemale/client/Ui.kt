@@ -542,6 +542,12 @@ fun AppUi(
     }
     var searchOpen by remember { mutableStateOf(false) }
     var topMenuOpen by remember { mutableStateOf(false) }
+    // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
+    var historyExitSignal by remember { mutableStateOf(0) }
+    val inHistorySelection = nav is Nav.History && historySelectionCount > 0
+    if (inHistorySelection) {
+        androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
+    }
     // 菜单项：未登录先给「登录」；分享/浏览器/刷新只在帖子页；设置始终有
     val topMenuItems = buildList {
         if (avatarUrl.isNullOrBlank()) add(Triple("登录", 4) { onLogin() })
@@ -556,6 +562,8 @@ fun AppUi(
     Box(Modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize()) {
             TopBar(
+                selectionMode = inHistorySelection,
+                onExitSelection = { historyExitSignal++ },
                 menuOpen = topMenuOpen,
                 onToggleMenu = {
                     // 只有一项时没必要展开菜单，直接执行
@@ -616,6 +624,7 @@ fun AppUi(
                         cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
                         cur is Nav.History -> HistoryView(
                             history, historyListState, onOpenHistory, onClearHistory,
+                            exitSignal = historyExitSignal,
                             onSelectionCount = onHistorySelectionCount,
                             onDeleteSelected = onDeleteHistory
                         )
@@ -762,7 +771,7 @@ fun AppUi(
                 Modifier
                     .align(Alignment.BottomEnd)
                     .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(end = 18.dp, bottom = if (showBottomBar) 92.dp else 22.dp)
+                    .padding(end = 18.dp, bottom = if (showBottomBar && !inHistorySelection) 92.dp else 22.dp)
                     .size(56.dp)
                     .clip(CircleShape)
                     .background(colors.accent.copy(alpha = 0.92f))
@@ -780,7 +789,7 @@ fun AppUi(
             }
         }
         // 底部导航（动漫 / 游戏）——只在根级列表页出现，且宽度收紧
-        if (showBottomBar) {
+        if (showBottomBar && !inHistorySelection) {
             Box(
                 Modifier
                     .align(Alignment.BottomStart)
@@ -825,7 +834,7 @@ fun AppUi(
             }
 
             // 搜索 FAB 独立漂浮在导航栏右侧，不放在胶囊里
-            Box(
+            if (!inHistorySelection) Box(
                 Modifier
                     .align(Alignment.BottomEnd)
                     .windowInsetsPadding(WindowInsets.systemBars)
@@ -847,7 +856,7 @@ fun AppUi(
             }
         }
 
-        if (searchOpen) {
+        if (searchOpen && !inHistorySelection) {
             SearchDialog(
                 onCancel = { searchOpen = false },
                 onSearch = {
@@ -899,7 +908,9 @@ private fun TopBar(
     onCopyLink: () -> Unit = {},
     onDump: () -> Unit,
     menuOpen: Boolean = false,
-    onToggleMenu: () -> Unit = {}
+    onToggleMenu: () -> Unit = {},
+    selectionMode: Boolean = false,
+    onExitSelection: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     Box(
@@ -912,7 +923,10 @@ private fun TopBar(
             Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (canBack) {
+            if (selectionMode) {
+                CircleBtn(CouiIcons.Filled.Back, onExitSelection)
+                Spacer(Modifier.width(6.dp))
+            } else if (canBack) {
                 CircleBtn(CouiIcons.Filled.Back, onBack)
                 Spacer(Modifier.width(6.dp))
             }
@@ -1340,7 +1354,8 @@ private fun HistoryView(
     onOpen: (String, String) -> Unit,
     onClear: () -> Unit,
     onSelectionCount: (Int) -> Unit = {},
-    onDeleteSelected: (List<Long>) -> Unit = {}
+    onDeleteSelected: (List<Long>) -> Unit = {},
+    exitSignal: Int = 0
 ) {
     val colors = CouiTheme.colorScheme
     // 选择模式：长按进入，点按切换选中；顶栏显示已选数量
@@ -1348,6 +1363,12 @@ private fun HistoryView(
     var selected by remember { mutableStateOf(setOf<Long>()) }
     LaunchedEffect(selecting, selected.size) {
         onSelectionCount(if (selecting) selected.size else 0)
+    }
+    LaunchedEffect(exitSignal) {
+        if (exitSignal > 0) {
+            selecting = false
+            selected = emptySet()
+        }
     }
     if (history.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1398,7 +1419,6 @@ private fun HistoryView(
                         onClick = {
                             if (selecting) {
                                 selected = if (picked) selected - e.tid else selected + e.tid
-                                if (selected.isEmpty()) selecting = false
                             } else onOpen(e.url, e.title)
                         },
                         onLongClick = {
@@ -2060,10 +2080,10 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
                 }
             }
 
-            // 关闭键
+            // 返回键（左上角）
             Box(
                 Modifier
-                    .align(Alignment.TopEnd)
+                    .align(Alignment.TopStart)
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(8.dp)
                     .size(36.dp)
@@ -2071,7 +2091,7 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
                     .background(Color.Black.copy(alpha = 0.5f))
                     .clickable { onClose() },
                 contentAlignment = Alignment.Center
-            ) { IconImg(CouiIcons.Filled.Close, 18.dp, Color.White) }
+            ) { IconImg(CouiIcons.Filled.Back, 18.dp, Color.White) }
         }
     }
 }
@@ -2081,10 +2101,6 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
 private fun ZoomableImage(url: String, onClose: () -> Unit) {
     var scale by remember(url) { mutableStateOf(1f) }
     var offset by remember(url) { mutableStateOf(Offset.Zero) }
-    val state = rememberTransformableState { zoomChange, panChange, _ ->
-        scale = (scale * zoomChange).coerceIn(1f, 6f)
-        offset = if (scale <= 1.02f) Offset.Zero else offset + panChange
-    }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         AsyncImage(
             model = ImageStore.local(url) ?: url,
@@ -2092,13 +2108,36 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
             contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxSize()
-                // 只有放大后才吃掉拖动，避免和 Pager 的左右翻页抢手势
-                .pointerInput(scale) {
-                    detectDragGestures { change, delta ->
-                        if (scale > 1.02f) {
-                            change.consume()
-                            offset += delta
-                        }
+                // 手势策略：双指永远缩放；单指拖动只在放大后由图片吃掉，
+                // 未放大时不消费，交回给 Pager 翻页
+                .pointerInput(url) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        do {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.filter { it.pressed }
+                            if (pressed.size >= 2) {
+                                val p0 = pressed[0]
+                                val p1 = pressed[1]
+                                val curDist = (p0.position - p1.position).getDistance()
+                                val prevDist = (p0.previousPosition - p1.previousPosition).getDistance()
+                                val zoom = if (prevDist > 1f) curDist / prevDist else 1f
+                                val pan = ((p0.position + p1.position) -
+                                    (p0.previousPosition + p1.previousPosition)) / 2f
+                                if (zoom != 1f) {
+                                    scale = (scale * zoom).coerceIn(1f, 6f)
+                                    if (scale <= 1.02f) offset = Offset.Zero
+                                }
+                                if (scale > 1.02f && pan != Offset.Zero) offset += pan
+                                pressed.forEach { it.consume() }
+                            } else if (pressed.size == 1 && scale > 1.02f) {
+                                val delta = pressed[0].position - pressed[0].previousPosition
+                                if (delta != Offset.Zero) {
+                                    offset += delta
+                                    pressed[0].consume()
+                                }
+                            }
+                        } while (pressed.any { it.pressed })
                     }
                 }
                 .pointerInput(Unit) {
@@ -2114,7 +2153,6 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                         onTap = { if (scale <= 1.05f) onClose() }
                     )
                 }
-                .transformable(state, lockRotationOnZoomPan = true)
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
