@@ -448,6 +448,7 @@ fun AppUi(
     loggedIn: Boolean,
     avatarUrl: String?,
     onShare: () -> Unit,
+    onCopyLink: () -> Unit = {},
     onReply: () -> Unit,
     onRate: (String) -> Unit,
     onAttach: (AttachItem) -> Unit,
@@ -537,6 +538,7 @@ fun AppUi(
     val topMenuItems = buildList {
         if (avatarUrl.isNullOrBlank()) add(Triple("登录", 4) { onLogin() })
         if (nav is Nav.Thread) add(Triple("分享", 0) { onShare() })
+        if (nav is Nav.Thread) add(Triple("复制链接", 5) { onCopyLink() })
         if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
         if (nav is Nav.Thread) add(Triple("刷新", 2) { onRefreshThread() })
         add(Triple("设置", 3) { onSettings() })
@@ -876,6 +878,7 @@ private fun TopBar(
     onSettings: () -> Unit,
     onLogin: () -> Unit,
     onShare: () -> Unit,
+    onCopyLink: () -> Unit = {},
     onDump: () -> Unit,
     menuOpen: Boolean = false,
     onToggleMenu: () -> Unit = {}
@@ -991,6 +994,7 @@ private fun AvatarMenu(
                             1 -> MenuIcon(AppIcon.Browser)
                             2 -> MenuIcon(AppIcon.Refresh)
                             4 -> MenuIcon(AppIcon.Login)
+                            5 -> MenuIcon(AppIcon.Copy)
                             else -> MenuIcon(AppIcon.Setting)
                         }
                         Spacer(Modifier.width(12.dp))
@@ -1002,7 +1006,7 @@ private fun AvatarMenu(
     }
 }
 
-private enum class AppIcon { Share, Browser, Refresh, Setting, Login }
+private enum class AppIcon { Share, Browser, Refresh, Setting, Login, Copy }
 
 @Composable
 private fun MenuIcon(kind: AppIcon) {
@@ -1012,6 +1016,7 @@ private fun MenuIcon(kind: AppIcon) {
         AppIcon.Browser -> IconBrowser()
         AppIcon.Refresh -> IconRefresh()
         AppIcon.Login -> IconImg(CouiIcons.Filled.UserCircle, 20.dp, CouiTheme.colorScheme.onSurface)
+        AppIcon.Copy -> IconCopy()
     }
 }
 
@@ -2451,6 +2456,34 @@ private fun AccountDialog(
                 Pill("关闭", onClose, primary = false)
             }
         }
+    }
+}
+
+/** 复制图标（两个叠起来的圆角方框） */
+@Composable
+private fun IconCopy() {
+    val c = CouiTheme.colorScheme.onSurface
+    Canvas(Modifier.size(20.dp)) {
+        val sw = 1.6.dp.toPx()
+        val w = size.width
+        val h = size.height
+        val r = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx())
+        // 后层
+        drawRoundRect(
+            color = c,
+            topLeft = androidx.compose.ui.geometry.Offset(w * 0.16f, h * 0.10f),
+            size = androidx.compose.ui.geometry.Size(w * 0.52f, h * 0.60f),
+            cornerRadius = r,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(sw)
+        )
+        // 前层
+        drawRoundRect(
+            color = c,
+            topLeft = androidx.compose.ui.geometry.Offset(w * 0.32f, h * 0.30f),
+            size = androidx.compose.ui.geometry.Size(w * 0.52f, h * 0.60f),
+            cornerRadius = r,
+            style = androidx.compose.ui.graphics.drawscope.Stroke(sw)
+        )
     }
 }
 

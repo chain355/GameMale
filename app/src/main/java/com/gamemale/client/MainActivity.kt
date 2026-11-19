@@ -251,7 +251,8 @@ class MainActivity : ComponentActivity() {
                     loginName = loginName,
                     avatarUrl = avatarUrl,
                     loggedIn = loggedIn,
-                    onShare = { shareThread() }
+                    onShare = { shareThread() },
+                    onCopyLink = { copyThreadLink() }
                 )
             }
         }
@@ -1515,6 +1516,18 @@ class MainActivity : ComponentActivity() {
             c.isAppearanceLightStatusBars = !darkMode
             c.isAppearanceLightNavigationBars = !darkMode
         }
+    }
+
+    /** 只复制帖子链接本身，不带标题 */
+    private fun copyThreadLink() {
+        val url = (nav as? Nav.Thread)?.url ?: navUrl()
+        if (url.isBlank()) { toast("当前页面没有可复制的链接"); return }
+        runCatching {
+            val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("链接", url))
+            toast("链接已复制")
+        }.onFailure { toast("复制失败：" + (it.message ?: "")) }
     }
 
     private fun shareThread() {
