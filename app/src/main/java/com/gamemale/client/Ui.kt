@@ -638,6 +638,14 @@ fun AppUi(
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
     val backdrop = rememberCouiBackdrop()
+    // 卡片→全屏：几何用矩形插值，内容用截图交叉淡化
+    val zoomProg = remember { Animatable(1f) }
+    var zoomRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var zoomBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var zoomMode by remember { mutableStateOf(1) }
+    var threadOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var prevNavZoom by remember { mutableStateOf<Nav>(nav) }
+    val pageGl = rememberGraphicsLayer()
     var sharedTid by remember { mutableStateOf<String?>(null) }
     var prevNavShared by remember { mutableStateOf<Nav>(nav) }
     LaunchedEffect(nav, threadKey) {
@@ -651,6 +659,34 @@ fun AppUi(
                 sharedTid = null
             }
             else -> sharedTid = null
+        }
+    }
+    LaunchedEffect(nav) {
+        val from = prevNavZoom
+        prevNavZoom = nav
+        if (nav is Nav.Thread && from !is Nav.Thread) {
+            val r = CardZoom.origin
+            if (r != null && r.width > 1f && r.height > 1f) {
+                threadOrigin = r
+                zoomRect = r
+                zoomBitmap = CardZoom.bitmap
+                zoomMode = 1
+                zoomProg.snapTo(0f)
+                zoomProg.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
+                zoomRect = null
+                zoomBitmap = null
+            }
+        } else if (from is Nav.Thread && (nav is Nav.Forum || nav is Nav.History || nav == Nav.Home)) {
+            val r = threadOrigin
+            if (r != null) {
+                zoomRect = r
+                zoomBitmap = runCatching { pageGl.toImageBitmap() }.getOrNull()
+                zoomMode = -1
+                zoomProg.snapTo(1f)
+                zoomProg.animateTo(0f, tween(500, easing = FastOutSlowInEasing))
+                zoomRect = null
+                zoomBitmap = null
+            }
         }
     }
     val inHistorySelection = nav is Nav.History && historySelecting
@@ -671,8 +707,8 @@ fun AppUi(
     Box(Modifier.fillMaxSize().background(colors.background)) {
         val barH = WindowInsets.systemBars.asPaddingValues().calculateTopPadding() + 56.dp
         // 列表页让内容从顶栏下方穿过，顶栏才能采到模糊源
-        val overlayBar = nav is Nav.Forum || nav is Nav.History || nav == Nav.Home
-        BarOverlay.inset = if (overlayBar) barH else 0.dp
+        val overlayBar = true
+        BarOverlay.inset = barH
         Box(Modifier.fillMaxSize()) {
             TopBar(
                 selectionMode = inHistorySelection,
@@ -717,7 +753,24 @@ fun AppUi(
                 Modifier
                     .fillMaxSize()
                     .padding(top = if (overlayBar) 0.dp else barH)
-                    .graphicsLayer { translationX = backProgress * size.width * 0.35f }
+                    .graphicsLayer {
+                        translationX = backProgress * size.width * 0.35f
+                        if (zoomRect != null) {
+                            alpha = if (zoomMode > 0) {
+                                ((zoomProg.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
+                            } else {
+                                ((1f - zoomProg.value) / 0.55f).coerceIn(0f, 1f)
+                            }
+                        }
+                    }
+                    .drawWithContent {
+                        if (nav is Nav.Thread) {
+                            pageGl.record { this@drawWithContent.drawContent() }
+                            drawLayer(pageGl)
+                        } else {
+                            drawContent()
+                        }
+                    }
                     .then(if (blurBg) Modifier.couiBackdrop(backdrop) else Modifier)
             ) {
                 androidx.compose.animation.SharedTransitionLayout {
@@ -758,14 +811,10 @@ fun AppUi(
                             forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
                             refreshing, onRefresh, onThumbNeeded
                         )
-                        cur is Nav.Thread -> Box(
-                            Modifier.fillMaxSize().threadZoom(threadKey)
-                        ) {
-                            ThreadView(
-                                threadPage, loading, onLoad, onExternal,
-                                onReply, onRate, onAttach, onImage
-                            )
-                        }
+                        cur is Nav.Thread -> ThreadView(
+                            threadPage, loading, onLoad, onExternal,
+                            onReply, onRate, onAttach, onImage
+                        )
                         cur is Nav.Settings -> SettingsView(
                             onAccounts = onOpenAccounts,
                             fontScale = fontScale,
@@ -883,6 +932,47 @@ fun AppUi(
                     )
                 }
             }
+            }
+        }
+
+        // 卡片/页面位图过渡层：几何在矩形与全屏之间插值，A 淡出 B 淡入
+        zoomRect?.let { r ->
+            val density = LocalDensity.current
+            val p = zoomProg.value
+            val screenW = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx() }
+            val screenH = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx() }
+            val left = r.left * (1f - p)
+            val top = r.top * (1f - p)
+            val w = r.width + (screenW - r.width) * p
+            val h = r.height + (screenH - r.height) * p
+            val corner = (1f - p) * 18f
+            val alpha = if (zoomMode > 0) {
+                if (p <= 0.55f) 1f else ((1f - p) / 0.45f).coerceIn(0f, 1f)
+            } else {
+                if (p >= 0.55f) 1f else (p / 0.55f).coerceIn(0f, 1f)
+            }
+            val shape = RoundedCornerShape(corner.dp)
+            val bmp = zoomBitmap
+            if (bmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bmp,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
+                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
+                        .clip(shape)
+                        .alpha(alpha)
+                )
+            } else {
+                Box(
+                    Modifier
+                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
+                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
+                        .clip(shape)
+                        .background(colors.container)
+                        .alpha(alpha)
+                )
             }
         }
 
@@ -1056,28 +1146,59 @@ private fun TopBar(
     blur: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
+    val statusTop = WindowInsets.systemBars.asPaddingValues().calculateTopPadding()
+    val barH = statusTop + 56.dp
+    val fadeH = 26.dp
+    val fadeStop = (barH.value * 0.55f) / (barH.value + fadeH.value)
     Box(
         Modifier
             .fillMaxWidth()
+            .height(barH + fadeH)
             .zIndex(2f)
-            .then(
-                if (backdrop != null && blur) Modifier.drawCouiBackdrop(
-                    backdrop,
-                    shape = { RectangleShape },
-                    effects = { blur(34f, TileMode.Clamp) },
-                    onDrawSurface = {
-                        drawRect(
-                            Brush.verticalGradient(
-                                0f to colors.background.copy(alpha = 0.96f),
-                                0.55f to colors.background.copy(alpha = 0.72f),
-                                1f to colors.background.copy(alpha = 0.18f)
-                            )
-                        )
-                    }
-                ) else Modifier.background(colors.background)
-            )
-            .windowInsetsPadding(WindowInsets.systemBars)
     ) {
+        if (backdrop != null && blur) {
+            // 顶栏本体 + 下方一段渐隐区，让模糊从 100% 平滑过渡到 0
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .drawCouiBackdrop(
+                            backdrop,
+                            shape = { RectangleShape },
+                            effects = { blur(36f, TileMode.Clamp) },
+                            onDrawSurface = {
+                                drawRect(colors.background.copy(alpha = 0.82f))
+                            }
+                        )
+                )
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .drawWithContent {
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    0f to Color.Black,
+                                    fadeStop to Color.Black,
+                                    1f to Color.Transparent
+                                ),
+                                blendMode = androidx.compose.ui.graphics.BlendMode.DstIn
+                            )
+                        }
+                )
+            }
+        } else {
+            Box(Modifier.fillMaxSize().background(colors.background))
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(barH)
+                .windowInsetsPadding(WindowInsets.statusBars)
+        ) {
         Row(
             Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -1123,7 +1244,7 @@ private fun TopBar(
                 ) { IconImg(CouiIcons.Filled.UserCircle, 22.dp, colors.onSurface) }
             }
         }
-
+    }
     }
 }
 
@@ -1422,6 +1543,11 @@ private fun ErrorView(
 }
 
 /** 卡片在窗口中的位置，用于帖子详情页的放大/缩小过渡 */
+object CardZoom {
+    var origin: androidx.compose.ui.geometry.Rect? = null
+    var bitmap: androidx.compose.ui.graphics.ImageBitmap? = null
+}
+
 private data class ZoomScopes(
     val shared: androidx.compose.animation.SharedTransitionScope,
     val animated: androidx.compose.animation.AnimatedVisibilityScope
@@ -1470,11 +1596,12 @@ private fun CardBox(
     var touch by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Unspecified) }
     var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     var rectRoot by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    val gl = rememberGraphicsLayer()
+    val cardScope = rememberCoroutineScope()
     val shape = RoundedCornerShape(18.dp)
     Box(
         Modifier
             .fillMaxWidth()
-            .threadZoom(zoomKey)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -1482,6 +1609,14 @@ private fun CardBox(
             .onGloballyPositioned {
                 bounds = it.boundsInWindow()
                 rectRoot = it.boundsInRoot()
+            }
+            .drawWithContent {
+                if (pressed) {
+                    gl.record { this@drawWithContent.drawContent() }
+                    drawLayer(gl)
+                } else {
+                    drawContent()
+                }
             }
 
             .clip(shape)
@@ -1502,7 +1637,16 @@ private fun CardBox(
                 if (onClick != null || onLongClick != null) Modifier.combinedClickable(
                     interactionSource = interaction,
                     indication = null,
-                    onClick = { onClick?.invoke() },
+                    onClick = {
+                        val act = onClick
+                        if (act != null) {
+                            CardZoom.origin = rectRoot
+                            cardScope.launch {
+                                CardZoom.bitmap = runCatching { gl.toImageBitmap() }.getOrNull()
+                                act()
+                            }
+                        }
+                    },
                     onLongClick = onLongClick
                 ) else Modifier
             )
@@ -1769,7 +1913,10 @@ private fun ForumView(
         // 顶部刷新提示：只在列表上方占一小条，不遮住原有内容
         if (refreshing || pull > 8f) {
             Row(
-                Modifier.fillMaxWidth().height(if (refreshing) 36.dp else (pull / 3f).dp.coerceAtMost(36.dp)),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = BarOverlay.inset)
+                    .height(if (refreshing) 36.dp else (pull / 3f).dp.coerceAtMost(36.dp)),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -2646,7 +2793,7 @@ private fun SearchScreen(
         runCatching { focus.requestFocus() }
         keyboard?.show()
     }
-    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp).padding(top = BarOverlay.inset)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
@@ -2759,7 +2906,7 @@ private fun SettingsView(
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 100.dp),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp + BarOverlay.inset, bottom = 100.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         item {
