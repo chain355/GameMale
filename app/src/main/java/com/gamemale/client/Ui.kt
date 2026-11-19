@@ -2254,7 +2254,7 @@ private fun SettingsView(
                 Pill("清除全部缓存", onClearCache, primary = false)
                 Spacer(Modifier.height(4.dp))
                 Txt(
-                    "清空会同时删除浏览记录；帖子缓存、正文图片、预览图、列表快照都算在已用容量里。",
+                    "清空只删缓存，不会动浏览记录（浏览记录请在浏览记录页点「清空」）；帖子缓存、正文图片、预览图、列表快照、浏览记录都算在已用容量里。",
                     size = 12.sp,
                     color = colors.onSurfaceVariant
                 )

@@ -193,9 +193,8 @@ class MainActivity : ComponentActivity() {
                         forumCache.clear()
                         SnapshotStore.clear()
                         ThumbStore.clear()
-                        history = HistoryStore.clear(this)
                         refreshCacheStats()
-                        toast("缓存与浏览记录已清除")
+                        toast("缓存已清除")
                     },
                     canGoBack = backStack.isNotEmpty() || nav is Nav.Thread ||
                         nav is Nav.Settings || nav is Nav.Search,
