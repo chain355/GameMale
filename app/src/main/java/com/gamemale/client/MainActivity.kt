@@ -207,6 +207,9 @@ class MainActivity : ComponentActivity() {
                         nav is Nav.Settings || nav is Nav.Search,
                     refreshing = refreshing,
                     searchUpdating = searchUpdating,
+                    dailyFailed = dailyFailed,
+                    onOpenSign = { openInBrowser(SITE + "plugin.php?id=k_misign:sign") },
+                    onOpenAward = { openInBrowser(SITE + "plugin.php?id=it618_award") },
                     onRefresh = { refreshCurrentForum() },
                     onOpenSearch = { openSearch() },
                     searchHistory = searchHistory,
@@ -1720,24 +1723,41 @@ class MainActivity : ComponentActivity() {
     }
 
     private var dailyRunning = false
+    private var dailyFailed by mutableStateOf(false)
 
     private fun todayKey(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
 
-    /** 每日首次启动：自动签到 + 自动翻卡抽奖（都靠重载页面文本核验结果） */
+    private fun looksSuccess(text: String?, vararg keys: String): Boolean {
+        if (text == null) return false
+        val ok = keys.any { text.contains(it) }
+        val bad = text.contains("失败") || text.contains("错误") || text.contains("不能") || text.contains("没有机会")
+        return ok && !bad
+    }
+
+    /** 每日首次启动：自动签到 + 自动翻卡抽奖 */
     private fun runDailyTasks() {
         if (!loggedIn || dailyRunning) return
         val sp = getSharedPreferences("gm", MODE_PRIVATE)
-        if (sp.getString("dailyTaskDay", "") == todayKey()) return
+        if (sp.getString("dailyTaskDay", "") == todayKey()) {
+            dailyFailed = sp.getBoolean("dailyTaskFailed", false)
+            return
+        }
         dailyRunning = true
-        val done = arrayOfNulls<Boolean>(2) // 0=签到 1=抽奖
+        toast("正在自动签到…")
+        val done = arrayOfNulls<Boolean>(2)
         fun finish() {
             if (done.any { it == null }) return
             val msgs = ArrayList<String>()
-            if (done[0] == true) msgs.add("已自动签到") else msgs.add("签到失败")
-            if (done[1] == true) msgs.add("已自动翻卡抽奖") else msgs.add("翻卡抽奖失败")
+            msgs.add(if (done[0] == true) "已自动签到" else "签到失败")
+            msgs.add(if (done[1] == true) "已自动翻卡抽奖" else "翻卡抽奖失败")
+            val failed = done.any { it == false }
+            dailyFailed = failed
             toast(msgs.joinToString("，"))
-            sp.edit().putString("dailyTaskDay", todayKey()).apply()
+            sp.edit()
+                .putString("dailyTaskDay", todayKey())
+                .putBoolean("dailyTaskFailed", failed)
+                .apply()
             dailyRunning = false
         }
         fun fetchText(url: String, cb: (String?) -> Unit) {
@@ -1749,57 +1769,53 @@ class MainActivity : ComponentActivity() {
             }
         }
         val signUrl = SITE + "plugin.php?id=k_misign:sign"
-        fetchText(signUrl) { html ->
-            if (html == null) {
-                done[0] = false
-            } else if (!html.contains("您今天还没有签到")) {
-                done[0] = true
-            } else {
-                val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
-                if (fh == null) {
-                    done[0] = false
+        val awardUrl = SITE + "plugin.php?id=it618_award"
+
+        fun lottery() {
+            fetchText(awardUrl) { html ->
+                if (html == null) {
+                    done[1] = false; finish(); return@fetchText
+                }
+                val drawn = html.contains("已抽奖") || html.contains("已经抽奖") ||
+                    Regex("抽奖\\s*\\d+\\s*次").containsMatchIn(html)
+                if (drawn) {
+                    done[1] = true; finish()
                 } else {
-                    val act = SITE + "plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh&format=empty"
-                    fetchText(act) { _ ->
-                        // 重载签到页核验
-                        fetchText(signUrl) { v ->
-                            done[0] = v != null && !v.contains("您今天还没有签到") && v.contains("您的签到排名")
-                            startLottery(::fetchText, done) { finish() }
+                    toast("正在自动翻卡抽奖…")
+                    val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+                    if (fh == null) {
+                        done[1] = false; finish()
+                    } else {
+                        // 抽卡接口的返回体直接判断成败，不再重载页面（重载容易超时）
+                        fetchText(SITE + "plugin.php?id=it618_award:ajax&ac=getaward&formhash=$fh") { r ->
+                            done[1] = looksSuccess(r, "成功", "恭喜", "获得", "积分", "抽到", "已抽奖")
+                            finish()
                         }
                     }
                 }
             }
-            if (done[0] != null) startLottery(::fetchText, done) { finish() }
         }
-    }
 
-    private fun startLottery(
-        fetchText: (String, (String?) -> Unit) -> Unit,
-        done: Array<Boolean?>,
-        finish: () -> Unit
-    ) {
-        if (done[1] != null) { finish(); return }
-        val pageUrl = SITE + "plugin.php?id=it618_award"
-        fetchText(pageUrl) { html ->
+        fetchText(signUrl) { html ->
             if (html == null) {
-                done[1] = false; finish(); return@fetchText
+                done[0] = false
+                lottery()
+                return@fetchText
             }
-            val drawn = html.contains("已抽奖") || html.contains("已经抽奖") ||
-                Regex("抽奖\\s*\\d+\\s*次").containsMatchIn(html)
-            if (drawn) {
-                done[1] = true; finish()
+            if (!html.contains("您今天还没有签到")) {
+                done[0] = true
+                toast("今日已签到，正在检查翻卡…")
+                lottery()
             } else {
                 val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
                 if (fh == null) {
-                    done[1] = false; finish()
+                    done[0] = false
+                    lottery()
                 } else {
-                    val act = SITE + "plugin.php?id=it618_award:ajax&ac=getaward&formhash=$fh"
-                    fetchText(act) { _ ->
-                        fetchText(pageUrl) { v ->
-                            done[1] = v != null && (v.contains("已抽奖") || v.contains("已经抽奖") ||
-                                Regex("抽奖\\s*\\d+\\s*次").containsMatchIn(v))
-                            finish()
-                        }
+                    fetchText(SITE + "plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh&format=empty") { r ->
+                        done[0] = looksSuccess(r, "成功", "已签到", "签到排名", "重复", "已经签到")
+                        if (done[0] == true) toast("签到完成")
+                        lottery()
                     }
                 }
             }

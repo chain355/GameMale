@@ -597,6 +597,9 @@ fun AppUi(
     onShare: () -> Unit,
     onCopyLink: () -> Unit = {},
     searchUpdating: Boolean = false,
+    dailyFailed: Boolean = false,
+    onOpenSign: () -> Unit = {},
+    onOpenAward: () -> Unit = {},
     historySelectionCount: Int = 0,
     historySelecting: Boolean = false,
     onHistorySelecting: (Boolean) -> Unit = {},
@@ -786,6 +789,11 @@ fun AppUi(
         if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
         if (nav is Nav.Thread) add(Triple("刷新", 2) { onRefreshThread() })
         add(Triple("设置", 3) { onSettings() })
+        // 今日自动签到/抽卡有失败时，给出手动入口
+        if (dailyFailed) {
+            add(Triple("手动签到", 6) { onOpenSign() })
+            add(Triple("手动抽卡", 7) { onOpenAward() })
+        }
     }
     // 切换页面/弹窗时自动收起菜单
     LaunchedEffect(nav, loginPage, verifyPage, accountsOpen) { topMenuOpen = false }
@@ -1584,6 +1592,7 @@ private fun AvatarMenu(
                             2 -> MenuIcon(AppIcon.Refresh)
                             4 -> MenuIcon(AppIcon.Login)
                             5 -> MenuIcon(AppIcon.Copy)
+                            6, 7 -> MenuIcon(AppIcon.Browser)
                             else -> MenuIcon(AppIcon.Setting)
                         }
                         Spacer(Modifier.width(12.dp))
@@ -2286,28 +2295,33 @@ private fun ForumView(
                     androidx.compose.ui.unit.IntOffset(0, maxOf(pull, autoOffset.value).toInt())
                 }
                 .background(colors.background)
-                .pointerInput(currentUrl, onSwipeBoard) {
-                    if (onSwipeBoard == null) return@pointerInput
-                    var acc = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { acc = 0f },
-                        onHorizontalDrag = { ch, d -> acc += d; ch.consume() },
-                        onDragEnd = {
-                            val th = 110.dp.toPx()
-                            if (acc > th) onSwipeBoard(true) else if (acc < -th) onSwipeBoard(false)
-                            acc = 0f
-                        },
-                        onDragCancel = { acc = 0f }
-                    )
-                }
+
                 .nestedScroll(scrollConn)
                 .pointerInput(refreshing) {
                     awaitPointerEventScope {
+                        var accX = 0f
+                        var accY = 0f
                         while (true) {
                             val e = awaitPointerEvent()
+                            var moved = false
+                            for (c in e.changes) {
+                                val d = c.position - c.previousPosition
+                                if (d != androidx.compose.ui.geometry.Offset.Zero) {
+                                    accX += d.x; accY += d.y; moved = true
+                                }
+                            }
                             if (e.changes.any { it.pressed }) dragging = true
                             if (e.changes.isNotEmpty() && e.changes.all { !it.pressed }) {
                                 dragging = false
+                                val th = 110.dp.toPx()
+                                if (onSwipeBoard != null && kotlin.math.abs(accX) > th &&
+                                    kotlin.math.abs(accX) > kotlin.math.abs(accY) * 2f && !refreshing
+                                ) {
+                                    onSwipeBoard(accX > 0f)
+                                    accX = 0f; accY = 0f
+                                    continue
+                                }
+                                accX = 0f; accY = 0f
                                 if (pull > 90f && !refreshing && !listState.canScrollBackward) {
                                     // 保持当前偏移，等刷新结束再回顶
                                     onRefresh()
