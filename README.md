@@ -6,7 +6,7 @@
 
 本仓库初始代码全部由 AI 完成，后续若有其他协作者会写入贡献者名单。公开出来是给同样想改造 Discuz 阅读体验的人做参考，不保证生产可用。
 
-当前版本：`3.0-M68`（versionCode 87），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
+当前版本：`3.0-M69`（versionCode 88），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
 
 ## 它是什么
 
@@ -85,6 +85,11 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 ## 更新日志
 
 只记录对使用有感知的改动，细节看提交记录。
+
+**3.0-M69（vc88）**
+- 卡片 ↔ 全屏改用 Compose 官方 `SharedTransitionLayout` + `sharedBounds` 容器变换（同 ColorOS 卡片的做法）
+- 删掉上一版自绘的截图遮罩层与横向飞入动画，过渡完全由共享元素承担
+- 卡片与帖子页用同一 key（tid）匹配，从列表/搜索/浏览记录进入都可正确放大，返回正确缩回原卡片
 
 **3.0-M68（vc87）**
 - 图片查看器相邻页互相裁剪，切图后不会露出上一张的放大残留

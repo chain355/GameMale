@@ -246,6 +246,7 @@ class MainActivity : ComponentActivity() {
                     onClearHistory = { history = HistoryStore.clear(this) },
                     historySelectionCount = historySelectionCount,
                     onHistorySelectionCount = { historySelectionCount = it },
+                    threadKey = openThreadTid,
                     historySelecting = historySelecting,
                     onHistorySelecting = { historySelecting = it },
                     onDeleteHistory = { tids ->
@@ -839,6 +840,7 @@ class MainActivity : ComponentActivity() {
     private fun openThreadUrl(rawUrl: String, title: String) {
         backStack.add(nav)
         val url = canonicalThreadUrl(rawUrl)
+        openThreadTid = tidOf(url)
         tidOf(url)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, title, url) }
         nav = Nav.Thread(url, title)
         val tid = tidOf(url)
@@ -1362,6 +1364,7 @@ class MainActivity : ComponentActivity() {
     /** 浏览记录选择模式下已选中的条数（显示在顶栏标题） */
     private var historySelectionCount by mutableStateOf(0)
     private var historySelecting by mutableStateOf(false)
+    private var openThreadTid by mutableStateOf<String?>(null)
     private var currentAccountId: String? = null
     private var accountsOpen by mutableStateOf(false)
     private var pendingCookie: String? = null

@@ -19,6 +19,9 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -485,6 +488,7 @@ fun AppUi(
     onCloseImage: () -> Unit,
     busy: Boolean,
     currentUrl: String,
+    threadKey: String? = null,
     onSettings: () -> Unit = {},
     fontScale: Float = 1f,
     themeMode: Int = 0,
@@ -557,45 +561,7 @@ fun AppUi(
     var topMenuOpen by remember { mutableStateOf(false) }
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
-    // 卡片 → 全屏的缩放过渡
-    val zoomProg = remember { Animatable(1f) }
-    var zoomRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
-    var threadOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
-    var zoomBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    var zoomMode by remember { mutableStateOf(1) }
-    val pageGl = rememberGraphicsLayer()
-    var prevNav by remember { mutableStateOf<Nav>(nav) }
     val inHistorySelection = nav is Nav.History && historySelecting
-    // 进入帖子：卡片放大到全屏；退回列表：全屏缩回卡片位置
-    LaunchedEffect(nav) {
-        val from = prevNav
-        prevNav = nav
-        if (nav is Nav.Thread && from !is Nav.Thread) {
-            val r = CardZoom.origin
-            if (r != null && r.width > 1f && r.height > 1f) {
-                threadOrigin = r
-                zoomRect = r
-                zoomBitmap = CardZoom.bitmap
-                zoomMode = 1
-                zoomProg.snapTo(0f)
-                zoomProg.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
-                zoomRect = null
-                zoomBitmap = null
-            }
-        } else if (from is Nav.Thread && nav is Nav.Forum) {
-            // 只有退回列表才做缩小过渡；进设置/搜索不算
-            val r = threadOrigin
-            if (r != null) {
-                zoomRect = r
-                zoomBitmap = runCatching { pageGl.toImageBitmap() }.getOrNull()
-                zoomMode = -1
-                zoomProg.snapTo(1f)
-                zoomProg.animateTo(0f, tween(500, easing = FastOutSlowInEasing))
-                zoomRect = null
-                zoomBitmap = null
-            }
-        }
-    }
     if (inHistorySelection) {
         androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
     }
@@ -652,21 +618,10 @@ fun AppUi(
             Box(
                 Modifier
                     .weight(1f)
-                    .graphicsLayer {
-                        translationX = backProgress * size.width * 0.35f
-                        val a = if (zoomRect == null) 1f
-                        else if (zoomMode > 0) zoomProg.value else 1f - zoomProg.value
-                        alpha = a.coerceIn(0f, 1f)
-                    }
-                    .drawWithContent {
-                        if (nav is Nav.Thread) {
-                            pageGl.record { this@drawWithContent.drawContent() }
-                            drawLayer(pageGl)
-                        } else {
-                            drawContent()
-                        }
-                    }
+                    .graphicsLayer { translationX = backProgress * size.width * 0.35f }
             ) {
+                androidx.compose.animation.SharedTransitionLayout {
+                val sharedScope = this
                 AnimatedContent(
                     targetState = nav,
                     transitionSpec = {
@@ -674,6 +629,10 @@ fun AppUi(
                     },
                     label = "nav"
                 ) { cur ->
+                    val animScope = this
+                    CompositionLocalProvider(
+                        LocalZoomScopes provides ZoomScopes(sharedScope, animScope)
+                    ) {
                     when {
                         error != null && (nav is Nav.Forum || nav is Nav.Thread) ->
                             ErrorView(error, onRetry, onDump, onLogin)
@@ -698,10 +657,14 @@ fun AppUi(
                             forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
                             refreshing, onRefresh, onThumbNeeded
                         )
-                        cur is Nav.Thread -> ThreadView(
-                            threadPage, loading, onLoad, onExternal,
-                            onReply, onRate, onAttach, onImage
-                        )
+                        cur is Nav.Thread -> Box(
+                            Modifier.fillMaxSize().threadZoom(threadKey)
+                        ) {
+                            ThreadView(
+                                threadPage, loading, onLoad, onExternal,
+                                onReply, onRate, onAttach, onImage
+                            )
+                        }
                         cur is Nav.Settings -> SettingsView(
                             onAccounts = onOpenAccounts,
                             fontScale = fontScale,
@@ -717,9 +680,11 @@ fun AppUi(
                             onExternal = onExternal
                         )
                     }
+                    }
                 }
                 // 设置页/搜索页不该被列表的加载遮罩挡住
                 if (loading && (nav is Nav.Forum || nav is Nav.Thread)) LoadingLayer("正在加载…")
+                }
             }
             }
 
@@ -815,46 +780,6 @@ fun AppUi(
                     )
                 }
             }
-            }
-        }
-
-        // 卡片 ↔ 全屏 的缩放过渡覆盖层
-        zoomRect?.let { r ->
-            val density = LocalDensity.current
-            val p = zoomProg.value
-            val screenW = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx() }
-            val screenH = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx() }
-            val left = r.left * (1f - p)
-            val top = r.top * (1f - p)
-            val w = r.width + (screenW - r.width) * p
-            val h = r.height + (screenH - r.height) * p
-            val corner = (1f - p) * 18f
-            val alpha = when {
-                p > 0.62f -> ((1f - p) / 0.38f).coerceIn(0f, 1f)
-                p < 0.38f -> (p / 0.38f).coerceIn(0f, 1f)
-                else -> 1f
-            }
-            val bmp = zoomBitmap
-            if (bmp != null) {
-                androidx.compose.foundation.Image(
-                    bitmap = bmp,
-                    contentDescription = null,
-                    contentScale = ContentScale.FillBounds,
-                    modifier = Modifier
-                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
-                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
-                        .clip(RoundedCornerShape(corner.dp))
-                        .alpha(alpha)
-                )
-            } else {
-                Box(
-                    Modifier
-                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
-                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
-                        .clip(RoundedCornerShape(corner.dp))
-                        .background(colors.background)
-                        .alpha(alpha)
-                )
             }
         }
 
@@ -1339,15 +1264,38 @@ private fun ErrorView(
 }
 
 /** 卡片在窗口中的位置，用于帖子详情页的放大/缩小过渡 */
-object CardZoom {
-    var origin: androidx.compose.ui.geometry.Rect? = null
-    var bitmap: androidx.compose.ui.graphics.ImageBitmap? = null
+private data class ZoomScopes(
+    val shared: androidx.compose.animation.SharedTransitionScope,
+    val animated: androidx.compose.animation.AnimatedVisibilityScope
+)
+
+private val LocalZoomScopes = staticCompositionLocalOf<ZoomScopes?> { null }
+
+/** 卡片与帖子页共享同一 key，交给 Compose 的 sharedBounds 做卡片↔全屏容器变换 */
+@Composable
+private fun Modifier.threadZoom(key: String?): Modifier {
+    val z = LocalZoomScopes.current ?: return this
+    if (key.isNullOrBlank()) return this
+    return with(z.shared) {
+        this@threadZoom.sharedBounds(
+            rememberSharedContentState("thread-$key"),
+            z.animated,
+            enter = fadeIn(tween(220)),
+            exit = fadeOut(tween(160)),
+            boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) },
+            resizeMode = androidx.compose.animation.SharedTransitionScope.ResizeMode.scaleToBounds(
+                ContentScale.Crop,
+                Alignment.Center
+            )
+        )
+    }
 }
 
 @Composable
 private fun CardBox(
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
+    zoomKey: String? = null,
     content: @Composable () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
@@ -1358,12 +1306,11 @@ private fun CardBox(
     var touch by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Unspecified) }
     var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     var rectRoot by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
-    val gl = rememberGraphicsLayer()
-    val scope = rememberCoroutineScope()
     val shape = RoundedCornerShape(18.dp)
     Box(
         Modifier
             .fillMaxWidth()
+            .threadZoom(zoomKey)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -1372,14 +1319,7 @@ private fun CardBox(
                 bounds = it.boundsInWindow()
                 rectRoot = it.boundsInRoot()
             }
-            .drawWithContent {
-                if (pressed) {
-                    gl.record { this@drawWithContent.drawContent() }
-                    drawLayer(gl)
-                } else {
-                    drawContent()
-                }
-            }
+
             .clip(shape)
             .background(if (pressed) colors.card else colors.container)
             .pointerInput(Unit) {
@@ -1398,16 +1338,7 @@ private fun CardBox(
                 if (onClick != null || onLongClick != null) Modifier.combinedClickable(
                     interactionSource = interaction,
                     indication = null,
-                    onClick = {
-                        val act = onClick
-                        if (act != null) {
-                            CardZoom.origin = rectRoot
-                            scope.launch {
-                                CardZoom.bitmap = runCatching { gl.toImageBitmap() }.getOrNull()
-                                act()
-                            }
-                        }
-                    },
+                    onClick = { onClick?.invoke() },
                     onLongClick = onLongClick
                 ) else Modifier
             )
@@ -1551,6 +1482,7 @@ private fun HistoryView(
                                 selected = if (picked) selected - e.tid else selected + e.tid
                             } else onOpen(e.url, e.title)
                         },
+                        zoomKey = if (selecting) null else e.tid.toString(),
                         onLongClick = {
                             selecting = true
                             selected = selected + e.tid
@@ -1710,7 +1642,7 @@ private fun ForumView(
                 LaunchedEffect(t.tid, t.thumbs.size) {
                     if (t.thumbs.isEmpty()) onThumbNeeded(t)
                 }
-                CardBox(onClick = { onThread(t) }) {
+                CardBox(onClick = { onThread(t) }, zoomKey = t.tid) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (!t.typeName.isNullOrEmpty()) {
