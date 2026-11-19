@@ -338,7 +338,7 @@ class Fetcher(private val ctx: Context) {
                 isChallenge(html) -> {
                     if (early) return@evaluateJavascript
                     challengeWait++
-                    if (challengeWait > 16) {
+                    if (challengeWait > 6) {
                         retryOrFail("遇到 Cloudflare 验证")
                     } else {
                         Diag.log("fetch", "等待验证通过 第" + challengeWait + "次")

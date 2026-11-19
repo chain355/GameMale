@@ -198,6 +198,9 @@ class MainActivity : ComponentActivity() {
                     loginWeb = loginWeb,
                     onLoginDone = { finishLogin() },
                     onLoginClose = { closeLogin() },
+                    verifyPage = verifyPage,
+                    verifyWeb = verifyWeb,
+                    onVerifyClose = { closeVerify() },
                     onAvatar = { },
                     onReply = { replyOpen = true },
                     onRate = { pid -> openRate(pid) },
@@ -564,6 +567,10 @@ class MainActivity : ComponentActivity() {
                     refreshing = false
                     loading = false
                     Diag.log("load", "fail url=" + url + " reason=" + (it.message ?: it.javaClass.simpleName))
+                    if ((it.message ?: "").contains("Cloudflare")) {
+                        openVerify(url)
+                        return@onFailure
+                    }
                     if (nav is Nav.Forum && retryCount < 1) {
                         retryCount++
                         load(url)
@@ -1199,6 +1206,10 @@ class MainActivity : ComponentActivity() {
     private var loginPage by mutableStateOf(false)
     private var loginWeb: WebView? = null
     private var loginPrompted = false
+    /** 站点要求人工验证时，弹一个可见 WebView 让页面自己跑完验证 */
+    private var verifyPage by mutableStateOf(false)
+    private var verifyWeb: WebView? = null
+    private var verifyTarget: String? = null
     private var searchOpen by mutableStateOf(false)
     private var backProgress by mutableStateOf(0f)
     private var searchHistory by mutableStateOf<List<String>>(emptyList())
@@ -1802,6 +1813,55 @@ class MainActivity : ComponentActivity() {
         homeAlt = false
         Diag.log("login", "登录完成，回首页刷新")
         reload()
+    }
+
+    /** 弹可见验证页：隐藏 WebView 里过不去的 Cloudflare 挑战，改成让用户看着它跑完 */
+    private fun openVerify(url: String) {
+        if (verifyPage) return
+        val web = WebView(this)
+        web.settings.javaScriptEnabled = true
+        web.settings.domStorageEnabled = true
+        web.webViewClient = WebViewClient()
+        web.loadUrl(url)
+        verifyWeb = web
+        verifyTarget = url
+        verifyPage = true
+        Diag.log("verify", "打开可见验证页 " + url)
+        handler.postDelayed(verifyPoller, 700)
+    }
+
+    private val verifyPoller = object : Runnable {
+        override fun run() {
+            if (!verifyPage) return
+            if (hasClearance()) {
+                Diag.log("verify", "验证通过，拿到 cf_clearance")
+                val target = verifyTarget
+                closeVerify()
+                if (target != null) reload()
+                return
+            }
+            handler.postDelayed(this, 900)
+        }
+    }
+
+    private fun hasClearance(): Boolean {
+        val cookie = CookieManager.getInstance().getCookie(SITE) ?: return false
+        return cookie.contains("cf_clearance=")
+    }
+
+    private fun closeVerify() {
+        handler.removeCallbacks(verifyPoller)
+        verifyPage = false
+        val web = verifyWeb
+        verifyWeb = null
+        if (web != null) {
+            handler.postDelayed({
+                runCatching {
+                    (web.parent as? android.view.ViewGroup)?.removeView(web)
+                    web.destroy()
+                }
+            }, 120)
+        }
     }
 
     private fun closeLogin() {

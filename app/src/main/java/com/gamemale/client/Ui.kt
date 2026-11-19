@@ -437,7 +437,10 @@ fun AppUi(
     loginPage: Boolean = false,
     loginWeb: android.webkit.WebView? = null,
     onLoginDone: () -> Unit = {},
-    onLoginClose: () -> Unit = {}
+    onLoginClose: () -> Unit = {},
+    verifyPage: Boolean = false,
+    verifyWeb: android.webkit.WebView? = null,
+    onVerifyClose: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -548,6 +551,50 @@ fun AppUi(
                 if (loading && (nav is Nav.Forum || nav is Nav.Thread)) LoadingLayer("正在加载…")
             }
             }
+
+        if (verifyPage && verifyWeb != null) {
+            Box(Modifier.fillMaxSize().background(colors.background)) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .windowInsetsPadding(WindowInsets.safeDrawing)
+                            .height(56.dp)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircleBtn(CouiIcons.Filled.Back, onVerifyClose)
+                        Txt(
+                            "站点验证",
+                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                            size = 17.sp,
+                            weight = FontWeight.Bold,
+                            color = colors.onSurface
+                        )
+                    }
+                    Txt(
+                        "站点要求先确认你是真人，正在自动通过验证。一般几秒就好，通过后会自动返回列表。",
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+                        size = 12.sp,
+                        color = colors.onSurfaceVariant
+                    )
+                    AndroidView(
+                        factory = {
+                            val wrapper = android.widget.FrameLayout(it)
+                            (verifyWeb.parent as? android.view.ViewGroup)?.removeView(verifyWeb)
+                            wrapper.addView(
+                                verifyWeb,
+                                android.widget.FrameLayout.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            )
+                            wrapper
+                        },
+                        modifier = Modifier.weight(1f).fillMaxWidth()
+                    )
+                }
+            }
+        }
 
         if (loginPage && loginWeb != null) {
             Box(Modifier.fillMaxSize().background(colors.background)) {
