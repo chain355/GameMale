@@ -160,8 +160,9 @@ class Fetcher(private val ctx: Context) {
     /** 每次请求一个代号：旧请求残留的定时器/回调一律作废，避免把新请求判成超时 */
     private var gen = 0
     private var blocked = 0
+    private var challengeWait = 0
 
-    private fun newGen(): Int { gen++; return gen }
+    private fun newGen(): Int { gen++; challengeWait = 0; return gen }
 
     fun fetch(url: String, cb: (Result<String>) -> Unit) {
         if (running && jobs.size >= 5) {
@@ -331,8 +332,21 @@ class Fetcher(private val ctx: Context) {
                 html.contains("id=\"threadlist\"") || html.contains("normalthread_")
             when {
                 html.isBlank() -> if (early) return@evaluateJavascript else retryOrFail("页面为空")
-                isChallenge(html) -> if (early) return@evaluateJavascript
-                    else retryOrFail("遇到 Cloudflare 验证")
+                // Cloudflare 的验证页是"活的"：它要靠页面里的 JS 自己算完再跳转。
+                // 之前一见验证页就失败重载，等于每次把验证重新开始一遍，永远过不去。
+                // 这里改成原地等它自己跳走。
+                isChallenge(html) -> {
+                    if (early) return@evaluateJavascript
+                    challengeWait++
+                    if (challengeWait > 16) {
+                        retryOrFail("遇到 Cloudflare 验证")
+                    } else {
+                        Diag.log("fetch", "等待验证通过 第" + challengeWait + "次")
+                        main.postDelayed({
+                            if (!done && g == gen) extract()
+                        }, 900)
+                    }
+                }
                 tid != null && !html.contains("thread-$tid") ->
                     if (early) return@evaluateJavascript else retryOrFail("拿到的不是目标帖子")
                 // 提前取到的可能只是半截 DOM，没看到正文容器就等 onPageFinished 再取

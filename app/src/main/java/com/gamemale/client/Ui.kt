@@ -544,7 +544,8 @@ fun AppUi(
                         )
                     }
                 }
-                if (loading) LoadingLayer("正在加载…")
+                // 设置页/搜索页不该被列表的加载遮罩挡住
+                if (loading && (nav is Nav.Forum || nav is Nav.Thread)) LoadingLayer("正在加载…")
             }
             }
 
