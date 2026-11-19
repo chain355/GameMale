@@ -503,6 +503,17 @@ class MainActivity : ComponentActivity() {
                                 }
                                 needUpgrade = false
                                 var fp = Site.parseForumPage(html)
+                                // 未登录时版块页是一条"游客无权查看"的短页（~46KB，没有任何帖子行），
+                                // 不依赖具体文案，直接按"没登录 + 列表为空"判定
+                                if (fp.threads.isEmpty() && !loggedIn && url.contains("mod=forumdisplay")) {
+                                    Diag.log("load", "未登录，列表为空，提示登录 url=" + url)
+                                    needLogin = true
+                                    needUpgrade = false
+                                    refreshing = false
+                                    error = null
+                                    forumPage = fp.copy(title = (nav as Nav.Forum).title)
+                                    return@onSuccess
+                                }
                                 if (fp.threads.isEmpty() && url.contains("search.php")) {
                                     val hits = Site.parseSearchResults(html)
                                     if (hits.isNotEmpty()) fp = fp.copy(threads = hits)
