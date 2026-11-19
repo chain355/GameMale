@@ -483,9 +483,14 @@ fun AppUi(
         lastForumUrl = currentUrl
     }
     var searchOpen by remember { mutableStateOf(false) }
+    var topMenuOpen by remember { mutableStateOf(false) }
+    // 切换页面/弹窗时自动收起菜单
+    LaunchedEffect(nav, loginPage, verifyPage, accountsOpen) { topMenuOpen = false }
     Box(Modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize()) {
             TopBar(
+                menuOpen = topMenuOpen,
+                onToggleMenu = { topMenuOpen = !topMenuOpen },
                 loginName = loginName,
                 canShare = nav is Nav.Thread,
                 canRefresh = nav is Nav.Thread,
@@ -617,6 +622,15 @@ fun AppUi(
         }
 
         if (loginPage && loginWeb != null) {
+            // 用独立 Dialog 窗口承载 WebView：独立窗口才有正常的输入法焦点，
+            // 嵌在主窗口的 Compose 覆盖层里 WebView 拿不到 IME 连接。
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = onLoginClose,
+                properties = androidx.compose.ui.window.DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    decorFitsSystemWindows = false
+                )
+            ) {
             Box(Modifier.fillMaxSize().background(colors.background)) {
                 Column(Modifier.fillMaxSize()) {
                     Row(
@@ -653,6 +667,7 @@ fun AppUi(
                         modifier = Modifier.weight(1f).fillMaxWidth()
                     )
                 }
+            }
             }
         }
 
@@ -753,6 +768,17 @@ fun AppUi(
                 }
             )
         }
+        AvatarMenu(
+            visible = topMenuOpen,
+            items = buildList {
+                if (avatarUrl.isNullOrBlank()) add(Triple("登录", 4) { topMenuOpen = false; onLogin() })
+                if (nav is Nav.Thread) add(Triple("分享", 0) { topMenuOpen = false; onShare() })
+                if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { topMenuOpen = false; onOpenBrowser() })
+                if (nav is Nav.Thread) add(Triple("刷新", 2) { topMenuOpen = false; onRefreshThread() })
+                add(Triple("设置", 3) { topMenuOpen = false; onSettings() })
+            },
+            onDismiss = { topMenuOpen = false }
+        )
         if (accountsOpen) AccountDialog(
             accounts, currentAccountId, onSwitchAccount, onDeleteAccount, onAddAccount, onCloseAccounts
         )
@@ -781,19 +807,11 @@ private fun TopBar(
     onSettings: () -> Unit,
     onLogin: () -> Unit,
     onShare: () -> Unit,
-    onDump: () -> Unit
+    onDump: () -> Unit,
+    menuOpen: Boolean = false,
+    onToggleMenu: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
-    var menuOpen by remember { mutableStateOf(false) }
-    // 顶部只留头像：其余功能收进头像下方的菜单
-    val loggedOut = avatarUrl.isNullOrBlank()
-    val menuItems = buildList {
-        if (loggedOut) add(Triple("登录", 4) { onLogin() })
-        if (canShare) add(Triple("分享", 0) { onShare() })
-        if (canShare) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
-        if (canRefresh) add(Triple("刷新", 2) { onRefresh() })
-        add(Triple("设置", 3) { onSettings() })
-    }
     Box(
         Modifier
             .fillMaxWidth()
@@ -829,9 +847,7 @@ private fun TopBar(
                         .size(40.dp)
                         .clip(CircleShape)
                         .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                        .clickable {
-                            if (menuItems.size > 1) menuOpen = !menuOpen else onSettings()
-                        }
+                        .clickable { onToggleMenu() }
                 )
             } else {
                 // 未登录时点头像也展开菜单，菜单里第一项是"登录"
@@ -839,24 +855,40 @@ private fun TopBar(
                     Modifier
                         .size(40.dp)
                         .then(glassModifier(CircleShape))
-                        .lightPress { menuOpen = !menuOpen },
+                        .lightPress { onToggleMenu() },
                     contentAlignment = Alignment.Center
                 ) { IconImg(CouiIcons.Filled.UserCircle, 22.dp, colors.onSurface) }
             }
         }
 
-        // 头像下方的功能菜单（用 Popup 浮在内容之上，不参与布局，不会把正文顶开）
-        androidx.compose.ui.window.Popup(
-            alignment = Alignment.TopEnd,
-            offset = androidx.compose.ui.unit.IntOffset(0, with(LocalDensity.current) { 52.dp.roundToPx() }),
-            onDismissRequest = { menuOpen = false },
-            properties = androidx.compose.ui.window.PopupProperties(focusable = true)
-        ) {
+    }
+}
+
+/** 头像下拉菜单：同一个窗口里的浮层，盖在内容之上；点击空白处收起 */
+@Composable
+private fun AvatarMenu(
+    visible: Boolean,
+    items: List<Triple<String, Int, () -> Unit>>,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+    val colors = CouiTheme.colorScheme
+    Box(Modifier.fillMaxSize()) {
+        // 透明遮罩：点空白收起
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.001f))
+                .clickable(interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }, indication = null) { onDismiss() }
+        )
         AnimatedVisibility(
-            visible = menuOpen,
+            visible = true,
             enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
-            exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
-            modifier = Modifier.padding(end = 10.dp)
+            exit = fadeOut(tween(60)),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(top = 52.dp, end = 12.dp)
         ) {
             Column(
                 Modifier
@@ -866,12 +898,12 @@ private fun TopBar(
                     .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
                     .padding(vertical = 6.dp)
             ) {
-                for ((label, idx, action) in menuItems) {
+                for ((label, idx, action) in items) {
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .clickable {
-                                menuOpen = false
+                                onDismiss()
                                 action()
                             }
                             .padding(horizontal = 14.dp, vertical = 11.dp),
@@ -889,7 +921,6 @@ private fun TopBar(
                     }
                 }
             }
-        }
         }
     }
 }
