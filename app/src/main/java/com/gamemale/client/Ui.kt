@@ -122,6 +122,11 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.alpha
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.draw.drawWithContent
@@ -213,7 +218,9 @@ private fun Modifier.lightPress(onClick: () -> Unit): Modifier {
                     if (!ch.pressed) {
                         press = null
                         pressing = false
-                        if (moved < 24f) onClick()
+                        if (moved < 24f) {
+                            onClick()
+                        }
                         break
                     }
                     val delta = ch.position - last
@@ -550,7 +557,35 @@ fun AppUi(
     var topMenuOpen by remember { mutableStateOf(false) }
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
+    // 卡片 → 全屏的缩放过渡
+    val zoomProg = remember { Animatable(1f) }
+    var zoomRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var threadOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var prevNav by remember { mutableStateOf<Nav>(nav) }
     val inHistorySelection = nav is Nav.History && historySelecting
+    // 进入帖子：卡片放大到全屏；退回列表：全屏缩回卡片位置
+    LaunchedEffect(nav) {
+        val from = prevNav
+        prevNav = nav
+        if (nav is Nav.Thread && from !is Nav.Thread) {
+            val r = CardZoom.origin
+            if (r != null && r.width > 1f && r.height > 1f) {
+                threadOrigin = r
+                zoomRect = r
+                zoomProg.snapTo(0f)
+                zoomProg.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
+                zoomRect = null
+            }
+        } else if (from is Nav.Thread && nav !is Nav.Thread) {
+            val r = threadOrigin
+            if (r != null) {
+                zoomRect = r
+                zoomProg.snapTo(1f)
+                zoomProg.animateTo(0f, tween(500, easing = FastOutSlowInEasing))
+                zoomRect = null
+            }
+        }
+    }
     if (inHistorySelection) {
         androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
     }
@@ -766,6 +801,32 @@ fun AppUi(
                 }
             }
             }
+        }
+
+        // 卡片 ↔ 全屏 的缩放过渡覆盖层
+        zoomRect?.let { r ->
+            val density = LocalDensity.current
+            val p = zoomProg.value
+            val screenW = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx() }
+            val screenH = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx() }
+            val left = r.left * (1f - p)
+            val top = r.top * (1f - p)
+            val w = r.width + (screenW - r.width) * p
+            val h = r.height + (screenH - r.height) * p
+            val corner = (1f - p) * 18f
+            val alpha = when {
+                p > 0.62f -> ((1f - p) / 0.38f).coerceIn(0f, 1f)
+                p < 0.38f -> (p / 0.38f).coerceIn(0f, 1f)
+                else -> 1f
+            }
+            Box(
+                Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
+                    .size(with(density) { w.toDp() }, with(density) { h.toDp() })
+                    .clip(RoundedCornerShape(corner.dp))
+                    .background(colors.background)
+                    .alpha(alpha)
+            )
         }
 
         // 隐藏的取数 WebView（1dp，不渲染任何可见内容）
@@ -1248,6 +1309,11 @@ private fun ErrorView(
     }
 }
 
+/** 卡片在窗口中的位置，用于帖子详情页的放大/缩小过渡 */
+object CardZoom {
+    var origin: androidx.compose.ui.geometry.Rect? = null
+}
+
 @Composable
 private fun CardBox(
     onClick: (() -> Unit)? = null,
@@ -1260,6 +1326,8 @@ private fun CardBox(
     // 整卡等比缩放：背景和内容一起缩，不做横竖分别拉伸（那会把文字和图片拉变形）
     val scale by animateFloatAsState(if (pressed) 0.975f else 1f, tween(160))
     var touch by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Unspecified) }
+    var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    var rectRoot by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     val shape = RoundedCornerShape(18.dp)
     Box(
         Modifier
@@ -1267,6 +1335,10 @@ private fun CardBox(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
+            }
+            .onGloballyPositioned {
+                bounds = it.boundsInWindow()
+                rectRoot = it.boundsInRoot()
             }
             .clip(shape)
             .background(if (pressed) colors.card else colors.container)
@@ -1286,7 +1358,10 @@ private fun CardBox(
                 if (onClick != null || onLongClick != null) Modifier.combinedClickable(
                     interactionSource = interaction,
                     indication = null,
-                    onClick = { onClick?.invoke() },
+                    onClick = {
+                        CardZoom.origin = rectRoot
+                        onClick?.invoke()
+                    },
                     onLongClick = onLongClick
                 ) else Modifier
             )
@@ -1463,6 +1538,7 @@ private fun HistoryView(
                     .align(Alignment.BottomCenter)
                     .padding(bottom = 18.dp)
                     .width(150.dp)
+                    .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
                     .background(if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f) else colors.accent)
                     .clickable(enabled = selected.isNotEmpty()) {
@@ -2048,6 +2124,7 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
     val list = images.ifEmpty { listOf(startUrl) }
     val startIndex = list.indexOf(startUrl).let { if (it >= 0) it else 0 }
     val pagerState = androidx.compose.foundation.pager.rememberPagerState(initialPage = startIndex) { list.size }
+    val scope = rememberCoroutineScope()
     Dialog(
         onDismissRequest = onClose,
         properties = androidx.compose.ui.window.DialogProperties(
@@ -2061,7 +2138,16 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
                 modifier = Modifier.fillMaxSize(),
                 beyondViewportPageCount = 1
             ) { page ->
-                ZoomableImage(list[page], onClose)
+                ZoomableImage(
+                    url = list[page],
+                    onClose = onClose,
+                    onSwipeOut = { dir ->
+                        val target = page + dir
+                        if (target in list.indices) {
+                            scope.launch { pagerState.animateScrollToPage(target) }
+                        }
+                    }
+                )
             }
 
             // 底部页标：圆点，当前页更大
@@ -2107,13 +2193,19 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
 
 /** 单页图片：双击缩放、放大后拖动；未放大时点一下关闭 */
 @Composable
-private fun ZoomableImage(url: String, onClose: () -> Unit) {
+private fun ZoomableImage(
+    url: String,
+    onClose: () -> Unit,
+    onSwipeOut: (Int) -> Unit = {}
+) {
     var scale by remember(url) { mutableStateOf(1f) }
     var box by remember(url) { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var ratio by remember(url) { mutableStateOf(1f) }
     var oxv by remember(url) { mutableStateOf(0f) }
     var oyv by remember(url) { mutableStateOf(0f) }
+    var overX by remember(url) { mutableStateOf(0f) }
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
 
     // 图片按 Fit 显示后的实际尺寸，用来算可平移的边界
     val content = remember(box, ratio, scale) {
@@ -2174,6 +2266,7 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                                 } else if (pan != Offset.Zero) {
                                     oxv = (oxv + pan.x).coerceIn(-mx, mx)
                                     oyv = (oyv + pan.y).coerceIn(-my, my)
+                                    overX = 0f
                                 }
                                 pressed.forEach { it.consume() }
                             } else if (pressed.size == 1 && scale > 1.02f) {
@@ -2185,9 +2278,15 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                                     // 越界时加阻尼，松手再弹回
                                     val nx = oxv + delta.x
                                     val cx = when {
-                                        nx > mx -> mx + (nx - mx) / 3f
-                                        nx < -mx -> -mx + (nx + mx) / 3f
-                                        else -> nx
+                                        nx > mx -> {
+                                            overX += nx - oxv
+                                            mx + (nx - mx) / 3f
+                                        }
+                                        nx < -mx -> {
+                                            overX += nx - oxv
+                                            -mx + (nx + mx) / 3f
+                                        }
+                                        else -> { overX = 0f; nx }
                                     }
                                     val ny = oyv + delta.y
                                     val cy = when {
@@ -2203,6 +2302,15 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                         } while (pressed.any { it.pressed })
 
                         if (hadGesture) {
+                            val over = overX
+                            overX = 0f
+                            val threshold = with(density) { 72.dp.toPx() }
+                            if (kotlin.math.abs(over) > threshold) {
+                                // 越到右边缘继续左滑 -> 下一张；越到左边缘继续右滑 -> 上一张
+                                onSwipeOut(if (over > 0f) -1 else 1)
+                                oxv = 0f
+                                oyv = 0f
+                            }
                             val tx = oxv.coerceIn(-maxX.value, maxX.value)
                             val ty = oyv.coerceIn(-maxY.value, maxY.value)
                             scope.launch { androidx.compose.animation.core.animate(oxv, tx) { v, _ -> oxv = v } }
@@ -2213,13 +2321,20 @@ private fun ZoomableImage(url: String, onClose: () -> Unit) {
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
-                            if (scale > 1.05f) {
-                                scale = 1f
-                            } else {
-                                scale = 2.6f
+                            val target = if (scale > 1.05f) 1f else 2.6f
+                            scope.launch {
+                                androidx.compose.animation.core.animate(
+                                    scale,
+                                    target,
+                                    animationSpec = tween(280)
+                                ) { v, _ -> scale = v }
                             }
-                            scope.launch { androidx.compose.animation.core.animate(oxv, 0f) { v, _ -> oxv = v } }
-                            scope.launch { androidx.compose.animation.core.animate(oyv, 0f) { v, _ -> oyv = v } }
+                            scope.launch {
+                                androidx.compose.animation.core.animate(oxv, 0f) { v, _ -> oxv = v }
+                            }
+                            scope.launch {
+                                androidx.compose.animation.core.animate(oyv, 0f) { v, _ -> oyv = v }
+                            }
                         },
                         onTap = { if (scale <= 1.05f) onClose() }
                     )
