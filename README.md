@@ -6,7 +6,7 @@
 
 本仓库初始代码全部由 AI 完成，后续若有其他协作者会写入贡献者名单。公开出来是给同样想改造 Discuz 阅读体验的人做参考，不保证生产可用。
 
-当前版本：`3.0-M71`（versionCode 90），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
+当前版本：`3.0-M72`（versionCode 91），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
 
 ## 它是什么
 
@@ -85,6 +85,12 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 ## 更新日志
 
 只记录对使用有感知的改动，细节看提交记录。
+
+**3.0-M72（vc91）**
+- 卡片→详情回到 M69 节拍（内容 220ms 淡入），只保留“仅卡片↔详情启用共享元素”的修复
+- 取消导航栏/FAB 的按压形变
+- 顶栏改为悬浮叠在列表上，列表顶部预留顶栏高度；顶栏用 CouiBackdrop 做背景模糊 + 自上而下透明度渐变
+- 头像菜单背景接入同款模糊，菜单项按压态改为白色圆角矩形
 
 **3.0-M71（vc90）**
 - 卡片→详情：详情内容延后到过渡后 1/3 才淡入（进入场景专有，返回不变）

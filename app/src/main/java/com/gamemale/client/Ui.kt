@@ -51,6 +51,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBars
@@ -666,10 +669,16 @@ fun AppUi(
     // 切换页面/弹窗时自动收起菜单
     LaunchedEffect(nav, loginPage, verifyPage, accountsOpen) { topMenuOpen = false }
     Box(Modifier.fillMaxSize().background(colors.background)) {
-        Column(Modifier.fillMaxSize()) {
+        val barH = WindowInsets.systemBars.asPaddingValues().calculateTopPadding() + 56.dp
+        // 列表页让内容从顶栏下方穿过，顶栏才能采到模糊源
+        val overlayBar = nav is Nav.Forum || nav is Nav.History || nav == Nav.Home
+        BarOverlay.inset = if (overlayBar) barH else 0.dp
+        Box(Modifier.fillMaxSize()) {
             TopBar(
                 selectionMode = inHistorySelection,
                 onExitSelection = { historyExitSignal++ },
+                backdrop = backdrop,
+                blur = overlayBar && blurBg,
                 menuOpen = topMenuOpen,
                 onToggleMenu = {
                     // 只有一项时没必要展开菜单，直接执行
@@ -706,7 +715,8 @@ fun AppUi(
             )
             Box(
                 Modifier
-                    .weight(1f)
+                    .fillMaxSize()
+                    .padding(top = if (overlayBar) 0.dp else barH)
                     .graphicsLayer { translationX = backProgress * size.width * 0.35f }
                     .then(if (blurBg) Modifier.couiBackdrop(backdrop) else Modifier)
             ) {
@@ -904,7 +914,7 @@ fun AppUi(
                         ),
                         CircleShape
                     )
-                    .pressMorph { onReply() },
+                    .lightPress { onReply() },
                 contentAlignment = Alignment.Center
             ) {
                 IconImg(ReplyVector, 24.dp, colors.onAccent)
@@ -917,7 +927,6 @@ fun AppUi(
                     .align(Alignment.BottomStart)
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(start = 14.dp, bottom = 10.dp)
-                    .pressMorph()
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
                     .then(
@@ -979,7 +988,7 @@ fun AppUi(
                         ),
                         CircleShape
                     )
-                    .pressMorph { onOpenSearch() },
+                    .lightPress { onOpenSearch() },
                 contentAlignment = Alignment.Center
             ) {
                 IconImg(CouiIcons.Outlined.Search, 24.dp, colors.onAccent)
@@ -998,6 +1007,8 @@ fun AppUi(
         AvatarMenu(
             visible = topMenuOpen,
             items = topMenuItems,
+            backdrop = backdrop,
+            blur = blurBg,
             onDismiss = { topMenuOpen = false }
         )
         if (accountsOpen) AccountDialog(
@@ -1040,13 +1051,31 @@ private fun TopBar(
     menuOpen: Boolean = false,
     onToggleMenu: () -> Unit = {},
     selectionMode: Boolean = false,
-    onExitSelection: () -> Unit = {}
+    onExitSelection: () -> Unit = {},
+    backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
+    blur: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
     Box(
         Modifier
             .fillMaxWidth()
-            .background(colors.background)
+            .zIndex(2f)
+            .then(
+                if (backdrop != null && blur) Modifier.drawCouiBackdrop(
+                    backdrop,
+                    shape = { RectangleShape },
+                    effects = { blur(34f, TileMode.Clamp) },
+                    onDrawSurface = {
+                        drawRect(
+                            Brush.verticalGradient(
+                                0f to colors.background.copy(alpha = 0.96f),
+                                0.55f to colors.background.copy(alpha = 0.72f),
+                                1f to colors.background.copy(alpha = 0.18f)
+                            )
+                        )
+                    }
+                ) else Modifier.background(colors.background)
+            )
             .windowInsetsPadding(WindowInsets.systemBars)
     ) {
         Row(
@@ -1103,7 +1132,9 @@ private fun TopBar(
 private fun AvatarMenu(
     visible: Boolean,
     items: List<Triple<String, Int, () -> Unit>>,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
+    blur: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
     Box(Modifier.fillMaxSize()) {
@@ -1137,20 +1168,37 @@ private fun AvatarMenu(
                     .width(216.dp)
                     .shadow(22.dp, RoundedCornerShape(20.dp), clip = false)
                     .clip(RoundedCornerShape(20.dp))
-                    .background(colors.container)
+                    .then(
+                        if (blur && backdrop != null) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { RoundedCornerShape(20.dp) },
+                            effects = { blur(26f, TileMode.Clamp) },
+                            onDrawSurface = { drawRect(colors.container.copy(alpha = 0.72f)) }
+                        ) else Modifier.background(colors.container)
+                    )
                     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
                     .padding(vertical = 6.dp)
             ) {
                 for ((label, idx, action) in items) {
+                    val itemInteraction = remember(label) {
+                        androidx.compose.foundation.interaction.MutableInteractionSource()
+                    }
+                    val itemPressed by itemInteraction.collectIsPressedAsState()
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .height(46.dp)
-                            .clickable {
+                            .padding(horizontal = 6.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (itemPressed) Color.White.copy(alpha = 0.12f) else Color.Transparent)
+                            .clickable(
+                                interactionSource = itemInteraction,
+                                indication = null
+                            ) {
                                 onDismiss()
                                 action()
                             }
-                            .padding(horizontal = 16.dp),
+                            .padding(horizontal = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         when (idx) {
@@ -1381,6 +1429,9 @@ private data class ZoomScopes(
 
 private val LocalZoomScopes = staticCompositionLocalOf<ZoomScopes?> { null }
 private val LocalZoomTid = staticCompositionLocalOf<String?> { null }
+internal object BarOverlay {
+    var inset: androidx.compose.ui.unit.Dp = 0.dp
+}
 
 /** 卡片与帖子页共享同一 key，交给 Compose 的 sharedBounds 做卡片↔全屏容器变换 */
 @Composable
@@ -1393,8 +1444,7 @@ private fun Modifier.threadZoom(key: String?): Modifier {
         this@threadZoom.sharedBounds(
             rememberSharedContentState("thread-$key"),
             z.animated,
-            // 卡片先放大，内容在后 1/3 才淡入
-            enter = fadeIn(tween(180, delayMillis = 320)),
+            enter = fadeIn(tween(220)),
             exit = fadeOut(tween(160)),
             boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) },
             resizeMode = androidx.compose.animation.SharedTransitionScope.ResizeMode.scaleToBounds(
@@ -1485,7 +1535,7 @@ private fun HomeList(forums: List<ForumItem>, loading: Boolean, onOpen: (ForumIt
     val colors = CouiTheme.colorScheme
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 100.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + BarOverlay.inset, bottom = 100.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
@@ -1555,7 +1605,7 @@ private fun HistoryView(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 110.dp),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp + BarOverlay.inset, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             item {
@@ -1748,7 +1798,7 @@ private fun ForumView(
                     }
                 },
             state = listState,
-            contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 110.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 12.dp + BarOverlay.inset, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val list = page?.threads ?: emptyList()
@@ -1897,7 +1947,7 @@ private fun ThreadView(
     val colors = CouiTheme.colorScheme
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp),
+        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + BarOverlay.inset, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         val p = page ?: return@LazyColumn
