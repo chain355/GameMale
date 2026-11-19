@@ -5,12 +5,10 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -128,6 +126,9 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.boundsInWindow
@@ -415,6 +416,7 @@ private fun NavButton(
     modifier: Modifier = Modifier,
     dragState: PressDragState? = null,
     dragIndex: Int = -1,
+    showActiveBg: Boolean = true,
     onClick: () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
@@ -422,7 +424,7 @@ private fun NavButton(
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(if (hot) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .background(if (hot && showActiveBg) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
             .then(
                 if (dragState != null) Modifier.pressDragTarget(dragState, dragIndex)
                 else Modifier.clickable(
@@ -451,6 +453,7 @@ private fun NavButtonSlot(
     modifier: Modifier = Modifier,
     dragState: PressDragState? = null,
     dragIndex: Int = -1,
+    showActiveBg: Boolean = true,
     icon: @Composable () -> Unit,
     onClick: () -> Unit
 ) {
@@ -459,7 +462,7 @@ private fun NavButtonSlot(
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(if (hot) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .background(if (hot && showActiveBg) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
             .then(
                 if (dragState != null) Modifier.pressDragTarget(dragState, dragIndex)
                 else Modifier.clickable(
@@ -660,7 +663,12 @@ fun AppUi(
     history: List<HistoryStore.Entry> = emptyList(),
     onOpenHistory: (String, String) -> Unit = { _, _ -> },
     onClearHistory: () -> Unit = {},
-    onOpenHistoryTab: () -> Unit = {}
+    onOpenHistoryTab: () -> Unit = {},
+    animePage: ForumPage? = null,
+    gamePage: ForumPage? = null,
+    animeUrl: String = ANIME_URL,
+    gameUrl: String = GAME_URL,
+    onRootTab: (Int) -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -671,12 +679,37 @@ fun AppUi(
     LaunchedEffect(nav) {
         if (nav is Nav.Search) runCatching { forumListState.scrollToItem(0) }
     }
-    // 浏览记录页独立的滚动位置
+    // 首页三个 tab 各自记住滚动位置，盖上详情/搜索时也不会被拆掉
     val historyListState = rememberLazyListState()
-    // 每个板块各自记住上次停留的位置；翻到新的一页则回到顶部
+    val overlayHistoryState = rememberLazyListState()
+    val animeListState = rememberLazyListState()
+    val gameListState = rememberLazyListState()
+    val rootPager = rememberPagerState(initialPage = 0) { 3 }
+    val scope = rememberCoroutineScope()
+    var seenAnimeUrl by remember { mutableStateOf<String?>(null) }
+    var seenGameUrl by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(animeUrl) {
+        val prev = seenAnimeUrl
+        seenAnimeUrl = animeUrl
+        if (prev != null && prev != animeUrl) runCatching { animeListState.scrollToItem(0) }
+    }
+    LaunchedEffect(gameUrl) {
+        val prev = seenGameUrl
+        seenGameUrl = gameUrl
+        if (prev != null && prev != gameUrl) runCatching { gameListState.scrollToItem(0) }
+    }
+    // 滑到某一页并停稳后，才去对上那一页的数据；滑的过程中首页三页都还在
+    LaunchedEffect(rootPager.settledPage, showBottomBar) {
+        if (showBottomBar) onRootTab(rootPager.settledPage)
+    }
+    // 搜索结果等盖层列表：只在盖层里记住位置，不要跟着首页 tab 一起滚
     val forumPositions = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
     var lastForumUrl by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(currentUrl) {
+    LaunchedEffect(currentUrl, showBottomBar) {
+        if (showBottomBar) {
+            lastForumUrl = currentUrl
+            return@LaunchedEffect
+        }
         val prev = lastForumUrl
         if (prev != null && prev != currentUrl) {
             if (!prev.contains("&page=")) {
@@ -709,21 +742,6 @@ fun AppUi(
     var threadOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var prevNavZoom by remember { mutableStateOf<Nav>(nav) }
     val pageGl = rememberGraphicsLayer()
-    var sharedTid by remember { mutableStateOf<String?>(null) }
-    var prevNavShared by remember { mutableStateOf<Nav>(nav) }
-    LaunchedEffect(nav, threadKey) {
-        val from = prevNavShared
-        prevNavShared = nav
-        when {
-            nav is Nav.Thread -> sharedTid = threadKey
-            from is Nav.Thread && nav is Nav.Forum -> {
-                // 退场动画期间保持 key，结束后立即关闭，避免列表互切时串卡
-                kotlinx.coroutines.delay(620)
-                sharedTid = null
-            }
-            else -> sharedTid = null
-        }
-    }
     LaunchedEffect(nav) {
         val from = prevNavZoom
         prevNavZoom = nav
@@ -799,7 +817,13 @@ fun AppUi(
                 avatarUrl = avatarUrl,
                 onShare = onShare,
                 onDump = onDump,
-                title = when (nav) {
+                title = if (showBottomBar) {
+                    when (rootPager.currentPage) {
+                        0 -> "和谐动漫"
+                        1 -> "和谐游戏"
+                        else -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
+                    }
+                } else when (nav) {
                     is Nav.Home -> "GameMale"
                     Nav.Settings -> "设置"
                     Nav.Search -> "搜索"
@@ -820,47 +844,56 @@ fun AppUi(
                 Modifier
                     .fillMaxSize()
                     .padding(top = if (overlayBar) 0.dp else barH)
-                    .graphicsLayer {
-                        translationX = backProgress * size.width * 0.35f
-                        if (zoomRect != null) {
-                            alpha = if (zoomMode > 0) {
-                                // 进入：B 后段淡入
-                                ((zoomProg.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
-                            } else {
-                                // 退出：列表从 0% 起淡入，45% 处完全接替
-                                ((1f - zoomProg.value) / 0.45f).coerceIn(0f, 1f)
-                            }
-                        }
-                    }
-                    .drawWithContent {
-                        if (nav is Nav.Thread) {
-                            pageGl.record { this@drawWithContent.drawContent() }
-                            drawLayer(pageGl)
-                        } else {
-                            drawContent()
-                        }
-                    }
                     .then(if (blurBg) Modifier.couiBackdrop(backdrop) else Modifier)
             ) {
-                androidx.compose.animation.SharedTransitionLayout {
-                val sharedScope = this
-                AnimatedContent(
-                    targetState = nav,
-                    transitionSpec = {
-                        fadeIn(tween(200)).togetherWith(fadeOut(tween(160)))
-                    },
-                    label = "nav"
-                ) { cur ->
-                    val animScope = this
-                    CompositionLocalProvider(
-                        LocalZoomScopes provides ZoomScopes(sharedScope, animScope),
-                        LocalZoomTid provides sharedTid
-                    ) {
-                    when {
-                        error != null && (nav is Nav.Forum || nav is Nav.Thread) ->
-                            ErrorView(error, onRetry, onDump, onLogin)
-                        cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
-                        cur is Nav.History -> HistoryView(
+                // 首页一直铺在最底下：三个 tab 左右滑，详情/搜索只是盖上来的一层
+                HorizontalPager(
+                    state = rootPager,
+                    modifier = Modifier.fillMaxSize(),
+                    beyondViewportPageCount = 1,
+                    userScrollEnabled = showBottomBar && !inHistorySelection
+                ) { page ->
+                    val settled = rootPager.settledPage == page && showBottomBar
+                    when (page) {
+                        0 -> HomeBoardPage(
+                            page = animePage,
+                            url = animeUrl,
+                            listState = animeListState,
+                            loading = loading && settled,
+                            refreshing = refreshing && settled,
+                            error = if (settled) error else null,
+                            needLogin = needLogin && settled,
+                            needUpgrade = needUpgrade && settled,
+                            onOpenThread = onOpenThread,
+                            onLoad = onLoad,
+                            onImage = onImage,
+                            onRefresh = onRefresh,
+                            onThumbNeeded = onThumbNeeded,
+                            onRetry = onRetry,
+                            onDump = onDump,
+                            onLogin = onLogin,
+                            onOpenSite = onOpenSite
+                        )
+                        1 -> HomeBoardPage(
+                            page = gamePage,
+                            url = gameUrl,
+                            listState = gameListState,
+                            loading = loading && settled,
+                            refreshing = refreshing && settled,
+                            error = if (settled) error else null,
+                            needLogin = needLogin && settled,
+                            needUpgrade = needUpgrade && settled,
+                            onOpenThread = onOpenThread,
+                            onLoad = onLoad,
+                            onImage = onImage,
+                            onRefresh = onRefresh,
+                            onThumbNeeded = onThumbNeeded,
+                            onRetry = onRetry,
+                            onDump = onDump,
+                            onLogin = onLogin,
+                            onOpenSite = onOpenSite
+                        )
+                        else -> HistoryView(
                             history, historyListState, onOpenHistory, onClearHistory,
                             exitSignal = historyExitSignal,
                             onSelectionCount = onHistorySelectionCount,
@@ -869,51 +902,104 @@ fun AppUi(
                             backdrop = backdrop,
                             blur = blurBg
                         )
-                        cur is Nav.Search -> SearchScreen(
-                            history = searchHistory,
-                            onCancel = onBack,
-                            onSubmit = onSearch
-                        )
-                        cur is Nav.Forum && needUpgrade && (forumPage?.threads?.isEmpty() != false) ->
-                            UpgradeView(loading, onOpenSite)
-                        cur is Nav.Forum && needLogin && (forumPage?.threads?.isEmpty() != false) ->
-                            LoginPromptView(onLogin)
-                        cur is Nav.Forum -> ForumView(
-                            forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
-                            refreshing, onRefresh, onThumbNeeded, searchUpdating,
-                            onSwipeBoard = { next ->
-                                val u = currentUrl
-                                if (!u.contains("search.php") && u.contains("forumdisplay")) {
-                                    if (u.contains("fid=150") && next) onQuickForum(GAME_URL, "和谐游戏")
-                                    else if (u.contains("fid=152") && !next) onQuickForum(ANIME_URL, "和谐动漫")
-                                }
-                            }
-                        )
-                        cur is Nav.Thread -> ThreadView(
-                            threadPage, loading, onLoad, onExternal,
-                            onReply, onRate, onAttach, onImage
-                        )
-                        cur is Nav.Settings -> SettingsView(
-                            onAccounts = onOpenAccounts,
-                            fontScale = fontScale,
-                            themeMode = themeMode,
-                            cacheMb = cacheMb,
-                            cacheBytes = cacheBytes,
-                            cacheCount = cacheCount,
-                            onSetThemeMode = onSetThemeMode,
-                            onSetFontScale = onSetFontScale,
-                            blurBg = blurBg,
-                            onSetBlurBg = onSetBlurBg,
-                            onSetCacheMb = onSetCacheMb,
-                            onClearCache = onClearCache,
-                            onExportLogs = onExportLogs,
-                            onExternal = onExternal
-                        )
-                    }
                     }
                 }
-                // 设置页/搜索页不该被列表的加载遮罩挡住
-                if (loading && (nav is Nav.Forum || nav is Nav.Thread)) LoadingLayer("正在加载…")
+
+                val overlayShown = !showBottomBar
+                var heldOverlay by remember { mutableStateOf<Nav?>(null) }
+                SideEffect { if (overlayShown) heldOverlay = nav }
+                val overlayNav = if (overlayShown) nav else heldOverlay
+                AnimatedVisibility(
+                    visible = overlayShown,
+                    modifier = Modifier.fillMaxSize(),
+                    enter = if (nav is Nav.Thread) fadeIn(tween(220))
+                    else slideInHorizontally(tween(280, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(160)),
+                    exit = if (heldOverlay is Nav.Thread) fadeOut(tween(180))
+                    else slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(140))
+                ) {
+                    val cur = overlayNav ?: return@AnimatedVisibility
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                translationX = backProgress * size.width * 0.35f
+                                if (zoomRect != null && cur is Nav.Thread) {
+                                    alpha = if (zoomMode > 0) {
+                                        ((zoomProg.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
+                                    } else {
+                                        ((1f - zoomProg.value) / 0.45f).coerceIn(0f, 1f)
+                                    }
+                                }
+                            }
+                            .drawWithContent {
+                                if (nav is Nav.Thread && cur is Nav.Thread) {
+                                    pageGl.record { this@drawWithContent.drawContent() }
+                                    drawLayer(pageGl)
+                                } else {
+                                    drawContent()
+                                }
+                            }
+                    ) {
+                        Box(
+                            Modifier
+                                .matchParentSize()
+                                .background(colors.background)
+                                .clickable(
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                    indication = null
+                                ) {}
+                        )
+                        when {
+                            error != null && (cur is Nav.Forum || cur is Nav.Thread) ->
+                                ErrorView(error, onRetry, onDump, onLogin)
+                            cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
+                            cur is Nav.History -> HistoryView(
+                                history, overlayHistoryState, onOpenHistory, onClearHistory,
+                                exitSignal = historyExitSignal,
+                                onSelectionCount = onHistorySelectionCount,
+                                onSelectionMode = onHistorySelecting,
+                                onDeleteSelected = onDeleteHistory,
+                                backdrop = backdrop,
+                                blur = blurBg
+                            )
+                            cur is Nav.Search -> SearchScreen(
+                                history = searchHistory,
+                                onCancel = onBack,
+                                onSubmit = onSearch
+                            )
+                            cur is Nav.Forum && needUpgrade && (forumPage?.threads?.isEmpty() != false) ->
+                                UpgradeView(loading, onOpenSite)
+                            cur is Nav.Forum && needLogin && (forumPage?.threads?.isEmpty() != false) ->
+                                LoginPromptView(onLogin)
+                            cur is Nav.Forum -> ForumView(
+                                forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
+                                refreshing, onRefresh, onThumbNeeded, searchUpdating
+                            )
+                            cur is Nav.Thread -> ThreadView(
+                                threadPage, loading, onLoad, onExternal,
+                                onReply, onRate, onAttach, onImage
+                            )
+                            cur is Nav.Settings -> SettingsView(
+                                onAccounts = onOpenAccounts,
+                                fontScale = fontScale,
+                                themeMode = themeMode,
+                                cacheMb = cacheMb,
+                                cacheBytes = cacheBytes,
+                                cacheCount = cacheCount,
+                                onSetThemeMode = onSetThemeMode,
+                                onSetFontScale = onSetFontScale,
+                                blurBg = blurBg,
+                                onSetBlurBg = onSetBlurBg,
+                                onSetCacheMb = onSetCacheMb,
+                                onClearCache = onClearCache,
+                                onExportLogs = onExportLogs,
+                                onExternal = onExternal
+                            )
+                        }
+                        if (loading && overlayShown && (cur is Nav.Forum || cur is Nav.Thread)) {
+                            LoadingLayer("正在加载…")
+                        }
+                    }
                 }
             }
             }
@@ -1103,14 +1189,10 @@ fun AppUi(
                 IconImg(ReplyVector, 24.dp, colors.onAccent)
             }
         }
-        // 底部导航（动漫 / 游戏 / 浏览记录）——只在根级列表页出现，且宽度收紧
+        // 底部三个 tab，跟首页 pager 同一页；按住可以滑到旁边的项
         val navDrag = remember { PressDragState() }
         navDrag.onCommit = { idx ->
-            when (idx) {
-                0 -> onQuickForum(ANIME_URL, "和谐动漫")
-                1 -> onQuickForum(GAME_URL, "和谐游戏")
-                2 -> onOpenHistoryTab()
-            }
+            scope.launch { rootPager.animateScrollToPage(idx) }
         }
         if (showBottomBar && !inHistorySelection) {
             Box(
@@ -1137,6 +1219,7 @@ fun AppUi(
                     )
             ) {
                 var navRowOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                val tabPosition = (rootPager.currentPage + rootPager.currentPageOffsetFraction).coerceIn(0f, 2f)
                 val navHover = navDrag.bounds[navDrag.hover]
                 val navHL by androidx.compose.animation.core.animateFloatAsState(
                     targetValue = navHover?.let { it.left - navRowOrigin.x } ?: 0f,
@@ -1154,6 +1237,26 @@ fun AppUi(
                         .padding(horizontal = 4.dp)
                         .onGloballyPositioned { navRowOrigin = it.positionInRoot() }
                         .drawBehind {
+                            val w0 = 66.dp.toPx()
+                            val w1 = 66.dp.toPx()
+                            val w2 = 72.dp.toPx()
+                            val widths = floatArrayOf(w0, w1, w2)
+                            val pos = tabPosition.coerceIn(0f, 2f)
+                            val i = pos.toInt().coerceAtMost(2)
+                            val t = pos - i
+                            val left = if (i >= 2) w0 + w1 else {
+                                var x = 0f
+                                for (k in 0 until i) x += widths[k]
+                                x + widths[i] * t
+                            }
+                            val width = if (i >= 2) w2 else widths[i] * (1f - t) + widths[(i + 1).coerceAtMost(2)] * t
+                            val inset = 4.dp.toPx()
+                            drawRoundRect(
+                                color = colors.accent.copy(alpha = 0.16f),
+                                topLeft = androidx.compose.ui.geometry.Offset(left, inset),
+                                size = androidx.compose.ui.geometry.Size(width, size.height - inset * 2),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
+                            )
                             if (navDrag.hover >= 0 && navHW > 1f) {
                                 drawRoundRect(
                                     color = colors.accent.copy(alpha = 0.16f),
@@ -1165,31 +1268,34 @@ fun AppUi(
                         },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                val cur = currentUrl
+                val tab = rootPager.currentPage
                 NavButton(
                     icon = CouiIcons.Outlined.Album,
                     label = "和谐动漫",
-                    active = cur.contains("fid=150"),
+                    active = tab == 0,
                     modifier = Modifier.width(66.dp),
                     dragState = navDrag,
-                    dragIndex = 0
-                ) { onQuickForum(ANIME_URL, "和谐动漫") }
+                    dragIndex = 0,
+                    showActiveBg = false
+                ) { scope.launch { rootPager.animateScrollToPage(0) } }
                 NavButton(
                     icon = CouiIcons.Filled.Gamepad,
                     label = "和谐游戏",
-                    active = cur.contains("fid=152"),
+                    active = tab == 1,
                     modifier = Modifier.width(66.dp),
                     dragState = navDrag,
-                    dragIndex = 1
-                ) { onQuickForum(GAME_URL, "和谐游戏") }
+                    dragIndex = 1,
+                    showActiveBg = false
+                ) { scope.launch { rootPager.animateScrollToPage(1) } }
                 NavButtonSlot(
                     label = "浏览记录",
-                    active = nav is Nav.History,
+                    active = tab == 2,
                     modifier = Modifier.width(72.dp),
                     dragState = navDrag,
                     dragIndex = 2,
-                    icon = { IconHistory(if (nav is Nav.History) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
-                    onClick = onOpenHistoryTab
+                    showActiveBg = false,
+                    icon = { IconHistory(if (tab == 2) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
+                    onClick = { scope.launch { rootPager.animateScrollToPage(2) } }
                 )
                 }
             }
@@ -2020,6 +2126,41 @@ private fun historyTime(ts: Long): String {
         sameYear && now.get(java.util.Calendar.DAY_OF_YEAR) == t.get(java.util.Calendar.DAY_OF_YEAR) -> "今天 $hm"
         sameYear -> String.format("%02d-%02d %s", t.get(java.util.Calendar.MONTH) + 1, t.get(java.util.Calendar.DAY_OF_MONTH), hm)
         else -> String.format("%d-%02d-%02d %s", t.get(java.util.Calendar.YEAR), t.get(java.util.Calendar.MONTH) + 1, t.get(java.util.Calendar.DAY_OF_MONTH), hm)
+    }
+}
+
+/** 首页里的一块版块：动漫或游戏。没有数据时只在自己这一页显示加载，不盖住旁边的页 */
+@Composable
+private fun HomeBoardPage(
+    page: ForumPage?,
+    url: String,
+    listState: LazyListState,
+    loading: Boolean,
+    refreshing: Boolean,
+    error: String?,
+    needLogin: Boolean,
+    needUpgrade: Boolean,
+    onOpenThread: (ThreadItem) -> Unit,
+    onLoad: (String) -> Unit,
+    onImage: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onThumbNeeded: (ThreadItem) -> Unit,
+    onRetry: () -> Unit,
+    onDump: () -> Unit,
+    onLogin: () -> Unit,
+    onOpenSite: () -> Unit
+) {
+    when {
+        error != null -> ErrorView(error, onRetry, onDump, onLogin)
+        needUpgrade && page?.threads.isNullOrEmpty() -> UpgradeView(loading, onOpenSite)
+        needLogin && page?.threads.isNullOrEmpty() -> LoginPromptView(onLogin)
+        page == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Txt("正在加载…", size = 14.sp, color = CouiTheme.colorScheme.onSurfaceVariant)
+        }
+        else -> ForumView(
+            page, loading, onOpenThread, onLoad, url, onImage, listState,
+            refreshing, onRefresh, onThumbNeeded
+        )
     }
 }
 

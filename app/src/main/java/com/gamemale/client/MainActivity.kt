@@ -51,6 +51,12 @@ class MainActivity : ComponentActivity() {
     private var backStack = mutableListOf<Nav>()
     private var forums by mutableStateOf<List<ForumItem>>(emptyList())
     private var forumPage by mutableStateOf<ForumPage?>(null)
+    /** 首页两个版块各自一份数据，搜索和详情不会写进来 */
+    private var animePage by mutableStateOf<ForumPage?>(null)
+    private var gamePage by mutableStateOf<ForumPage?>(null)
+    private var animeUrl by mutableStateOf(ANIME_URL)
+    private var gameUrl by mutableStateOf(GAME_URL)
+    private val boardWarm = mutableSetOf<String>()
     private var threadPage by mutableStateOf<ThreadPage?>(null)
     private var loading by mutableStateOf(false)
     private var error by mutableStateOf<String?>(null)
@@ -268,7 +274,12 @@ class MainActivity : ComponentActivity() {
                     avatarUrl = avatarUrl,
                     loggedIn = loggedIn,
                     onShare = { shareThread() },
-                    onCopyLink = { copyThreadLink() }
+                    onCopyLink = { copyThreadLink() },
+                    animePage = animePage,
+                    gamePage = gamePage,
+                    animeUrl = animeUrl,
+                    gameUrl = gameUrl,
+                    onRootTab = { selectRootTab(it) }
                 )
             }
         }
@@ -282,8 +293,11 @@ class MainActivity : ComponentActivity() {
             nav = Nav.Thread(deep, "帖子")
             load(deep)
         } else {
+            SnapshotStore.get(ANIME_URL)?.let { animePage = it.copy(title = "和谐动漫") }
+            SnapshotStore.get(GAME_URL)?.let { gamePage = it.copy(title = "和谐游戏") }
             nav = Nav.Forum(ANIME_URL, "和谐动漫")
             load(ANIME_URL)
+            preloadBoard(GAME_URL, "和谐游戏")
         }
     }
 
@@ -468,6 +482,117 @@ class MainActivity : ComponentActivity() {
         web.loadUrl(SITE + "forum.php")
     }
 
+    /**
+     * 当前列表。搜索和二级页只更新 forumPage；
+     * 首页两个版块在回到顶层时才写回各自的 tab，避免把首页冲掉。
+     */
+    private fun showForum(url: String, page: ForumPage?) {
+        forumPage = page
+        if (page == null || url.contains("search.php") || backStack.isNotEmpty()) return
+        if (url.contains("fid=150")) {
+            animePage = page
+            animeUrl = url
+        } else if (url.contains("fid=152")) {
+            gamePage = page
+            gameUrl = url
+        }
+    }
+
+    private fun boardOf(url: String): ForumPage? = when {
+        url.contains("fid=150") -> animePage
+        url.contains("fid=152") -> gamePage
+        else -> null
+    }
+
+    private fun prevCats(url: String): List<CatTab> {
+        val page = when {
+            url.contains("search.php") || backStack.isNotEmpty() -> forumPage
+            url.contains("fid=150") -> animePage
+            url.contains("fid=152") -> gamePage
+            else -> forumPage
+        }
+        return page?.cats ?: emptyList()
+    }
+
+    /** 底栏三个 tab 停稳之后，把导航对上这一页；已经在这一页就不重新加载 */
+    private fun selectRootTab(index: Int) {
+        if (backStack.isNotEmpty()) return
+        when (index) {
+            0 -> {
+                if ((nav as? Nav.Forum)?.url?.contains("fid=150") == true) return
+                openQuick(animeUrl, "和谐动漫")
+            }
+            1 -> {
+                if ((nav as? Nav.Forum)?.url?.contains("fid=152") == true) return
+                openQuick(gameUrl, "和谐游戏")
+            }
+            else -> {
+                if (nav is Nav.History) return
+                openHistory()
+            }
+        }
+    }
+
+    /** 另一个版块在后台铺好，滑过去时不用等空白 */
+    private fun preloadBoard(url: String, title: String) {
+        val key = when {
+            url.contains("fid=150") -> "150"
+            url.contains("fid=152") -> "152"
+            else -> return
+        }
+        val ready = if (key == "152") gamePage?.threads?.isNotEmpty() == true
+        else animePage?.threads?.isNotEmpty() == true
+        if (ready) return
+        val cached = forumCache[url] ?: SnapshotStore.get(url)
+        if (cached != null && cached.threads.isNotEmpty()) {
+            val page = cached.copy(title = title)
+            forumCache[url] = page
+            if (key == "152") gamePage = page else animePage = page
+            return
+        }
+        if (!boardWarm.add(key)) return
+        fetcher.fetch(url) { r ->
+            runOnUiThread {
+                boardWarm.remove(key)
+                val html = r.getOrNull() ?: return@runOnUiThread
+                val fp = runCatching { Site.parseForumPage(html) }.getOrNull() ?: return@runOnUiThread
+                if (fp.threads.isEmpty()) return@runOnUiThread
+                val page = fp.copy(
+                    title = title,
+                    threads = fp.threads.map { item ->
+                        if (item.thumbs.isEmpty()) {
+                            val cachedThumbs = ThumbStore.get(item.tid)
+                            if (cachedThumbs.isNotEmpty()) item.copy(thumbs = cachedThumbs) else item
+                        } else item
+                    }
+                )
+                forumCache[url] = page
+                SnapshotStore.put(url, page)
+                if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
+                val onThisBoard = backStack.isEmpty() && (nav as? Nav.Forum)?.url?.contains("fid=$key") == true
+                if (key == "152") {
+                    gamePage = page
+                    if (onThisBoard && forumPage?.threads.isNullOrEmpty()) {
+                        forumPage = page
+                        loadedForumUrl = url
+                        loading = false
+                        refreshing = false
+                        error = null
+                    }
+                } else {
+                    animePage = page
+                    if (onThisBoard && forumPage?.threads.isNullOrEmpty()) {
+                        forumPage = page
+                        loadedForumUrl = url
+                        loading = false
+                        refreshing = false
+                        error = null
+                    }
+                }
+            }
+        }
+    }
+
     private fun load(rawUrl: String) {
         val url = if (rawUrl.contains("mod=forumdisplay") && !rawUrl.contains("orderby="))
             rawUrl + "&orderby=dateline" else rawUrl
@@ -475,7 +600,7 @@ class MainActivity : ComponentActivity() {
             val snap = forumCache[url] ?: SnapshotStore.get(url)
             if (snap != null) {
                 Diag.log("load", "先用磁盘快照铺屏 threads=" + snap.threads.size)
-                forumPage = snap.copy(cats = mergeCats(emptyList(), snap.cats), title = (nav as Nav.Forum).title)
+                showForum(url, snap.copy(cats = mergeCats(emptyList(), snap.cats), title = (nav as Nav.Forum).title))
             }
         }
         // 已经有旧列表（快照或上一屏）时，用顶部细条静默刷新，不铺全屏 loading
@@ -531,9 +656,9 @@ class MainActivity : ComponentActivity() {
                                     refreshing = false
                                     loading = false
                                     error = null
-                                    forumPage = (nav as Nav.Forum).let { f ->
+                                    showForum(url, (nav as Nav.Forum).let { f ->
                                         Site.parseForumPage(html).copy(title = f.title)
-                                    }
+                                    })
                                     return@onSuccess
                                 }
                                 needLogin = false
@@ -543,9 +668,9 @@ class MainActivity : ComponentActivity() {
                                     refreshing = false
                                     loading = false
                                     error = null
-                                    forumPage = (nav as Nav.Forum).let { f ->
+                                    showForum(url, (nav as Nav.Forum).let { f ->
                                         Site.parseForumPage(html).copy(title = f.title)
-                                    }
+                                    })
                                     return@onSuccess
                                 }
                                 needUpgrade = false
@@ -558,7 +683,7 @@ class MainActivity : ComponentActivity() {
                                     needUpgrade = false
                                     refreshing = false
                                     error = null
-                                    forumPage = fp.copy(title = (nav as Nav.Forum).title)
+                                    showForum(url, fp.copy(title = (nav as Nav.Forum).title))
                                     return@onSuccess
                                 }
                                 if (fp.threads.isEmpty() && url.contains("search.php")) {
@@ -604,10 +729,15 @@ class MainActivity : ComponentActivity() {
                                 refreshing = false
                                 searchUpdating = false
                                 Diag.log("load", "forum ok threads=" + fp.threads.size + " bytes=" + html.length + " url=" + url)
-                                forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
-                                forumCache[url] = forumPage!!
-                                SnapshotStore.put(url, forumPage!!)
+                                val shown = fp.copy(cats = mergeCats(prevCats(url), fp.cats))
+                                showForum(url, shown)
+                                forumCache[url] = shown
+                                SnapshotStore.put(url, shown)
                                 if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
+                                if (backStack.isEmpty()) {
+                                    if (url.contains("fid=150")) preloadBoard(GAME_URL, "和谐游戏")
+                                    else if (url.contains("fid=152")) preloadBoard(ANIME_URL, "和谐动漫")
+                                }
                                 if (fp.threads.isEmpty()) {
                                     val tp = Site.parseThread(html)
                                     if (tp.posts.isNotEmpty()) {
@@ -779,20 +909,22 @@ class MainActivity : ComponentActivity() {
 
     private fun openQuick(url: String, title: String) {
         Diag.log("nav", "switch forum -> " + title + " 缓存=" + (forumCache[url] != null))
-        // 一级页之间切换：不压栈，底栏保持可见；有缓存就直接换过去
+        // 一级页之间切换：不压栈。另一块的列表留在自己的快照里，不要借过来
         val isTopLevel = backStack.isEmpty()
         if (!isTopLevel) backStack.add(nav)
         nav = Nav.Forum(url, title)
         threadPage = null
-        val cached = forumCache[url] ?: SnapshotStore.get(url)
-        if (cached != null) {
-            forumPage = cached
+        error = null
+        val cached = forumCache[url] ?: SnapshotStore.get(url) ?: boardOf(url)
+        if (cached != null && cached.threads.isNotEmpty()) {
+            showForum(url, cached.copy(title = title))
             loadedForumUrl = url
-            error = null
+            loadedForumTitle = title
+            loading = false
+            refreshing = false
             return
         }
-        // 只换标题，先保留上一屏的帖子，新数据到了再整体替换，动画期间不会白屏闪烁
-        forumPage = forumPage?.copy(title = title)
+        forumPage = null
         loadedForumUrl = null
         load(url)
     }
@@ -911,8 +1043,13 @@ class MainActivity : ComponentActivity() {
                             nav = Nav.Thread(url, tp.subject)
                         } else {
                             val fp = Site.parseForumPage(html)
-                            forumPage = fp.copy(cats = mergeCats(forumPage?.cats ?: emptyList(), fp.cats))
-                            nav = Nav.Forum(url, fp.title.ifBlank { "版块" })
+                            val shown = fp.copy(cats = mergeCats(prevCats(url), fp.cats))
+                            showForum(url, shown)
+                            loadedForumUrl = url
+                            val keepTitle = backStack.isEmpty() &&
+                                (url.contains("fid=150") || url.contains("fid=152"))
+                            val title = if (keepTitle) (nav as? Nav.Forum)?.title?.takeIf { it.isNotBlank() } else null
+                            nav = Nav.Forum(url, title ?: fp.title.ifBlank { "版块" })
                         }
                     }.onFailure { error = "解析失败：" + (it.message ?: it.javaClass.simpleName) }
                 }.onFailure { error = it.message ?: "加载失败" }
@@ -983,7 +1120,7 @@ class MainActivity : ComponentActivity() {
                             cats = mergeCats(cur?.cats ?: emptyList(), fp.cats),
                             threads = fp.threads
                         )
-                        forumPage = merged
+                        showForum(url, merged)
                         forumCache[url] = merged
                         prefetchToken++
                         prefetchThumbs(merged)
@@ -1144,7 +1281,7 @@ class MainActivity : ComponentActivity() {
                     // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
                     val cached = forumCache[n.url]
                     if (cached != null) {
-                        forumPage = cached
+                        showForum(n.url, cached)
                         loadedForumUrl = n.url
                         error = null
                     } else if (forumPage == null || loadedForumUrl != n.url || error != null) {
@@ -1477,8 +1614,13 @@ class MainActivity : ComponentActivity() {
         val updated = cur.copy(threads = cur.threads.map { item ->
             if (item.tid == t.tid) item.copy(thumbs = imgs) else item
         })
-        forumPage = updated
-        loadedForumUrl?.let { forumCache[it] = updated }
+        val u = loadedForumUrl
+        if (u != null) {
+            showForum(u, updated)
+            forumCache[u] = updated
+        } else {
+            forumPage = updated
+        }
     }
 
     private fun prefetchThumbs(page: ForumPage) {
@@ -1514,8 +1656,13 @@ class MainActivity : ComponentActivity() {
                                     val updated = cur.copy(threads = cur.threads.map { item ->
                                         if (item.tid == t.tid) item.copy(thumbs = thumbs) else item
                                     })
-                                    forumPage = updated
-                                    loadedForumUrl?.let { forumCache[it] = updated }
+                                    val u = loadedForumUrl
+                                    if (u != null) {
+                                        showForum(u, updated)
+                                        forumCache[u] = updated
+                                    } else {
+                                        forumPage = updated
+                                    }
                                 }
                             }
                             step(i + 1)
