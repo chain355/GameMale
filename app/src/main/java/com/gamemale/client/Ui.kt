@@ -757,9 +757,11 @@ fun AppUi(
                         translationX = backProgress * size.width * 0.35f
                         if (zoomRect != null) {
                             alpha = if (zoomMode > 0) {
+                                // 进入：B 后段淡入
                                 ((zoomProg.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
                             } else {
-                                ((1f - zoomProg.value) / 0.55f).coerceIn(0f, 1f)
+                                // 退出：列表从 0% 起淡入，45% 处完全接替
+                                ((1f - zoomProg.value) / 0.45f).coerceIn(0f, 1f)
                             }
                         }
                     }
@@ -947,9 +949,15 @@ fun AppUi(
             val h = r.height + (screenH - r.height) * p
             val corner = (1f - p) * 18f
             val alpha = if (zoomMode > 0) {
+                // 进入：卡片位图前 55% 不透明，之后淡出
                 if (p <= 0.55f) 1f else ((1f - p) / 0.45f).coerceIn(0f, 1f)
             } else {
-                if (p >= 0.55f) 1f else (p / 0.55f).coerceIn(0f, 1f)
+                // 退出：详情位图前 15% 保持不透明，15%~65% 淡出
+                when {
+                    p >= 0.85f -> 1f
+                    p > 0.35f -> ((p - 0.35f) / 0.50f).coerceIn(0f, 1f)
+                    else -> 0f
+                }
             }
             val shape = RoundedCornerShape(corner.dp)
             val bmp = zoomBitmap
@@ -1169,9 +1177,9 @@ private fun TopBar(
                         .drawCouiBackdrop(
                             backdrop,
                             shape = { RectangleShape },
-                            effects = { blur(36f, TileMode.Clamp) },
+                            effects = { blur(44f, TileMode.Clamp) },
                             onDrawSurface = {
-                                drawRect(colors.background.copy(alpha = 0.82f))
+                                drawRect(colors.background.copy(alpha = 0.42f))
                             }
                         )
                 )
@@ -1287,17 +1295,17 @@ private fun AvatarMenu(
             Column(
                 Modifier
                     .width(216.dp)
-                    .shadow(22.dp, RoundedCornerShape(20.dp), clip = false)
-                    .clip(RoundedCornerShape(20.dp))
+                    .shadow(24.dp, RoundedCornerShape(30.dp), clip = false)
+                    .clip(RoundedCornerShape(30.dp))
                     .then(
                         if (blur && backdrop != null) Modifier.drawCouiBackdrop(
                             backdrop,
-                            shape = { RoundedCornerShape(20.dp) },
+                            shape = { RoundedCornerShape(30.dp) },
                             effects = { blur(26f, TileMode.Clamp) },
                             onDrawSurface = { drawRect(colors.container.copy(alpha = 0.72f)) }
                         ) else Modifier.background(colors.container)
                     )
-                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(30.dp))
                     .padding(vertical = 6.dp)
             ) {
                 for ((label, idx, action) in items) {
@@ -1310,7 +1318,7 @@ private fun AvatarMenu(
                             .fillMaxWidth()
                             .height(46.dp)
                             .padding(horizontal = 6.dp)
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(24.dp))
                             .background(if (itemPressed) Color.White.copy(alpha = 0.12f) else Color.Transparent)
                             .clickable(
                                 interactionSource = itemInteraction,
@@ -1909,14 +1917,18 @@ private fun ForumView(
             }
         }
     }
-    Column(Modifier.fillMaxSize()) {
-        // 顶部刷新提示：只在列表上方占一小条，不遮住原有内容
+    Box(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val push = with(density) { (pull * 0.55f).toDp() }
+        // 顶部刷新提示：浮在顶栏下方预留的空白里，不参与布局，不顶列表
         if (refreshing || pull > 8f) {
             Row(
                 Modifier
+                    .align(Alignment.TopCenter)
+                    .zIndex(1f)
                     .fillMaxWidth()
-                    .padding(top = BarOverlay.inset)
-                    .height(if (refreshing) 36.dp else (pull / 3f).dp.coerceAtMost(36.dp)),
+                    .padding(top = BarOverlay.inset + if (refreshing) 6.dp else push * 0.45f)
+                    .height(36.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1945,7 +1957,7 @@ private fun ForumView(
                     }
                 },
             state = listState,
-            contentPadding = PaddingValues(start = 12.dp, top = 12.dp + BarOverlay.inset, end = 12.dp, bottom = 110.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 12.dp + BarOverlay.inset + push, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             val list = page?.threads ?: emptyList()
