@@ -1,5 +1,9 @@
 package com.gamemale.client
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -65,7 +69,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -440,7 +451,15 @@ fun AppUi(
     onLoginClose: () -> Unit = {},
     verifyPage: Boolean = false,
     verifyWeb: android.webkit.WebView? = null,
-    onVerifyClose: () -> Unit = {}
+    onVerifyClose: () -> Unit = {},
+    accountsOpen: Boolean = false,
+    accounts: List<Accounts.Acc> = emptyList(),
+    currentAccountId: String? = null,
+    onOpenAccounts: () -> Unit = {},
+    onSwitchAccount: (Accounts.Acc) -> Unit = {},
+    onDeleteAccount: (Accounts.Acc) -> Unit = {},
+    onAddAccount: () -> Unit = {},
+    onCloseAccounts: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -533,6 +552,7 @@ fun AppUi(
                             onReply, onRate, onAttach, onImage
                         )
                         cur is Nav.Settings -> SettingsView(
+                            onAccounts = onOpenAccounts,
                             fontScale = fontScale,
                             themeMode = themeMode,
                             cacheMb = cacheMb,
@@ -733,6 +753,9 @@ fun AppUi(
                 }
             )
         }
+        if (accountsOpen) AccountDialog(
+            accounts, currentAccountId, onSwitchAccount, onDeleteAccount, onAddAccount, onCloseAccounts
+        )
         if (replyOpen) ReplyDialog(busy, onCancelReply, onSendReply)
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) ImageDialog(imageUrl, onCloseImage)
@@ -761,65 +784,174 @@ private fun TopBar(
     onDump: () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
-    // 不透明顶栏（已放弃模糊），并让下面的内容从它下方开始
+    var menuOpen by remember { mutableStateOf(false) }
+    // 顶部只留头像：其余功能收进头像下方的菜单
+    val menuItems = buildList {
+        if (canShare) add(Triple("分享", 0) { onShare() })
+        if (canShare) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
+        if (canRefresh) add(Triple("刷新", 2) { onRefresh() })
+        add(Triple("设置", 3) { onSettings() })
+    }
     Box(
         Modifier
             .fillMaxWidth()
             .background(colors.background)
             .windowInsetsPadding(WindowInsets.safeDrawing)
     ) {
-    Row(
-        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (canBack) {
-            CircleBtn(CouiIcons.Filled.Back, onBack)
-            Spacer(Modifier.width(6.dp))
-        }
-        Txt(
-            title,
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 8.dp)
-                .clickable { onDump() },
-            size = 17.sp,
-            weight = FontWeight.Bold,
-            color = colors.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        if (canRefresh) {
-            CircleSlotBtn(onRefresh) { IconRefresh() }
-            Spacer(Modifier.width(6.dp))
-            CircleSlotBtn(onOpenBrowser) { IconBrowser() }
-            Spacer(Modifier.width(6.dp))
-        }
-        if (canShare) {
-            CircleBtn(ShareVector, onShare)
-            Spacer(Modifier.width(8.dp))
-        }
-        if (showSettings) {
-            CircleBtn(CouiIcons.Filled.Setting, onSettings)
-            Spacer(Modifier.width(8.dp))
-        }
-        if (!avatarUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = avatarUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
+        Row(
+            Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (canBack) {
+                CircleBtn(CouiIcons.Filled.Back, onBack)
+                Spacer(Modifier.width(6.dp))
+            }
+            Txt(
+                title,
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                    .clickable { onAvatar() }
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+                    .clickable { onDump() },
+                size = 17.sp,
+                weight = FontWeight.Bold,
+                color = colors.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-        } else {
-            CircleBtn(CouiIcons.Filled.UserCircle, onLogin)
+            if (!avatarUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = avatarUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                        .clickable {
+                            if (menuItems.size > 1) menuOpen = !menuOpen else onSettings()
+                        }
+                )
+            } else {
+                CircleBtn(CouiIcons.Filled.UserCircle, onLogin)
+            }
         }
-    }
+
+        // 头像下方的功能菜单（COUI 卡片样式，淡入淡出）
+        AnimatedVisibility(
+            visible = menuOpen,
+            enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
+            exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 52.dp, end = 10.dp)
+        ) {
+            Column(
+                Modifier
+                    .width(190.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(colors.surface)
+                    .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
+                    .padding(vertical = 6.dp)
+            ) {
+                for ((label, idx, action) in menuItems) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                menuOpen = false
+                                action()
+                            }
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        when (idx) {
+                            0 -> MenuIcon(AppIcon.Share)
+                            1 -> MenuIcon(AppIcon.Browser)
+                            2 -> MenuIcon(AppIcon.Refresh)
+                            else -> MenuIcon(AppIcon.Setting)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Txt(label, size = 14.sp, color = colors.onSurface)
+                    }
+                }
+            }
+        }
     }
 }
 
+private enum class AppIcon { Share, Browser, Refresh, Setting }
+
+@Composable
+private fun MenuIcon(kind: AppIcon) {
+    when (kind) {
+        AppIcon.Setting -> IconImg(CouiIcons.Filled.Setting, 20.dp, CouiTheme.colorScheme.onSurface)
+        AppIcon.Share -> IconImg(ShareVector, 20.dp, CouiTheme.colorScheme.onSurface)
+        AppIcon.Browser -> IconBrowser()
+        AppIcon.Refresh -> IconRefresh()
+    }
+}
+
+/** 纯文本里的网址（含不带 http 前缀的裸域名）渲染成可点链接 */
+private val BARE_URL = Regex(
+    "(?i)(?:https?://|www\\.)[^\\s<>\"'（）()【】，。、；]+|" +
+    "(?:[a-z0-9][a-z0-9_-]*\\.)+(?:com|net|org|io|me|cc|tv|cn|jp|us|uk|de|fr|ru|xyz|top|link|app|dev|gg|info|biz|kr|tw|hk|co)" +
+    "(?:/[^\\s<>\"'（）()【】，。、；]*)?"
+)
+
+@Composable
+private fun LinkifiedText(
+    text: String,
+    size: androidx.compose.ui.unit.TextUnit,
+    color: androidx.compose.ui.graphics.Color,
+    lineHeight: Float = 1.5f,
+    onOpen: (String) -> Unit
+) {
+    val accent = CouiTheme.colorScheme.accent
+    val links = remember(text) {
+        val out = ArrayList<Pair<IntRange, String>>()
+        for (m in BARE_URL.findAll(text)) {
+            var raw = m.value.trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"')
+            if (raw.length <= 4) continue
+            val href = when {
+                raw.startsWith("http") -> raw
+                raw.startsWith("www.") -> "https://$raw"
+                else -> "https://$raw"
+            }
+            val range = m.range.first until (m.range.first + raw.length)
+            if (out.any { it.first.first < range.last && range.first < it.first.last }) continue
+            out.add(range to href)
+        }
+        out
+    }
+    val annotated = remember(text, accent, links) {
+        if (links.isEmpty()) AnnotatedString(text)
+        else buildAnnotatedString {
+            var last = 0
+            for ((range, _) in links) {
+                append(text.substring(last, range.first))
+                withStyle(SpanStyle(color = accent, textDecoration = TextDecoration.Underline)) {
+                    append(text.substring(range.first, range.last + 1))
+                }
+                last = range.last + 1
+            }
+            if (last < text.length) append(text.substring(last))
+        }
+    }
+    var layout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+    BasicText(
+        text = annotated,
+        style = TextStyle(color = color, fontSize = size, lineHeight = (size.value * lineHeight).sp),
+        onTextLayout = { layout = it },
+        modifier = Modifier.pointerInput(text, links) {
+            if (links.isEmpty()) return@pointerInput
+            detectTapGestures { pos: androidx.compose.ui.geometry.Offset ->
+                val l = layout ?: return@detectTapGestures
+                val offset = l.getOffsetForPosition(pos)
+                links.firstOrNull { offset in it.first }?.let { onOpen(it.second) }
+            }
+        }
+    )
+}
 
 /** 只有图标的圆形按钮（图标用 Canvas 画，COUI 图标集里没有刷新/浏览器） */
 @Composable
@@ -1304,11 +1436,12 @@ private fun ThreadView(
                     paragraphs.forEachIndexed { index, item ->
                         if (index > 0) Spacer(Modifier.height(12.dp))
                         when (item) {
-                            is Block.Text -> Txt(
+                            is Block.Text -> LinkifiedText(
                                 item.text,
                                 size = 15.sp,
                                 color = colors.onSurface,
-                                lineHeight = 1.55f
+                                lineHeight = 1.55f,
+                                onOpen = onExternal
                             )
                             is Block.Link -> Txt(
                                 item.text,
@@ -1536,7 +1669,7 @@ private fun SpoilerBox(spoiler: Block.Spoiler, onImage: (String) -> Unit, onExte
             buildParagraphs(spoiler.blocks).forEachIndexed { i, b ->
                 if (i > 0) Spacer(Modifier.height(10.dp))
                 when (b) {
-                    is Block.Text -> Txt(b.text, size = 15.sp, color = colors.onSurface, lineHeight = 1.55f)
+                    is Block.Text -> LinkifiedText(b.text, size = 15.sp, color = colors.onSurface, lineHeight = 1.55f, onOpen = onExternal)
                     is Block.Link -> Txt(
                         b.text,
                         modifier = Modifier.clip(RoundedCornerShape(6.dp))
@@ -1841,6 +1974,7 @@ private fun SettingsView(
     onSetCacheMb: (Int) -> Unit,
     onClearCache: () -> Unit,
     onExportLogs: () -> Unit = {},
+    onAccounts: () -> Unit = {},
     onExternal: (String) -> Unit
 ) {
     val colors = CouiTheme.colorScheme
@@ -1874,6 +2008,23 @@ private fun SettingsView(
         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 100.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
+        item {
+            section("账号") {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onAccounts() }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconImg(CouiIcons.Filled.Users, 20.dp, colors.onSurface)
+                    Spacer(Modifier.width(12.dp))
+                    Txt("账号管理", size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
+                    IconImg(CouiIcons.Filled.Next, 18.dp, colors.onSurfaceVariant)
+                }
+            }
+        }
         item {
             section("字体大小") {
                 val scales = listOf(1.0f to "标准", 1.12f to "较大", 1.24f to "大", 1.36f to "特大")
@@ -1951,6 +2102,122 @@ private fun SettingsView(
     }
 }
 
+
+/** 账号管理：列表 + 右侧删除 + 末行新增 */
+@Composable
+private fun AccountDialog(
+    accounts: List<Accounts.Acc>,
+    currentId: String?,
+    onSelect: (Accounts.Acc) -> Unit,
+    onDelete: (Accounts.Acc) -> Unit,
+    onAdd: () -> Unit,
+    onClose: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(vertical = 14.dp)
+        ) {
+            Txt(
+                "账号管理",
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                size = 17.sp,
+                weight = FontWeight.Bold,
+                color = colors.onSurface
+            )
+            if (accounts.isEmpty()) {
+                Txt(
+                    "还没有保存的账号",
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                    size = 13.sp,
+                    color = colors.onSurfaceVariant
+                )
+            }
+            accounts.forEach { acc ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(acc) }
+                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (acc.avatar.isNotBlank()) {
+                        AsyncImage(
+                            model = acc.avatar,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(36.dp).clip(CircleShape)
+                        )
+                    } else {
+                        Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+                            IconImg(CouiIcons.Filled.UserCircle, 26.dp, colors.onSurfaceVariant)
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Txt(acc.name, size = 14.sp, color = colors.onSurface)
+                        if (acc.id == currentId) {
+                            Txt("当前账号", size = 11.sp, color = colors.accent)
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .clickable { onDelete(acc) },
+                        contentAlignment = Alignment.Center
+                    ) { IconTrash() }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onAdd() }
+                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconImg(CouiIcons.Filled.Add, 20.dp, colors.accent)
+                Spacer(Modifier.width(12.dp))
+                Txt("新增账号", size = 14.sp, color = colors.accent)
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Pill("关闭", onClose, primary = false)
+            }
+        }
+    }
+}
+
+/** 垃圾桶图标（COUI 图标集里没有删除） */
+@Composable
+private fun IconTrash() {
+    val c = CouiTheme.colorScheme.onSurfaceVariant
+    Canvas(Modifier.size(18.dp)) {
+        val sw = 1.6.dp.toPx()
+        val w = size.width
+        val h = size.height
+        // 桶盖
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.14f, h * 0.26f), androidx.compose.ui.geometry.Offset(w * 0.86f, h * 0.26f), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.38f, h * 0.26f), androidx.compose.ui.geometry.Offset(w * 0.38f, h * 0.14f), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.62f, h * 0.26f), androidx.compose.ui.geometry.Offset(w * 0.62f, h * 0.14f), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.38f, h * 0.14f), androidx.compose.ui.geometry.Offset(w * 0.62f, h * 0.14f), sw)
+        // 桶身
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.22f, h * 0.26f), androidx.compose.ui.geometry.Offset(w * 0.28f, h * 0.90f), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.78f, h * 0.26f), androidx.compose.ui.geometry.Offset(w * 0.72f, h * 0.90f), sw)
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.28f, h * 0.90f), androidx.compose.ui.geometry.Offset(w * 0.72f, h * 0.90f), sw)
+        // 两条竖纹
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.42f, h * 0.42f), androidx.compose.ui.geometry.Offset(w * 0.44f, h * 0.78f), sw * 0.8f)
+        drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.58f, h * 0.42f), androidx.compose.ui.geometry.Offset(w * 0.56f, h * 0.78f), sw * 0.8f)
+    }
+}
 
 /** 未登录时的提示页 */
 @Composable

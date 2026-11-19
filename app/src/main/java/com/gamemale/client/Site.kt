@@ -217,6 +217,36 @@ object Site {
         return ForumPage(title, cats, threads, pages, pageNo, pageCount)
     }
 
+    /**
+     * 把纯文本里的 http(s) 链接拆成可点击的 Block.Link。
+     * 很多楼主只贴了网址字符串、没做超链接，网页上也是纯文本，这里替它补上。
+     */
+    private fun linkifyBlocks(input: List<Block>): List<Block> {
+        val out = ArrayList<Block>()
+        for (b in input) {
+            if (b !is Block.Text) { out.add(b); continue }
+            var idx = 0
+            for (m in URL_RE.findAll(b.text)) {
+                var url = m.value.trimEnd('.', ',', ')', ']', '。', '，', '、', '；')
+                if (url.length < 12) continue
+                if (m.range.first > idx) out.add(Block.Text(b.text.substring(idx, m.range.first)))
+                val href = if (url.startsWith("http")) url else "https://" + url
+                out.add(Block.Link(url, href))
+                idx = m.range.first + url.length
+            }
+            if (idx == 0) out.add(b)
+            else if (idx < b.text.length) out.add(Block.Text(b.text.substring(idx)))
+        }
+        return out
+    }
+
+    /** http(s) 链接，以及"只写了域名、没做超链接"的裸网址（xxx.com/yyy、www.xxx.net） */
+    private val URL_RE = Regex(
+        "(?i)(?:https?://|www\\.)[^\\s<>\"'（）()【】，。、；]+|" +
+        "(?:[a-z0-9][a-z0-9_-]*\\.)+(?:com|net|org|io|me|cc|tv|cn|jp|us|uk|de|fr|ru|xyz|top|link|app|dev|gg|info|biz|kr|tw|hk|co)" +
+        "(?:/[^\\s<>\"'（）()【】，。、；]*)?"
+    )
+
     /** 帖子页：标题、楼层、附件、评分、分页 */
     fun parseThread(html: String): ThreadPage {
         val doc = Jsoup.parse(html, SITE)
@@ -332,7 +362,7 @@ object Site {
                 if (blocks.any { it is Block.Image && it.url == u }) continue
                 blocks.add(Block.Image(u))
             }
-            posts.add(PostItem(pid, author, avatar, time, floor, blocks, attachments, rating, posts.isEmpty(), links))
+            posts.add(PostItem(pid, author, avatar, time, floor, linkifyBlocks(blocks), attachments, rating, posts.isEmpty(), links))
         }
 
         val lastEdit = doc.select("em").map { it.text() }.firstOrNull { it.contains("编辑") }

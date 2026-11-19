@@ -80,6 +80,10 @@ class MainActivity : ComponentActivity() {
 
         showLastCrash()
 
+        // 账号表：上次用在哪个账号，启动时先按它展示
+        accounts = Accounts.load(this)
+        currentAccountId = Accounts.currentId(this)
+
         val prefs = getSharedPreferences("gm", MODE_PRIVATE)
         // 没手动选过就跟随系统的深浅色
         val systemDark = (resources.configuration.uiMode and
@@ -201,6 +205,14 @@ class MainActivity : ComponentActivity() {
                     verifyPage = verifyPage,
                     verifyWeb = verifyWeb,
                     onVerifyClose = { closeVerify() },
+                    accountsOpen = accountsOpen,
+                    accounts = accounts,
+                    currentAccountId = currentAccountId,
+                    onOpenAccounts = { openAccounts() },
+                    onSwitchAccount = { acc -> switchAccount(acc) },
+                    onDeleteAccount = { acc -> deleteAccount(acc) },
+                    onAddAccount = { addAccount() },
+                    onCloseAccounts = { accountsOpen = false },
                     onAvatar = { },
                     onReply = { replyOpen = true },
                     onRate = { pid -> openRate(pid) },
@@ -1117,6 +1129,23 @@ class MainActivity : ComponentActivity() {
         Site.parseLoginName(html)?.takeIf { it.isNotBlank() }?.let { loginName = it }
         val newAvatar = Site.parseLoginAvatar(html)
         if (!newAvatar.isNullOrBlank() && !newAvatar.contains("uid=0")) avatarUrl = newAvatar
+        commitPendingAccount()
+    }
+
+    /** 登录成功后把当前 Cookie 存成一个账号，并设为当前账号 */
+    private fun commitPendingAccount() {
+        val cookie = pendingCookie ?: return
+        val uid = Regex("uid=(\\d+)").find(avatarUrl.orEmpty())?.groupValues?.get(1)
+            ?: Regex("uid=(\\d+)").find(cookie)?.groupValues?.get(1)
+            ?: System.currentTimeMillis().toString()
+        val name = loginName?.takeIf { it.isNotBlank() } ?: ("账号 " + uid.takeLast(4))
+        val acc = Accounts.Acc(uid, name, avatarUrl.orEmpty(), cookie)
+        accounts = Accounts.upsert(this, acc)
+        currentAccountId = uid
+        Accounts.setCurrent(this, uid)
+        pendingCookie = null
+        Diag.log("account", "已保存账号 " + name + " 共" + accounts.size + "个")
+        toast("已切换账号：" + name)
     }
 
     /** jsoup 解析一律放到后台单线程：650KB 级页面在主线程解析很容易 OOM */
@@ -1219,6 +1248,11 @@ class MainActivity : ComponentActivity() {
     private var needUpgrade by mutableStateOf(false)
     /** 未登录导致列表为空 */
     private var needLogin by mutableStateOf(false)
+    private var accounts by mutableStateOf<List<Accounts.Acc>>(emptyList())
+    private var currentAccountId: String? = null
+    private var accountsOpen by mutableStateOf(false)
+    private var pendingCookie: String? = null
+    private var addMode = false
     private var loginPage by mutableStateOf(false)
     private var loginWeb: WebView? = null
     private var loginPrompted = false
@@ -1876,6 +1910,8 @@ class MainActivity : ComponentActivity() {
         handler.removeCallbacks(loginPoller)
         loginPage = false
         runCatching { CookieManager.getInstance().flush() }
+        pendingCookie = Accounts.capture()
+        addMode = false
         val web = loginWeb
         loginWeb = null
         if (web != null) {
@@ -1890,6 +1926,70 @@ class MainActivity : ComponentActivity() {
         homeAlt = false
         Diag.log("login", "登录完成，回首页刷新")
         reload()
+    }
+
+    fun openAccounts() {
+        accounts = Accounts.load(this)
+        accountsOpen = true
+    }
+
+    fun switchAccount(acc: Accounts.Acc) {
+        accountsOpen = false
+        Diag.log("account", "切换账号 " + acc.name)
+        Accounts.apply(acc.cookie) {
+            currentAccountId = acc.id
+            Accounts.setCurrent(this, acc.id)
+            loginName = acc.name
+            if (acc.avatar.isNotBlank()) avatarUrl = acc.avatar
+            loggedIn = true
+            homeWarmed = false
+            homeAlt = false
+            reload()
+        }
+    }
+
+    fun deleteAccount(acc: Accounts.Acc) {
+        Diag.log("account", "删除账号 " + acc.name)
+        accounts = Accounts.remove(this, acc.id)
+        if (acc.id != currentAccountId) {
+            accountsOpen = true
+            return
+        }
+        val next = accounts.firstOrNull()
+        if (next != null) {
+            switchAccount(next)
+            accountsOpen = true
+        } else {
+            currentAccountId = null
+            Accounts.setCurrent(this, null)
+            loggedIn = false
+            loginName = null
+            avatarUrl = null
+            Accounts.clear {
+                homeWarmed = false
+                homeAlt = false
+                reload()
+            }
+            accountsOpen = true
+        }
+    }
+
+    /** 新增账号：先把当前 Cookie 备份到账号表，再清空 CookieManager，登录页才会显示空表单 */
+    fun addAccount() {
+        accountsOpen = false
+        val cur = accounts.firstOrNull { it.id == currentAccountId }
+        if (cur != null) Accounts.upsert(this, cur)
+        addMode = true
+        val backup = Accounts.capture()
+        if (backup.isNotBlank()) {
+            currentAccountId?.let { id ->
+                val name = loginName ?: "账号"
+                accounts = Accounts.upsert(this, Accounts.Acc(id, name, avatarUrl.orEmpty(), backup))
+            }
+        }
+        Accounts.clear {
+            openLogin()
+        }
     }
 
     /** 弹可见验证页：隐藏 WebView 里过不去的 Cloudflare 挑战，改成让用户看着它跑完 */
@@ -1954,6 +2054,11 @@ class MainActivity : ComponentActivity() {
     private fun closeLogin() {
         handler.removeCallbacks(loginPoller)
         loginPage = false
+        if (addMode) {
+            addMode = false
+            val cur = accounts.firstOrNull { it.id == currentAccountId }
+            if (cur != null) Accounts.apply(cur.cookie) { }
+        }
         val web = loginWeb
         loginWeb = null
         if (web != null) {
