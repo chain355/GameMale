@@ -1811,14 +1811,18 @@ class MainActivity : ComponentActivity() {
         return false
     }
 
-    /** 登录页里出现 action=logout 就说明已经登录成功（不管 Cookie 名字叫啥） */
-    private fun loginPageHasLogout(cb: (Boolean) -> Unit) {
-        val web = loginWeb ?: return cb(false)
+    /** 页面里出现 action=logout 就说明已经登录成功（不管 Cookie 名字叫啥） */
+    private fun webHasLogout(web: WebView?, cb: (Boolean) -> Unit) {
+        if (web == null) return cb(false)
         runCatching {
             web.evaluateJavascript(
                 "(function(){try{return document.documentElement.innerHTML.indexOf('action=logout')>=0}catch(e){return false}})()"
             ) { v -> cb(v.contains("true")) }
         }.onFailure { cb(false) }
+    }
+
+    private fun loginPageHasLogout(cb: (Boolean) -> Unit) {
+        webHasLogout(loginWeb, cb)
     }
 
     private fun askReturnHome() {
@@ -1868,17 +1872,27 @@ class MainActivity : ComponentActivity() {
         handler.postDelayed(verifyPoller, 700)
     }
 
-    private val verifyPoller = object : Runnable {
+    private val verifyPoller: Runnable = object : Runnable {
         override fun run() {
             if (!verifyPage) return
-            if (hasClearance()) {
-                Diag.log("verify", "验证通过，拿到 cf_clearance")
-                val target = verifyTarget
-                closeVerify()
-                if (target != null) reload()
-                return
+            val clearance = hasClearance()
+            // 验证页里如果被站点跳到登录页并登录成功，也要立刻放行：
+            // 同一个 CookieManager，登录态已经落地，直接回列表刷新即可
+            webHasLogout(verifyWeb) { logged ->
+                if (!verifyPage) return@webHasLogout
+                if (clearance || logged) {
+                    Diag.log("verify", "验证页通过 clearance=" + clearance + " login=" + logged)
+                    val target = verifyTarget
+                    verifyTarget = null
+                    closeVerify()
+                    if (target != null) {
+                        CookieManager.getInstance().flush()
+                        reload()
+                    }
+                    return@webHasLogout
+                }
+                handler.postDelayed(this, 900)
             }
-            handler.postDelayed(this, 900)
         }
     }
 

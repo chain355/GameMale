@@ -86,6 +86,9 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 **3.0-M32（vc51）**
 - 帖子页顶栏：刷新改为圆形图标按钮，新增「用浏览器打开」圆形按钮（调系统默认浏览器打开帖子链接）
 
+**3.0-M46（vc65）**
+- 「站点验证」页也会监测登录：验证过程中被站点跳到登录页并登录成功，同样会立刻关闭并回列表刷新
+
 **3.0-M45（vc64）**
 - 登录成功检测不再写死 `cdb_auth`：任何 `*auth` Cookie 有效值，或登录页 DOM 里出现 `action=logout`，都算登录成功并弹确认
 
