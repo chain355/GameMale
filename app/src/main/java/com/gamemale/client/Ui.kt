@@ -120,6 +120,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -395,8 +396,8 @@ private fun Modifier.pressDragTarget(state: PressDragState, index: Int): Modifie
                 while (true) {
                     val e = awaitPointerEvent()
                     val ch = e.changes.firstOrNull() ?: break
-                    val y = origin.y + ch.position.y
-                    state.bounds.entries.firstOrNull { y >= it.value.top && y <= it.value.bottom }
+                    val pt = androidx.compose.ui.geometry.Offset(origin.x + ch.position.x, origin.y + ch.position.y)
+                    state.bounds.entries.firstOrNull { it.value.contains(pt) }
                         ?.let { last = it.key; state.hover = it.key }
                     if (!ch.pressed) break
                 }
@@ -417,7 +418,7 @@ private fun NavButton(
     onClick: () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
-    val hot = active || (dragState != null && dragState.hover == dragIndex)
+    val hot = active
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
@@ -454,7 +455,7 @@ private fun NavButtonSlot(
     onClick: () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
-    val hot = active || (dragState != null && dragState.hover == dragIndex)
+    val hot = active
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
@@ -879,7 +880,14 @@ fun AppUi(
                             LoginPromptView(onLogin)
                         cur is Nav.Forum -> ForumView(
                             forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
-                            refreshing, onRefresh, onThumbNeeded, searchUpdating
+                            refreshing, onRefresh, onThumbNeeded, searchUpdating,
+                            onSwipeBoard = { next ->
+                                val u = currentUrl
+                                if (!u.contains("search.php") && u.contains("forumdisplay")) {
+                                    if (u.contains("fid=150") && next) onQuickForum(GAME_URL, "和谐游戏")
+                                    else if (u.contains("fid=152") && !next) onQuickForum(ANIME_URL, "和谐动漫")
+                                }
+                            }
                         )
                         cur is Nav.Thread -> ThreadView(
                             threadPage, loading, onLoad, onExternal,
@@ -1128,8 +1136,33 @@ fun AppUi(
                         RoundedCornerShape(26.dp)
                     )
             ) {
+                var navRowOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                val navHover = navDrag.bounds[navDrag.hover]
+                val navHL by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = navHover?.let { it.left - navRowOrigin.x } ?: 0f,
+                    animationSpec = tween(150, easing = LinearEasing),
+                    label = "navHl"
+                )
+                val navHW by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = navHover?.width ?: 0f,
+                    animationSpec = tween(150, easing = LinearEasing),
+                    label = "navHw"
+                )
                 Row(
-                    Modifier.fillMaxHeight().padding(horizontal = 4.dp),
+                    Modifier
+                        .fillMaxHeight()
+                        .padding(horizontal = 4.dp)
+                        .onGloballyPositioned { navRowOrigin = it.positionInRoot() }
+                        .drawBehind {
+                            if (navDrag.hover >= 0 && navHW > 1f) {
+                                drawRoundRect(
+                                    color = colors.accent.copy(alpha = 0.16f),
+                                    topLeft = androidx.compose.ui.geometry.Offset(navHL, 0f),
+                                    size = androidx.compose.ui.geometry.Size(navHW, size.height),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
+                                )
+                            }
+                        },
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                 val cur = currentUrl
@@ -1364,6 +1397,11 @@ private fun AvatarMenu(
 ) {
     val colors = CouiTheme.colorScheme
     val dragState = remember { PressDragState() }
+    val hlY = androidx.compose.animation.core.animateDpAsState(
+        targetValue = 6.dp + (dragState.hover.coerceAtLeast(0) * 46).dp,
+        animationSpec = tween(140, easing = LinearEasing),
+        label = "menuHighlight"
+    )
     dragState.onCommit = { idx ->
         onDismiss()
         items.getOrNull(idx)?.third?.invoke()
@@ -1408,6 +1446,17 @@ private fun AvatarMenu(
                         ) else Modifier.background(colors.container)
                     )
                     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(30.dp))
+                    .drawBehind {
+                        if (dragState.hover >= 0) {
+                            val padX = 6.dp.toPx()
+                            drawRoundRect(
+                                color = Color.White.copy(alpha = 0.12f),
+                                topLeft = androidx.compose.ui.geometry.Offset(padX, hlY.value.toPx()),
+                                size = androidx.compose.ui.geometry.Size(size.width - padX * 2f, 46.dp.toPx()),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx())
+                            )
+                        }
+                    }
                     .padding(vertical = 6.dp)
             ) {
                 items.forEachIndexed { pos, item ->
@@ -1419,7 +1468,6 @@ private fun AvatarMenu(
                             .height(46.dp)
                             .padding(horizontal = 6.dp)
                             .clip(RoundedCornerShape(24.dp))
-                            .background(if (dragState.hover == pos) Color.White.copy(alpha = 0.12f) else Color.Transparent)
                             .pressDragTarget(dragState, pos)
                             .padding(horizontal = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -1987,7 +2035,8 @@ private fun ForumView(
     refreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onThumbNeeded: (ThreadItem) -> Unit = {},
-    searchUpdating: Boolean = false
+    searchUpdating: Boolean = false,
+    onSwipeBoard: ((Boolean) -> Unit)? = null
 ) {
     val colors = CouiTheme.colorScheme
     var pull by remember { mutableStateOf(0f) }
@@ -2036,7 +2085,7 @@ private fun ForumView(
     var spinSpeed by remember { mutableStateOf(0f) }
     var lastPull by remember { mutableStateOf(0f) }
     val autoOffset = remember { androidx.compose.animation.core.Animatable(0f) }
-    val autoPx = with(LocalDensity.current) { (LocalBarInset.current + 67.dp).toPx() }
+    val autoPx = with(LocalDensity.current) { (LocalBarInset.current + 87.dp).toPx() }
     LaunchedEffect(refreshing, searchUpdating) {
         if (refreshing || searchUpdating) autoOffset.animateTo(autoPx, tween(300))
         else autoOffset.animateTo(0f, tween(380, easing = FastOutSlowInEasing))
@@ -2096,6 +2145,20 @@ private fun ForumView(
                     androidx.compose.ui.unit.IntOffset(0, maxOf(pull, autoOffset.value).toInt())
                 }
                 .background(colors.background)
+                .pointerInput(currentUrl, onSwipeBoard) {
+                    if (onSwipeBoard == null) return@pointerInput
+                    var acc = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { acc = 0f },
+                        onHorizontalDrag = { ch, d -> acc += d; ch.consume() },
+                        onDragEnd = {
+                            val th = 110.dp.toPx()
+                            if (acc > th) onSwipeBoard(true) else if (acc < -th) onSwipeBoard(false)
+                            acc = 0f
+                        },
+                        onDragCancel = { acc = 0f }
+                    )
+                }
                 .nestedScroll(scrollConn)
                 .pointerInput(refreshing) {
                     awaitPointerEventScope {
@@ -2592,6 +2655,8 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
     val startIndex = list.indexOf(startUrl).let { if (it >= 0) it else 0 }
     val pagerState = androidx.compose.foundation.pager.rememberPagerState(initialPage = startIndex) { list.size }
     val scope = rememberCoroutineScope()
+    // 每张图各自记住缩放/位移，来回切图能“从哪来回哪去”
+    val zstates = remember(list) { androidx.compose.runtime.mutableStateMapOf<Int, ZState>() }
     Dialog(
         onDismissRequest = onClose,
         properties = androidx.compose.ui.window.DialogProperties(
@@ -2607,6 +2672,7 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
             ) { page ->
                 ZoomableImage(
                     url = list[page],
+                    st = remember(page) { zstates.getOrPut(page) { ZState() } },
                     onClose = onClose,
                     onSwipeOut = { dir ->
                         val target = page + dir
@@ -2658,59 +2724,58 @@ private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> U
     }
 }
 
-/** 单页图片：双击缩放、放大后拖动；未放大时点一下关闭 */
+private class ZState {
+    val scale = mutableStateOf(1f)
+    val ox = mutableStateOf(0f)
+    val oy = mutableStateOf(0f)
+    val overX = mutableStateOf(0f)
+}
+
+/** 单页图片：双击缩放（锚定点击处）、双指缩放（锚定手指中点）、放大后拖动 */
 @Composable
 private fun ZoomableImage(
     url: String,
+    st: ZState,
     onClose: () -> Unit,
     onSwipeOut: (Int) -> Unit = {}
 ) {
-    var scale by remember(url) { mutableStateOf(1f) }
+    var scale by st.scale
     var box by remember(url) { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var ratio by remember(url) { mutableStateOf(1f) }
-    var oxv by remember(url) { mutableStateOf(0f) }
-    var oyv by remember(url) { mutableStateOf(0f) }
-    var overX by remember(url) { mutableStateOf(0f) }
+    var oxv by st.ox
+    var oyv by st.oy
+    var overX by st.overX
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    // 图片按 Fit 显示后的实际尺寸，用来算可平移的边界
-    val content = remember(box, ratio, scale) {
-        val cw = box.width.toFloat()
-        val ch = box.height.toFloat()
-        if (cw <= 0f || ch <= 0f || ratio <= 0f) FloatArray(4)
-        else {
-            val dw: Float
-            val dh: Float
-            if (cw / ch > ratio) { dh = ch; dw = ch * ratio } else { dw = cw; dh = cw / ratio }
-            val mx = ((dw * scale - cw) / 2f).coerceAtLeast(0f)
-            val my = ((dh * scale - ch) / 2f).coerceAtLeast(0f)
-            floatArrayOf(dw, dh, mx, my)
-        }
+    fun displaySize(sc: Float): FloatArray {
+        val cw = box.width.toFloat(); val ch = box.height.toFloat()
+        if (cw <= 0f || ch <= 0f || ratio <= 0f) return floatArrayOf(0f, 0f)
+        return if (cw / ch > ratio) floatArrayOf(ch * ratio, ch) else floatArrayOf(cw, cw / ratio)
     }
-    val maxX = rememberUpdatedState(content[2])
-    val maxY = rememberUpdatedState(content[3])
+    fun boundsFor(sc: Float): Pair<Float, Float> {
+        val d = displaySize(sc)
+        val cw = box.width.toFloat(); val ch = box.height.toFloat()
+        return Pair(((d[0] * sc - cw) / 2f).coerceAtLeast(0f), ((d[1] * sc - ch) / 2f).coerceAtLeast(0f))
+    }
+    val cur = boundsFor(scale)
 
     Box(
-        Modifier
-            .fillMaxSize()
-            .clipToBounds()
-            .onSizeChanged { box = it },
+        Modifier.fillMaxSize().clipToBounds().onSizeChanged { box = it },
         contentAlignment = Alignment.Center
     ) {
         AsyncImage(
             model = ImageStore.local(url) ?: url,
             contentDescription = null,
             contentScale = ContentScale.Fit,
-            onSuccess = { st ->
-                val d = st.result.drawable
+            onSuccess = { st2 ->
+                val d = st2.result.drawable
                 if (d.intrinsicWidth > 0 && d.intrinsicHeight > 0) {
                     ratio = d.intrinsicWidth.toFloat() / d.intrinsicHeight.toFloat()
                 }
             },
             modifier = Modifier
                 .fillMaxSize()
-                // 双指永远缩放；单指拖动只在放大后由图片吃掉，未放大时交给 Pager 翻页
                 .pointerInput(url) {
                     awaitEachGesture {
                         var hadGesture = false
@@ -2719,51 +2784,48 @@ private fun ZoomableImage(
                             val pressed = event.changes.filter { it.pressed }
                             if (pressed.size >= 2) {
                                 hadGesture = true
-                                val p0 = pressed[0]
-                                val p1 = pressed[1]
+                                val p0 = pressed[0]; val p1 = pressed[1]
                                 val curDist = (p0.position - p1.position).getDistance()
                                 val prevDist = (p0.previousPosition - p1.previousPosition).getDistance()
                                 val zoom = if (prevDist > 1f) curDist / prevDist else 1f
-                                val pan = ((p0.position + p1.position) -
-                                    (p0.previousPosition + p1.previousPosition)) / 2f
-                                scale = (scale * zoom).coerceIn(1f, 6f)
-                                val mx = maxX.value
-                                val my = maxY.value
-                                if (scale <= 1.02f) {
+                                val oldScale = scale
+                                val newScale = (oldScale * zoom).coerceIn(1f, 6f)
+                                val cx = box.width / 2f; val cy = box.height / 2f
+                                val focal = androidx.compose.ui.geometry.Offset(
+                                    (p0.position.x + p1.position.x) / 2f - cx,
+                                    (p0.position.y + p1.position.y) / 2f - cy
+                                )
+                                // 以手指中点为锚点缩放
+                                val k = newScale / oldScale
+                                val (bmaxX, bmaxY) = boundsFor(newScale)
+                                scale = newScale
+                                if (newScale <= 1.02f) {
                                     oxv = 0f; oyv = 0f
-                                } else if (pan != Offset.Zero) {
-                                    oxv = (oxv + pan.x).coerceIn(-mx, mx)
-                                    oyv = (oyv + pan.y).coerceIn(-my, my)
-                                    overX = 0f
+                                } else {
+                                    oxv = (focal.x - k * (focal.x - oxv)).coerceIn(-bmaxX, bmaxX)
+                                    oyv = (focal.y - k * (focal.y - oyv)).coerceIn(-bmaxY, bmaxY)
                                 }
                                 pressed.forEach { it.consume() }
                             } else if (pressed.size == 1 && scale > 1.02f) {
                                 hadGesture = true
                                 val delta = pressed[0].position - pressed[0].previousPosition
-                                val mx = maxX.value
-                                val my = maxY.value
-                                if (delta != Offset.Zero) {
-                                    // 越界时加阻尼，松手再弹回
+                                val mx = boundsFor(scale).first
+                                val my = boundsFor(scale).second
+                                if (delta != androidx.compose.ui.geometry.Offset.Zero) {
                                     val nx = oxv + delta.x
-                                    val cx = when {
-                                        nx > mx -> {
-                                            overX += nx - oxv
-                                            mx + (nx - mx) / 3f
-                                        }
-                                        nx < -mx -> {
-                                            overX += nx - oxv
-                                            -mx + (nx + mx) / 3f
-                                        }
+                                    val cxOver = when {
+                                        nx > mx -> { overX += nx - oxv; mx + (nx - mx) / 3f }
+                                        nx < -mx -> { overX += nx - oxv; -mx + (nx + mx) / 3f }
                                         else -> { overX = 0f; nx }
                                     }
                                     val ny = oyv + delta.y
-                                    val cy = when {
+                                    val cyOver = when {
                                         ny > my -> my + (ny - my) / 3f
                                         ny < -my -> -my + (ny + my) / 3f
                                         else -> ny
                                     }
-                                    oxv = cx
-                                    oyv = cy
+                                    oxv = cxOver
+                                    oyv = cyOver
                                 }
                                 pressed[0].consume()
                             }
@@ -2774,35 +2836,33 @@ private fun ZoomableImage(
                             overX = 0f
                             val threshold = with(density) { 72.dp.toPx() }
                             if (kotlin.math.abs(over) > threshold) {
-                                // 越到右边缘继续左滑 -> 下一张；越到左边缘继续右滑 -> 上一张
                                 onSwipeOut(if (over > 0f) -1 else 1)
-                                oxv = 0f
-                                oyv = 0f
+                                // 不重置缩放与位移：从哪张回来就回到哪
                             }
-                            val tx = oxv.coerceIn(-maxX.value, maxX.value)
-                            val ty = oyv.coerceIn(-maxY.value, maxY.value)
+                            val (mx, my) = boundsFor(scale)
+                            val tx = oxv.coerceIn(-mx, mx)
+                            val ty = oyv.coerceIn(-my, my)
                             scope.launch { androidx.compose.animation.core.animate(oxv, tx) { v, _ -> oxv = v } }
                             scope.launch { androidx.compose.animation.core.animate(oyv, ty) { v, _ -> oyv = v } }
                         }
                     }
                 }
-                .pointerInput(Unit) {
+                .pointerInput(url) {
                     detectTapGestures(
-                        onDoubleTap = {
-                            val target = if (scale > 1.05f) 1f else 2.6f
+                        onDoubleTap = { pos ->
+                            val old = scale
+                            val target = if (old > 1.05f) 1f else 2.6f
+                            val cx = box.width / 2f; val cy = box.height / 2f
+                            val anchor = androidx.compose.ui.geometry.Offset(pos.x - cx, pos.y - cy)
+                            val k = target / old
+                            val (mx, my) = boundsFor(target)
+                            val tx = if (target <= 1.02f) 0f else (anchor.x - k * (anchor.x - oxv)).coerceIn(-mx, mx)
+                            val ty = if (target <= 1.02f) 0f else (anchor.y - k * (anchor.y - oyv)).coerceIn(-my, my)
                             scope.launch {
-                                androidx.compose.animation.core.animate(
-                                    scale,
-                                    target,
-                                    animationSpec = tween(280)
-                                ) { v, _ -> scale = v }
+                                androidx.compose.animation.core.animate(scale, target, animationSpec = tween(280)) { v, _ -> scale = v }
                             }
-                            scope.launch {
-                                androidx.compose.animation.core.animate(oxv, 0f) { v, _ -> oxv = v }
-                            }
-                            scope.launch {
-                                androidx.compose.animation.core.animate(oyv, 0f) { v, _ -> oyv = v }
-                            }
+                            scope.launch { androidx.compose.animation.core.animate(oxv, tx, animationSpec = tween(280)) { v, _ -> oxv = v } }
+                            scope.launch { androidx.compose.animation.core.animate(oyv, ty, animationSpec = tween(280)) { v, _ -> oyv = v } }
                         },
                         onTap = { if (scale <= 1.05f) onClose() }
                     )

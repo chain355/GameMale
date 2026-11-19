@@ -314,6 +314,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        runDailyTasks()
         fetcher.attach(browserHost)
         fetcher.keepRunning()
     }
@@ -1569,6 +1570,93 @@ class MainActivity : ComponentActivity() {
         runCatching {
             startActivity(Intent.createChooser(intent, "分享帖子"))
         }.onFailure { toast("没有可分享的应用") }
+    }
+
+    private var dailyRunning = false
+
+    private fun todayKey(): String =
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+
+    /** 每日首次启动：自动签到 + 自动翻卡抽奖（都靠重载页面文本核验结果） */
+    private fun runDailyTasks() {
+        if (!loggedIn || dailyRunning) return
+        val sp = getSharedPreferences("gm", MODE_PRIVATE)
+        if (sp.getString("dailyTaskDay", "") == todayKey()) return
+        dailyRunning = true
+        val done = arrayOfNulls<Boolean>(2) // 0=签到 1=抽奖
+        fun finish() {
+            if (done.any { it == null }) return
+            val msgs = ArrayList<String>()
+            if (done[0] == true) msgs.add("已自动签到") else msgs.add("签到失败")
+            if (done[1] == true) msgs.add("已自动翻卡抽奖") else msgs.add("翻卡抽奖失败")
+            toast(msgs.joinToString("，"))
+            sp.edit().putString("dailyTaskDay", todayKey()).apply()
+            dailyRunning = false
+        }
+        fun fetchText(url: String, cb: (String?) -> Unit) {
+            fetcher.fetch(url) { r ->
+                r.onSuccess { html -> cb(html) }.onFailure {
+                    Diag.log("daily", "fetch fail " + url + " " + it.message)
+                    cb(null)
+                }
+            }
+        }
+        val signUrl = SITE + "plugin.php?id=k_misign:sign"
+        fetchText(signUrl) { html ->
+            if (html == null) {
+                done[0] = false
+            } else if (!html.contains("您今天还没有签到")) {
+                done[0] = true
+            } else {
+                val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+                if (fh == null) {
+                    done[0] = false
+                } else {
+                    val act = SITE + "plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh&format=empty"
+                    fetchText(act) { _ ->
+                        // 重载签到页核验
+                        fetchText(signUrl) { v ->
+                            done[0] = v != null && !v.contains("您今天还没有签到") && v.contains("您的签到排名")
+                            startLottery(::fetchText, done) { finish() }
+                        }
+                    }
+                }
+            }
+            if (done[0] != null) startLottery(::fetchText, done) { finish() }
+        }
+    }
+
+    private fun startLottery(
+        fetchText: (String, (String?) -> Unit) -> Unit,
+        done: Array<Boolean?>,
+        finish: () -> Unit
+    ) {
+        if (done[1] != null) { finish(); return }
+        val pageUrl = SITE + "plugin.php?id=it618_award"
+        fetchText(pageUrl) { html ->
+            if (html == null) {
+                done[1] = false; finish(); return@fetchText
+            }
+            val drawn = html.contains("已抽奖") || html.contains("已经抽奖") ||
+                Regex("抽奖\\s*\\d+\\s*次").containsMatchIn(html)
+            if (drawn) {
+                done[1] = true; finish()
+            } else {
+                val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
+                if (fh == null) {
+                    done[1] = false; finish()
+                } else {
+                    val act = SITE + "plugin.php?id=it618_award:ajax&ac=getaward&formhash=$fh"
+                    fetchText(act) { _ ->
+                        fetchText(pageUrl) { v ->
+                            done[1] = v != null && (v.contains("已抽奖") || v.contains("已经抽奖") ||
+                                Regex("抽奖\\s*\\d+\\s*次").containsMatchIn(v))
+                            finish()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun toast(text: String) {
