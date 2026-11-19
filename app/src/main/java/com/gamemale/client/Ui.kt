@@ -429,7 +429,15 @@ fun AppUi(
     onOpenSearch: () -> Unit = {},
     searchHistory: List<String> = emptyList(),
     backProgress: Float = 0f,
-    onThumbNeeded: (ThreadItem) -> Unit = {}
+    onThumbNeeded: (ThreadItem) -> Unit = {},
+    needUpgrade: Boolean = false,
+    onOpenSite: () -> Unit = {},
+    onAvatar: () -> Unit = {},
+    needLogin: Boolean = false,
+    loginPage: Boolean = false,
+    loginWeb: android.webkit.WebView? = null,
+    onLoginDone: () -> Unit = {},
+    onLoginClose: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -474,6 +482,8 @@ fun AppUi(
                 canBack = canGoBack,
                 dark = dark,
                 onSettings = onSettings,
+                showSettings = nav is Nav.Forum || nav is Nav.Thread,
+                onAvatar = onAvatar,
                 onBack = onBack,
                 onToggleDark = onToggleDark,
                 onLogin = onLogin
@@ -507,6 +517,10 @@ fun AppUi(
                             onCancel = onBack,
                             onSubmit = onSearch
                         )
+                        cur is Nav.Forum && needUpgrade && (forumPage?.threads?.isEmpty() != false) ->
+                            UpgradeView(loading, onOpenSite)
+                        cur is Nav.Forum && needLogin && (forumPage?.threads?.isEmpty() != false) ->
+                            LoginPromptView(onLogin)
                         cur is Nav.Forum -> ForumView(
                             forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
                             refreshing, onRefresh, onThumbNeeded
@@ -533,6 +547,46 @@ fun AppUi(
                 if (loading) LoadingLayer("正在加载…")
             }
             }
+
+        if (loginPage && loginWeb != null) {
+            Box(Modifier.fillMaxSize().background(colors.background)) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .windowInsetsPadding(WindowInsets.safeDrawing)
+                            .height(56.dp)
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircleBtn(CouiIcons.Filled.Back, onLoginClose)
+                        Txt(
+                            "登录",
+                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                            size = 17.sp,
+                            weight = FontWeight.Bold,
+                            color = colors.onSurface
+                        )
+                        // 只有 ✓ 图标：表示"我登录完了，回首页"
+                        CircleSlotBtn(onLoginDone) { IconCheck() }
+                    }
+                    AndroidView(
+                        factory = {
+                            val wrapper = android.widget.FrameLayout(it)
+                            (loginWeb.parent as? android.view.ViewGroup)?.removeView(loginWeb)
+                            wrapper.addView(
+                                loginWeb,
+                                android.widget.FrameLayout.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                            )
+                            wrapper
+                        },
+                        modifier = Modifier.weight(1f).fillMaxWidth()
+                    )
+                }
+            }
+        }
 
         // 隐藏的取数 WebView（1dp，不渲染任何可见内容）
         AndroidView(factory = { host }, modifier = Modifier.size(1.dp))
@@ -649,6 +703,8 @@ private fun TopBar(
     onRefresh: () -> Unit = {},
     onOpenBrowser: () -> Unit = {},
     avatarUrl: String?,
+    showSettings: Boolean = false,
+    onAvatar: () -> Unit = {},
     onBack: () -> Unit,
     onToggleDark: () -> Unit,
     onSettings: () -> Unit,
@@ -694,6 +750,10 @@ private fun TopBar(
             CircleBtn(ShareVector, onShare)
             Spacer(Modifier.width(8.dp))
         }
+        if (showSettings) {
+            CircleBtn(CouiIcons.Filled.Setting, onSettings)
+            Spacer(Modifier.width(8.dp))
+        }
         if (!avatarUrl.isNullOrBlank()) {
             AsyncImage(
                 model = avatarUrl,
@@ -703,7 +763,7 @@ private fun TopBar(
                     .size(40.dp)
                     .clip(CircleShape)
                     .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                    .clickable { onSettings() }
+                    .clickable { onAvatar() }
             )
         } else {
             CircleBtn(CouiIcons.Filled.UserCircle, onLogin)
@@ -1838,6 +1898,70 @@ private fun SettingsView(
                     color = colors.accent,
                     modifier = Modifier.clickable { onExternal("https://github.com/chain355/GameMale") }
                 )
+            }
+        }
+    }
+}
+
+
+/** 未登录时的提示页 */
+@Composable
+private fun LoginPromptView(onLogin: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Txt("还没有登录", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            Spacer(Modifier.height(10.dp))
+            Txt(
+                "未登录时首页帖子列表是加载不出来的。先登录 GameMale 账号，再回来刷新列表。",
+                size = 13.sp,
+                color = colors.onSurfaceVariant
+            )
+            Spacer(Modifier.height(18.dp))
+            Pill("去登录", onLogin, primary = true)
+        }
+    }
+}
+
+/** 顶栏/登录页用的对勾图标（COUI 图标集里没有 Check） */
+@Composable
+private fun IconCheck() {
+    val c = CouiTheme.colorScheme.onSurface
+    Canvas(Modifier.size(20.dp)) {
+        val w = size.width
+        val h = size.height
+        val p = androidx.compose.ui.graphics.Path()
+        p.moveTo(w * 0.12f, h * 0.52f)
+        p.lineTo(w * 0.40f, h * 0.80f)
+        p.lineTo(w * 0.88f, h * 0.22f)
+        drawPath(p, color = c, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.2f))
+    }
+}
+
+/** 版块因用户组等级不足打不开时的提示页 */
+@Composable
+private fun UpgradeView(loading: Boolean, onOpenSite: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Txt("该版块暂时打不开", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            Spacer(Modifier.height(10.dp))
+            Txt(
+                "站点提示你的用户组等级不够。可以回到原站多参与互动、完成任务把等级升上去，再回来刷新列表。",
+                size = 13.sp,
+                color = colors.onSurfaceVariant ?: colors.onSurface
+            )
+            Spacer(Modifier.height(18.dp))
+            Pill("去原站做任务升级", onOpenSite, primary = true)
+            if (loading) {
+                Spacer(Modifier.height(18.dp))
+                MiniSpinner()
             }
         }
     }

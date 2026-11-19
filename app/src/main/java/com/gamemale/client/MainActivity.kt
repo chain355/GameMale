@@ -54,7 +54,6 @@ class MainActivity : ComponentActivity() {
     private var loading by mutableStateOf(false)
     private var error by mutableStateOf<String?>(null)
     private var darkMode by mutableStateOf(false)
-    private var loginOpen by mutableStateOf(false)
     private var lastHtml: String = ""
     private var busy by mutableStateOf(false)
     private var replyOpen by mutableStateOf(false)
@@ -192,6 +191,14 @@ class MainActivity : ComponentActivity() {
                     backProgress = backProgress,
                     onThumbNeeded = { t -> ensureThumb(t) },
                     onLogin = { openLogin() },
+                    needUpgrade = needUpgrade,
+                    onOpenSite = { openInBrowser(SITE + "forum.php") },
+                    needLogin = needLogin,
+                    loginPage = loginPage,
+                    loginWeb = loginWeb,
+                    onLoginDone = { finishLogin() },
+                    onLoginClose = { closeLogin() },
+                    onAvatar = { },
                     onReply = { replyOpen = true },
                     onRate = { pid -> openRate(pid) },
                     onAttach = { at -> openAttach(at) },
@@ -467,6 +474,31 @@ class MainActivity : ComponentActivity() {
                                 }
                                 loadedForumUrl = url
                                 loadedForumTitle = (nav as Nav.Forum).title
+                                if (!loggedIn && isLoginRequired(html)) {
+                                    Diag.log("load", "未登录且需要登录 url=" + url)
+                                    needLogin = true
+                                    needUpgrade = false
+                                    refreshing = false
+                                    loading = false
+                                    error = null
+                                    forumPage = (nav as Nav.Forum).let { f ->
+                                        Site.parseForumPage(html).copy(title = f.title)
+                                    }
+                                    return@onSuccess
+                                }
+                                needLogin = false
+                                if (isGroupBlocked(html)) {
+                                    Diag.log("load", "用户组等级不足 url=" + url)
+                                    needUpgrade = true
+                                    refreshing = false
+                                    loading = false
+                                    error = null
+                                    forumPage = (nav as Nav.Forum).let { f ->
+                                        Site.parseForumPage(html).copy(title = f.title)
+                                    }
+                                    return@onSuccess
+                                }
+                                needUpgrade = false
                                 var fp = Site.parseForumPage(html)
                                 if (fp.threads.isEmpty() && url.contains("search.php")) {
                                     val hits = Site.parseSearchResults(html)
@@ -993,7 +1025,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun goBack() {
-        if (loginOpen) { loginOpen = false; return }
+        if (loginPage) { closeLogin(); return }
         if (backStack.isNotEmpty()) {
             nav = backStack.removeAt(backStack.size - 1)
             when (val n = nav) {
@@ -1067,6 +1099,30 @@ class MainActivity : ComponentActivity() {
     /** jsoup 解析一律放到后台单线程：650KB 级页面在主线程解析很容易 OOM */
     private val parsePool = java.util.concurrent.Executors.newSingleThreadExecutor()
 
+    /** 页面在要求登录：未登录时版块/帖子会返回这类拦截文案 */
+    private fun isLoginRequired(html: String): Boolean {
+        if (html.contains("action=logout")) return false
+        val marks = listOf(
+            "您需要登录后才可以",
+            "请先登录后",
+            "需要登录才能",
+            "登录后才能查看",
+            "您还没有登录"
+        )
+        return marks.any { html.contains(it) }
+    }
+
+    /** 站点对用户组设限时的提示页特征 */
+    private fun isGroupBlocked(html: String): Boolean {
+        val marks = listOf(
+            "需要升级您所在的用户组",
+            "升级您所在的用户组后才能访问",
+            "有权访问的用户组",
+            "您所在的用户组无法"
+        )
+        return marks.any { html.contains(it) }
+    }
+
     /** 两个地址指向同一个目标页：帖子比 tid，版块比 fid+页码（忽略 mobile=no、highlight 这类装饰参数） */
     private fun sameTarget(a: String?, b: String?): Boolean {
         if (a == null || b == null) return false
@@ -1136,6 +1192,13 @@ class MainActivity : ComponentActivity() {
     private var retryCount = 0
     private var loadedThreadUrl: String? = null
     private var refreshing by mutableStateOf(false)
+    /** 版块因用户组等级不足打不开 */
+    private var needUpgrade by mutableStateOf(false)
+    /** 未登录导致列表为空 */
+    private var needLogin by mutableStateOf(false)
+    private var loginPage by mutableStateOf(false)
+    private var loginWeb: WebView? = null
+    private var loginPrompted = false
     private var searchOpen by mutableStateOf(false)
     private var backProgress by mutableStateOf(0f)
     private var searchHistory by mutableStateOf<List<String>>(emptyList())
@@ -1676,37 +1739,83 @@ class MainActivity : ComponentActivity() {
         runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
     }
 
-    /** 登录：临时弹一个 WebView，登录完 Cookie 就留在 CookieManager 里 */
+    /** 登录：全屏 WebView 页，右上角 ✓ 表示登录完成；同时实时盯着 Cookie，一旦拿到就弹确认 */
     fun openLogin() {
         val web = WebView(this)
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.webViewClient = WebViewClient()
         web.loadUrl(SITE + "member.php?mod=logging&action=login")
-        val dialog = Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar)
-        val container = FrameLayout(this)
-        container.addView(web, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        dialog.setContentView(container)
-        dialog.setOnDismissListener {
-            runCatching {
-                (web.parent as? ViewGroup)?.removeView(web)
-                web.destroy()
+        loginWeb = web
+        loginPage = true
+        loginPrompted = false
+        handler.postDelayed(loginPoller, 800)
+        Diag.log("login", "打开登录页")
+    }
+
+    private val loginPoller = object : Runnable {
+        override fun run() {
+            if (!loginPage) return
+            if (hasLoginCookie() && !loginPrompted) {
+                loginPrompted = true
+                Diag.log("login", "检测到登录 Cookie")
+                askReturnHome()
+                return
             }
+            handler.postDelayed(this, 900)
         }
-        loginOpen = true
-        dialog.show()
-        dialog.setOnDismissListener {
-            loginOpen = false
-            runCatching {
-                (web.parent as? ViewGroup)?.removeView(web)
-                web.destroy()
-            }
-            // 登录后的 Cookie 同步落盘，隐藏 WebView 才能立刻带上登录态
-            runCatching { CookieManager.getInstance().flush() }
-            homeWarmed = false
-            homeAlt = false
-            reload()
+    }
+
+    private fun hasLoginCookie(): Boolean {
+        val cookie = CookieManager.getInstance().getCookie(SITE) ?: return false
+        val auth = Regex("cdb_auth=([^;]*)").find(cookie)?.groupValues?.get(1) ?: return false
+        return auth.isNotBlank() && auth != "deleted"
+    }
+
+    private fun askReturnHome() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("已获取到登录信息")
+            .setMessage("检测到登录 Cookie，是否返回首页并刷新帖子列表？")
+            .setPositiveButton("返回首页") { d, _ -> d.dismiss(); finishLogin() }
+            .setNegativeButton("继续浏览") { d, _ -> d.dismiss() }
+            .setCancelable(false)
+            .show()
+    }
+
+    /** 点击 ✓ / 确认返回：收起登录页并刷新列表 */
+    private fun finishLogin() {
+        if (!loginPage) return
+        handler.removeCallbacks(loginPoller)
+        loginPage = false
+        runCatching { CookieManager.getInstance().flush() }
+        val web = loginWeb
+        loginWeb = null
+        if (web != null) {
+            handler.postDelayed({
+                runCatching {
+                    (web.parent as? android.view.ViewGroup)?.removeView(web)
+                    web.destroy()
+                }
+            }, 120)
+        }
+        homeWarmed = false
+        homeAlt = false
+        Diag.log("login", "登录完成，回首页刷新")
+        reload()
+    }
+
+    private fun closeLogin() {
+        handler.removeCallbacks(loginPoller)
+        loginPage = false
+        val web = loginWeb
+        loginWeb = null
+        if (web != null) {
+            handler.postDelayed({
+                runCatching {
+                    (web.parent as? android.view.ViewGroup)?.removeView(web)
+                    web.destroy()
+                }
+            }, 120)
         }
     }
 }
