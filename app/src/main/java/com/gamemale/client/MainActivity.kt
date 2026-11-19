@@ -1778,20 +1778,47 @@ class MainActivity : ComponentActivity() {
     private val loginPoller = object : Runnable {
         override fun run() {
             if (!loginPage) return
-            if (hasLoginCookie() && !loginPrompted) {
-                loginPrompted = true
-                Diag.log("login", "检测到登录 Cookie")
-                askReturnHome()
-                return
+            if (!loginPrompted) {
+                loginPageHasLogout { logged ->
+                    if (logged || hasLoginCookie()) {
+                        loginPrompted = true
+                        Diag.log("login", "检测到登录成功 cookie=" + hasLoginCookie() + " dom=" + logged)
+                        askReturnHome()
+                    }
+                }
             }
             handler.postDelayed(this, 900)
         }
     }
 
+    /**
+     * Discuz 的登录 Cookie 前缀不固定（cdb_auth / xxx_auth 都有可能），
+     * 所以不写死名字：任何以 auth 结尾的 Cookie 有有效值就算登录；
+     * 同时用页面 DOM 里有没有 action=logout 作为硬判据。
+     */
     private fun hasLoginCookie(): Boolean {
-        val cookie = CookieManager.getInstance().getCookie(SITE) ?: return false
-        val auth = Regex("cdb_auth=([^;]*)").find(cookie)?.groupValues?.get(1) ?: return false
-        return auth.isNotBlank() && auth != "deleted"
+        val cookies = listOfNotNull(
+            CookieManager.getInstance().getCookie(SITE),
+            CookieManager.getInstance().getCookie(SITE + "/")
+        )
+        for (cookie in cookies) {
+            val m = Regex("(?:^|;\\s*)([A-Za-z0-9_]*auth)=([^;]*)").find(cookie)
+            if (m != null) {
+                val v = m.groupValues[2].trim()
+                if (v.isNotEmpty() && v != "deleted") return true
+            }
+        }
+        return false
+    }
+
+    /** 登录页里出现 action=logout 就说明已经登录成功（不管 Cookie 名字叫啥） */
+    private fun loginPageHasLogout(cb: (Boolean) -> Unit) {
+        val web = loginWeb ?: return cb(false)
+        runCatching {
+            web.evaluateJavascript(
+                "(function(){try{return document.documentElement.innerHTML.indexOf('action=logout')>=0}catch(e){return false}})()"
+            ) { v -> cb(v.contains("true")) }
+        }.onFailure { cb(false) }
     }
 
     private fun askReturnHome() {
