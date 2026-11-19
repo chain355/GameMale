@@ -1130,11 +1130,48 @@ class MainActivity : ComponentActivity() {
         val newAvatar = Site.parseLoginAvatar(html)
         if (!newAvatar.isNullOrBlank() && !newAvatar.contains("uid=0")) avatarUrl = newAvatar
         commitPendingAccount()
+        ensureAccountForCurrentLogin()
+    }
+
+    /**
+     * 从旧版本升级上来（或刚在别的入口登录成功）时，账号表里是空的，
+     * 但 CookieManager 里已经有登录态 —— 这里把当前登录顺手登记成一个账号，
+     * 否则会出现"头像有、账号列表空"的矛盾。
+     */
+    private fun ensureAccountForCurrentLogin() {
+        if (!loggedIn) return
+        val cookie = Accounts.capture()
+        if (cookie.isBlank()) return
+        val uid = Regex("uid=(\\d+)").find(avatarUrl.orEmpty())?.groupValues?.get(1)
+        if (uid == null) return
+        val name = loginName?.takeIf { it.isNotBlank() } ?: ("账号 " + uid.takeLast(4))
+        val existing = accounts.firstOrNull { it.id == uid }
+        if (existing != null && existing.cookie == cookie) {
+            if (currentAccountId != uid) {
+                currentAccountId = uid
+                Accounts.setCurrent(this, uid)
+            }
+            return
+        }
+        accounts = Accounts.upsert(this, Accounts.Acc(uid, name, avatarUrl.orEmpty(), cookie))
+        currentAccountId = uid
+        Accounts.setCurrent(this, uid)
+        Diag.log("account", "登记当前登录为账号 " + name)
     }
 
     /** 登录成功后把当前 Cookie 存成一个账号，并设为当前账号 */
     private fun commitPendingAccount() {
         val cookie = pendingCookie ?: return
+        // 已经是同一份 Cookie：直接切过去，不重复添加
+        val same = accounts.firstOrNull { it.cookie == cookie }
+        if (same != null) {
+            pendingCookie = null
+            currentAccountId = same.id
+            Accounts.setCurrent(this, same.id)
+            Diag.log("account", "新增的是已存在的账号，直接切换 " + same.name)
+            toast("这个账号已经在列表里了：" + same.name)
+            return
+        }
         val uid = Regex("uid=(\\d+)").find(avatarUrl.orEmpty())?.groupValues?.get(1)
             ?: Regex("uid=(\\d+)").find(cookie)?.groupValues?.get(1)
             ?: System.currentTimeMillis().toString()

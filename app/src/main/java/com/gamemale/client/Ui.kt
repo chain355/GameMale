@@ -836,14 +836,18 @@ private fun TopBar(
             }
         }
 
-        // 头像下方的功能菜单（COUI 卡片样式，淡入淡出）
+        // 头像下方的功能菜单（用 Popup 浮在内容之上，不参与布局，不会把正文顶开）
+        androidx.compose.ui.window.Popup(
+            alignment = Alignment.TopEnd,
+            offset = androidx.compose.ui.unit.IntOffset(0, with(LocalDensity.current) { 52.dp.roundToPx() }),
+            onDismissRequest = { menuOpen = false },
+            properties = androidx.compose.ui.window.PopupProperties(focusable = true)
+        ) {
         AnimatedVisibility(
             visible = menuOpen,
             enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
             exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 52.dp, end = 10.dp)
+            modifier = Modifier.padding(end = 10.dp)
         ) {
             Column(
                 Modifier
@@ -875,6 +879,7 @@ private fun TopBar(
                     }
                 }
             }
+        }
         }
     }
 }
