@@ -128,6 +128,7 @@ import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.alpha
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -256,6 +257,67 @@ private fun Modifier.lightPress(onClick: () -> Unit): Modifier {
         }
 }
 
+/** 整体按压形变：整块等比缩小，拖动时随手指同向平移，光斑跟随 */
+@Composable
+private fun Modifier.pressMorph(onClick: (() -> Unit)? = null): Modifier {
+    var press by remember { mutableStateOf<Offset?>(null) }
+    var drag by remember { mutableStateOf(Offset.Zero) }
+    var pressing by remember { mutableStateOf(false) }
+    val amt by animateFloatAsState(if (pressing) 1f else 0f, tween(150))
+    val glow = remember { Animatable(0f) }
+    LaunchedEffect(press != null) {
+        glow.animateTo(if (press != null) 1f else 0f, tween(150))
+        if (press == null) drag = Offset.Zero
+    }
+    return this
+        .graphicsLayer {
+            scaleX = 1f - 0.04f * amt
+            scaleY = 1f - 0.04f * amt
+            translationX = drag.x * 0.22f * amt
+            translationY = drag.y * 0.22f * amt
+        }
+        .pointerInput(onClick) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                press = down.position
+                pressing = true
+                var moved = 0f
+                var last = down.position
+                while (true) {
+                    val e = awaitPointerEvent()
+                    val ch = e.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!ch.pressed) {
+                        press = null
+                        pressing = false
+                        if (moved < 24f && onClick != null) onClick()
+                        break
+                    }
+                    val d = ch.position - last
+                    last = ch.position
+                    drag += d
+                    moved += d.getDistance()
+                    press = ch.position
+                }
+            }
+        }
+        .drawWithContent {
+            drawContent()
+            val p = press
+            if (p != null && glow.value > 0f) {
+                val r = size.maxDimension * 0.9f
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color.White.copy(alpha = 0.22f * glow.value), Color.Transparent),
+                        center = p,
+                        radius = r
+                    ),
+                    radius = r,
+                    center = p
+                )
+            }
+        }
+}
+
 /** 通用“分享”图标：三个节点 + 两条连线 */
 private val ShareVector: ImageVector by lazy {
     fun ImageVector.Builder.dot(cx: Float, cy: Float, r: Float) = path(fill = SolidColor(Color.White)) {
@@ -316,7 +378,10 @@ private fun NavButton(
         modifier
             .clip(RoundedCornerShape(20.dp))
             .background(if (active) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
-            .lightPress(onClick)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null
+            ) { onClick() }
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -344,7 +409,10 @@ private fun NavButtonSlot(
         modifier
             .clip(RoundedCornerShape(20.dp))
             .background(if (active) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
-            .lightPress(onClick)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null
+            ) { onClick() }
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -836,7 +904,7 @@ fun AppUi(
                         ),
                         CircleShape
                     )
-                    .lightPress { onReply() },
+                    .pressMorph { onReply() },
                 contentAlignment = Alignment.Center
             ) {
                 IconImg(ReplyVector, 24.dp, colors.onAccent)
@@ -849,6 +917,7 @@ fun AppUi(
                     .align(Alignment.BottomStart)
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(start = 14.dp, bottom = 10.dp)
+                    .pressMorph()
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
                     .then(
@@ -910,7 +979,7 @@ fun AppUi(
                         ),
                         CircleShape
                     )
-                    .lightPress { onOpenSearch() },
+                    .pressMorph { onOpenSearch() },
                 contentAlignment = Alignment.Center
             ) {
                 IconImg(CouiIcons.Outlined.Search, 24.dp, colors.onAccent)
@@ -1056,8 +1125,8 @@ private fun AvatarMenu(
         }
         AnimatedVisibility(
             visible = visible,
-            enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
-            exit = fadeOut(tween(140)) + scaleOut(tween(140), targetScale = 0.92f, transformOrigin = TransformOrigin(1f, 0f)),
+            enter = fadeIn(tween(180)) + scaleIn(tween(220), initialScale = 0.90f, transformOrigin = TransformOrigin(1f, 0f)),
+            exit = fadeOut(tween(130)) + scaleOut(tween(130), targetScale = 0.94f, transformOrigin = TransformOrigin(1f, 0f)),
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .windowInsetsPadding(WindowInsets.systemBars)
@@ -1065,21 +1134,23 @@ private fun AvatarMenu(
         ) {
             Column(
                 Modifier
-                    .width(190.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(colors.surface)
-                    .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
+                    .width(216.dp)
+                    .shadow(22.dp, RoundedCornerShape(20.dp), clip = false)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(colors.container)
+                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(20.dp))
                     .padding(vertical = 6.dp)
             ) {
                 for ((label, idx, action) in items) {
                     Row(
                         Modifier
                             .fillMaxWidth()
+                            .height(46.dp)
                             .clickable {
                                 onDismiss()
                                 action()
                             }
-                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                            .padding(horizontal = 16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         when (idx) {
@@ -1322,7 +1393,8 @@ private fun Modifier.threadZoom(key: String?): Modifier {
         this@threadZoom.sharedBounds(
             rememberSharedContentState("thread-$key"),
             z.animated,
-            enter = fadeIn(tween(220)),
+            // 卡片先放大，内容在后 1/3 才淡入
+            enter = fadeIn(tween(180, delayMillis = 320)),
             exit = fadeOut(tween(160)),
             boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) },
             resizeMode = androidx.compose.animation.SharedTransitionScope.ResizeMode.scaleToBounds(
