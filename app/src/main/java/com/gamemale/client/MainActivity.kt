@@ -100,6 +100,7 @@ class MainActivity : ComponentActivity() {
             android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES
         themeMode = prefs.getInt("themeMode", if (prefs.getBoolean("dark", systemDark)) 1 else 2)
+        blurBg = prefs.getBoolean("blurBg", true)
         darkMode = when (themeMode) {
             1 -> true
             2 -> false
@@ -247,6 +248,11 @@ class MainActivity : ComponentActivity() {
                     historySelectionCount = historySelectionCount,
                     onHistorySelectionCount = { historySelectionCount = it },
                     threadKey = openThreadTid,
+                    blurBg = blurBg,
+                    onSetBlurBg = {
+                        blurBg = it
+                        prefs.edit().putBoolean("blurBg", it).commit()
+                    },
                     historySelecting = historySelecting,
                     onHistorySelecting = { historySelecting = it },
                     onDeleteHistory = { tids ->
@@ -1365,6 +1371,7 @@ class MainActivity : ComponentActivity() {
     private var historySelectionCount by mutableStateOf(0)
     private var historySelecting by mutableStateOf(false)
     private var openThreadTid by mutableStateOf<String?>(null)
+    private var blurBg by mutableStateOf(true)
     private var currentAccountId: String? = null
     private var accountsOpen by mutableStateOf(false)
     private var pendingCookie: String? = null

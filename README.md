@@ -6,7 +6,7 @@
 
 本仓库初始代码全部由 AI 完成，后续若有其他协作者会写入贡献者名单。公开出来是给同样想改造 Discuz 阅读体验的人做参考，不保证生产可用。
 
-当前版本：`3.0-M69`（versionCode 88），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
+当前版本：`3.0-M70`（versionCode 89），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
 
 ## 它是什么
 
@@ -85,6 +85,11 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 ## 更新日志
 
 只记录对使用有感知的改动，细节看提交记录。
+
+**3.0-M70（vc89）**
+- 修列表互切误触发卡片过渡：共享元素只在「卡片 ↔ 帖子详情」期间挂载，切板块/切浏览记录不再串卡
+- 接入 COUI 的 `CouiBackdrop` 采样：FAB 与底部导航改为真实背景模糊（离屏 RenderEffect）
+- 设置页新增「界面风格」：COUI 模糊背景 / 经典纯色，可一键退回旧观感
 
 **3.0-M69（vc88）**
 - 卡片 ↔ 全屏改用 Compose 官方 `SharedTransitionLayout` + `sharedBounds` 容器变换（同 ColorOS 卡片的做法）

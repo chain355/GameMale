@@ -142,6 +142,9 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
+import com.itos.coui.backdrop.rememberCouiBackdrop
+import com.itos.coui.backdrop.couiBackdrop
+import com.itos.coui.backdrop.drawCouiBackdrop
 import com.itos.coui.icons.CouiIcons
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
@@ -491,6 +494,8 @@ fun AppUi(
     threadKey: String? = null,
     onSettings: () -> Unit = {},
     fontScale: Float = 1f,
+    blurBg: Boolean = true,
+    onSetBlurBg: (Boolean) -> Unit = {},
     themeMode: Int = 0,
     cacheMb: Int = 300,
     cacheBytes: Long = 0L,
@@ -561,6 +566,22 @@ fun AppUi(
     var topMenuOpen by remember { mutableStateOf(false) }
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
+    val backdrop = rememberCouiBackdrop()
+    var sharedTid by remember { mutableStateOf<String?>(null) }
+    var prevNavShared by remember { mutableStateOf<Nav>(nav) }
+    LaunchedEffect(nav, threadKey) {
+        val from = prevNavShared
+        prevNavShared = nav
+        when {
+            nav is Nav.Thread -> sharedTid = threadKey
+            from is Nav.Thread && nav is Nav.Forum -> {
+                // 退场动画期间保持 key，结束后立即关闭，避免列表互切时串卡
+                kotlinx.coroutines.delay(620)
+                sharedTid = null
+            }
+            else -> sharedTid = null
+        }
+    }
     val inHistorySelection = nav is Nav.History && historySelecting
     if (inHistorySelection) {
         androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
@@ -619,6 +640,7 @@ fun AppUi(
                 Modifier
                     .weight(1f)
                     .graphicsLayer { translationX = backProgress * size.width * 0.35f }
+                    .then(if (blurBg) Modifier.couiBackdrop(backdrop) else Modifier)
             ) {
                 androidx.compose.animation.SharedTransitionLayout {
                 val sharedScope = this
@@ -631,7 +653,8 @@ fun AppUi(
                 ) { cur ->
                     val animScope = this
                     CompositionLocalProvider(
-                        LocalZoomScopes provides ZoomScopes(sharedScope, animScope)
+                        LocalZoomScopes provides ZoomScopes(sharedScope, animScope),
+                        LocalZoomTid provides sharedTid
                     ) {
                     when {
                         error != null && (nav is Nav.Forum || nav is Nav.Thread) ->
@@ -674,6 +697,8 @@ fun AppUi(
                             cacheCount = cacheCount,
                             onSetThemeMode = onSetThemeMode,
                             onSetFontScale = onSetFontScale,
+                            blurBg = blurBg,
+                            onSetBlurBg = onSetBlurBg,
                             onSetCacheMb = onSetCacheMb,
                             onClearCache = onClearCache,
                             onExportLogs = onExportLogs,
@@ -796,7 +821,14 @@ fun AppUi(
                     .padding(end = 18.dp, bottom = if (showBottomBar && !inHistorySelection) 92.dp else 22.dp)
                     .size(56.dp)
                     .clip(CircleShape)
-                    .background(colors.accent.copy(alpha = 0.92f))
+                    .then(
+                        if (blurBg) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { CircleShape },
+                            effects = { blur(28f) },
+                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
+                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
+                    )
                     .border(
                         1.dp,
                         Brush.linearGradient(
@@ -819,7 +851,14 @@ fun AppUi(
                     .padding(start = 14.dp, bottom = 10.dp)
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
-                    .background(colors.container)
+                    .then(
+                        if (blurBg) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { RoundedCornerShape(26.dp) },
+                            effects = { blur(30f) },
+                            onDrawSurface = { drawRect(colors.container.copy(alpha = 0.66f)) }
+                        ) else Modifier.background(colors.container)
+                    )
                     .border(
                         1.dp,
                         Brush.linearGradient(
@@ -1270,12 +1309,15 @@ private data class ZoomScopes(
 )
 
 private val LocalZoomScopes = staticCompositionLocalOf<ZoomScopes?> { null }
+private val LocalZoomTid = staticCompositionLocalOf<String?> { null }
 
 /** 卡片与帖子页共享同一 key，交给 Compose 的 sharedBounds 做卡片↔全屏容器变换 */
 @Composable
 private fun Modifier.threadZoom(key: String?): Modifier {
     val z = LocalZoomScopes.current ?: return this
     if (key.isNullOrBlank()) return this
+    // 只有当前正在做卡片<->详情过渡的那条帖子才挂共享元素
+    if (key != LocalZoomTid.current) return this
     return with(z.shared) {
         this@threadZoom.sharedBounds(
             rememberSharedContentState("thread-$key"),
@@ -2554,6 +2596,8 @@ private fun SearchScreen(
 private fun SettingsView(
     fontScale: Float,
     themeMode: Int,
+    blurBg: Boolean = true,
+    onSetBlurBg: (Boolean) -> Unit = {},
     cacheMb: Int,
     cacheBytes: Long,
     cacheCount: Int,
@@ -2611,6 +2655,19 @@ private fun SettingsView(
                     Txt("账号管理", size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
                     IconImg(CouiIcons.Filled.Next, 18.dp, colors.onSurfaceVariant)
                 }
+            }
+        }
+        item {
+            section("界面风格") {
+                choices(
+                    listOf("COUI 模糊背景" to blurBg, "经典纯色" to !blurBg)
+                ) { i -> onSetBlurBg(i == 0) }
+                Spacer(Modifier.height(6.dp))
+                Txt(
+                    "模糊背景需要页面正文作为采样源，开销略高；卡顿时可切回经典纯色。",
+                    size = 11.sp,
+                    color = colors.onSurfaceVariant
+                )
             }
         }
         item {
