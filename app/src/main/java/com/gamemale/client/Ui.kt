@@ -142,6 +142,7 @@ import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clipToBounds
@@ -370,33 +371,74 @@ private fun IconImg(image: ImageVector, size: Dp, tint: Color) {
     )
 }
 
+internal class PressDragState {
+    val bounds = androidx.compose.runtime.mutableStateMapOf<Int, androidx.compose.ui.geometry.Rect>()
+    var hover by mutableStateOf(-1)
+    var onCommit: ((Int) -> Unit)? = null
+}
+
+/** 按住后手指可以滑到同组其它项：高亮跟着走，松手执行所在项 */
+private fun Modifier.pressDragTarget(state: PressDragState, index: Int): Modifier = composed {
+    var origin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    this
+        .onGloballyPositioned {
+            origin = it.positionInRoot()
+            state.bounds[index] = androidx.compose.ui.geometry.Rect(
+                origin, androidx.compose.ui.geometry.Size(it.size.width.toFloat(), it.size.height.toFloat())
+            )
+        }
+        .pointerInput(index, state) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false)
+                state.hover = index
+                var last = index
+                while (true) {
+                    val e = awaitPointerEvent()
+                    val ch = e.changes.firstOrNull() ?: break
+                    val y = origin.y + ch.position.y
+                    state.bounds.entries.firstOrNull { y >= it.value.top && y <= it.value.bottom }
+                        ?.let { last = it.key; state.hover = it.key }
+                    if (!ch.pressed) break
+                }
+                state.onCommit?.invoke(last)
+                state.hover = -1
+            }
+        }
+}
+
 @Composable
 private fun NavButton(
     icon: ImageVector,
     label: String,
     active: Boolean,
     modifier: Modifier = Modifier,
+    dragState: PressDragState? = null,
+    dragIndex: Int = -1,
     onClick: () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
+    val hot = active || (dragState != null && dragState.hover == dragIndex)
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(if (active) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
-            .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null
-            ) { onClick() }
+            .background(if (hot) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .then(
+                if (dragState != null) Modifier.pressDragTarget(dragState, dragIndex)
+                else Modifier.clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null
+                ) { onClick() }
+            )
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        IconImg(icon, 20.dp, if (active) colors.accent else colors.onSurfaceVariant)
+        IconImg(icon, 20.dp, if (hot) colors.accent else colors.onSurfaceVariant)
         Spacer(Modifier.height(2.dp))
         Txt(
             label,
             size = 11.sp,
-            color = if (active) colors.accent else colors.onSurfaceVariant,
-            weight = if (active) FontWeight.SemiBold else null
+            color = if (hot) colors.accent else colors.onSurfaceVariant,
+            weight = if (hot) FontWeight.SemiBold else null
         )
     }
 }
@@ -406,18 +448,24 @@ private fun NavButtonSlot(
     label: String,
     active: Boolean,
     modifier: Modifier = Modifier,
+    dragState: PressDragState? = null,
+    dragIndex: Int = -1,
     icon: @Composable () -> Unit,
     onClick: () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
+    val hot = active || (dragState != null && dragState.hover == dragIndex)
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
-            .background(if (active) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
-            .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null
-            ) { onClick() }
+            .background(if (hot) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
+            .then(
+                if (dragState != null) Modifier.pressDragTarget(dragState, dragIndex)
+                else Modifier.clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null
+                ) { onClick() }
+            )
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -426,8 +474,8 @@ private fun NavButtonSlot(
         Txt(
             label,
             size = 11.sp,
-            color = if (active) colors.accent else colors.onSurfaceVariant,
-            weight = if (active) FontWeight.SemiBold else null
+            color = if (hot) colors.accent else colors.onSurfaceVariant,
+            weight = if (hot) FontWeight.SemiBold else null
         )
     }
 }
@@ -816,7 +864,9 @@ fun AppUi(
                             exitSignal = historyExitSignal,
                             onSelectionCount = onHistorySelectionCount,
                             onSelectionMode = onHistorySelecting,
-                            onDeleteSelected = onDeleteHistory
+                            onDeleteSelected = onDeleteHistory,
+                            backdrop = backdrop,
+                            blur = blurBg
                         )
                         cur is Nav.Search -> SearchScreen(
                             history = searchHistory,
@@ -1021,7 +1071,7 @@ fun AppUi(
                 Modifier
                     .align(Alignment.BottomEnd)
                     .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(end = 16.dp, bottom = if (showBottomBar && !inHistorySelection) 92.dp else 22.dp)
+                    .padding(end = 16.dp, bottom = if (showBottomBar && !inHistorySelection) 92.dp else 10.dp)
                     .size(56.dp)
                     .clip(CircleShape)
                     .then(
@@ -1045,7 +1095,15 @@ fun AppUi(
                 IconImg(ReplyVector, 24.dp, colors.onAccent)
             }
         }
-        // 底部导航（动漫 / 游戏）——只在根级列表页出现，且宽度收紧
+        // 底部导航（动漫 / 游戏 / 浏览记录）——只在根级列表页出现，且宽度收紧
+        val navDrag = remember { PressDragState() }
+        navDrag.onCommit = { idx ->
+            when (idx) {
+                0 -> onQuickForum(ANIME_URL, "和谐动漫")
+                1 -> onQuickForum(GAME_URL, "和谐游戏")
+                2 -> onOpenHistoryTab()
+            }
+        }
         if (showBottomBar && !inHistorySelection) {
             Box(
                 Modifier
@@ -1079,18 +1137,24 @@ fun AppUi(
                     icon = CouiIcons.Outlined.Album,
                     label = "和谐动漫",
                     active = cur.contains("fid=150"),
-                    modifier = Modifier.width(66.dp)
+                    modifier = Modifier.width(66.dp),
+                    dragState = navDrag,
+                    dragIndex = 0
                 ) { onQuickForum(ANIME_URL, "和谐动漫") }
                 NavButton(
                     icon = CouiIcons.Filled.Gamepad,
                     label = "和谐游戏",
                     active = cur.contains("fid=152"),
-                    modifier = Modifier.width(66.dp)
+                    modifier = Modifier.width(66.dp),
+                    dragState = navDrag,
+                    dragIndex = 1
                 ) { onQuickForum(GAME_URL, "和谐游戏") }
                 NavButtonSlot(
                     label = "浏览记录",
                     active = nav is Nav.History,
                     modifier = Modifier.width(72.dp),
+                    dragState = navDrag,
+                    dragIndex = 2,
                     icon = { IconHistory(if (nav is Nav.History) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
                     onClick = onOpenHistoryTab
                 )
@@ -1105,7 +1169,14 @@ fun AppUi(
                     .padding(end = 16.dp, bottom = 10.dp)
                     .size(56.dp)
                     .clip(CircleShape)
-                    .background(colors.accent.copy(alpha = 0.92f))
+                    .then(
+                        if (blurBg) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { CircleShape },
+                            effects = { blur(28f) },
+                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
+                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
+                    )
                     .border(
                         1.dp,
                         Brush.linearGradient(
@@ -1292,6 +1363,11 @@ private fun AvatarMenu(
     blur: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
+    val dragState = remember { PressDragState() }
+    dragState.onCommit = { idx ->
+        onDismiss()
+        items.getOrNull(idx)?.third?.invoke()
+    }
     Box(Modifier.fillMaxSize()) {
         // 透明遮罩：点空白收起
         AnimatedVisibility(
@@ -1334,25 +1410,17 @@ private fun AvatarMenu(
                     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(30.dp))
                     .padding(vertical = 6.dp)
             ) {
-                for ((label, idx, action) in items) {
-                    val itemInteraction = remember(label) {
-                        androidx.compose.foundation.interaction.MutableInteractionSource()
-                    }
-                    val itemPressed by itemInteraction.collectIsPressedAsState()
+                items.forEachIndexed { pos, item ->
+                    val label = item.first
+                    val idx = item.second
                     Row(
                         Modifier
                             .fillMaxWidth()
                             .height(46.dp)
                             .padding(horizontal = 6.dp)
                             .clip(RoundedCornerShape(24.dp))
-                            .background(if (itemPressed) Color.White.copy(alpha = 0.12f) else Color.Transparent)
-                            .clickable(
-                                interactionSource = itemInteraction,
-                                indication = null
-                            ) {
-                                onDismiss()
-                                action()
-                            }
+                            .background(if (dragState.hover == pos) Color.White.copy(alpha = 0.12f) else Color.Transparent)
+                            .pressDragTarget(dragState, pos)
                             .padding(horizontal = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1761,7 +1829,9 @@ private fun HistoryView(
     onSelectionCount: (Int) -> Unit = {},
     onDeleteSelected: (List<Long>) -> Unit = {},
     onSelectionMode: (Boolean) -> Unit = {},
-    exitSignal: Int = 0
+    exitSignal: Int = 0,
+    backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
+    blur: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
     // 选择模式：长按进入，点按切换选中；顶栏显示已选数量
@@ -1864,7 +1934,17 @@ private fun HistoryView(
                     .width(150.dp)
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
-                    .background(if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f) else colors.accent)
+                    .then(
+                        if (selected.isNotEmpty() && blur && backdrop != null) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { RoundedCornerShape(26.dp) },
+                            effects = { blur(28f) },
+                            onDrawSurface = { drawRect(Color(0xFF8E3B3B).copy(alpha = 0.88f)) }
+                        ) else Modifier.background(
+                            if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f)
+                            else Color(0xFF8E3B3B)
+                        )
+                    )
                     .clickable(enabled = selected.isNotEmpty()) {
                         val ids = selected.toList()
                         selected = emptySet()
@@ -1911,6 +1991,9 @@ private fun ForumView(
 ) {
     val colors = CouiTheme.colorScheme
     var pull by remember { mutableStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    val refreshingNow = rememberUpdatedState(refreshing)
+    val updatingNow = rememberUpdatedState(searchUpdating)
     val scrollConn = remember {
         object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
             override fun onPreScroll(
@@ -1930,7 +2013,7 @@ private fun ForumView(
                 available: androidx.compose.ui.geometry.Offset,
                 source: androidx.compose.ui.input.nestedscroll.NestedScrollSource
             ): androidx.compose.ui.geometry.Offset {
-                if (available.y > 0 && !listState.canScrollBackward && !refreshing) {
+                if (available.y > 0 && !listState.canScrollBackward && !refreshingNow.value && dragging) {
                     pull += available.y * 0.6f
                     if (pull > 900f) pull = 900f
                     return androidx.compose.ui.geometry.Offset(0f, available.y)
@@ -1942,6 +2025,8 @@ private fun ForumView(
                 consumed: androidx.compose.ui.unit.Velocity,
                 available: androidx.compose.ui.unit.Velocity
             ): androidx.compose.ui.unit.Velocity {
+                // 惯性滑动（尤其从列表底部快速甩回顶部）不算下拉，顺手复位残留位移
+                if (!dragging && !refreshingNow.value) pull = 0f
                 return androidx.compose.ui.unit.Velocity.Zero
             }
         }
@@ -1951,7 +2036,7 @@ private fun ForumView(
     var spinSpeed by remember { mutableStateOf(0f) }
     var lastPull by remember { mutableStateOf(0f) }
     val autoOffset = remember { androidx.compose.animation.core.Animatable(0f) }
-    val autoPx = with(LocalDensity.current) { (LocalBarInset.current + 52.dp).toPx() }
+    val autoPx = with(LocalDensity.current) { (LocalBarInset.current + 67.dp).toPx() }
     LaunchedEffect(refreshing, searchUpdating) {
         if (refreshing || searchUpdating) autoOffset.animateTo(autoPx, tween(300))
         else autoOffset.animateTo(0f, tween(380, easing = FastOutSlowInEasing))
@@ -1970,7 +2055,7 @@ private fun ForumView(
             androidx.compose.runtime.withFrameNanos { _ ->
                 val d = pull - lastPull
                 lastPull = pull
-                spinSpeed = if (refreshing || searchUpdating) 5.5f
+                spinSpeed = if (refreshingNow.value || updatingNow.value) 5.5f
                 else (spinSpeed * 0.86f + d * 0.8f).coerceIn(-45f, 45f)
                 spin = (spin + spinSpeed) % 360f
             }
@@ -2016,7 +2101,9 @@ private fun ForumView(
                     awaitPointerEventScope {
                         while (true) {
                             val e = awaitPointerEvent()
+                            if (e.changes.any { it.pressed }) dragging = true
                             if (e.changes.isNotEmpty() && e.changes.all { !it.pressed }) {
+                                dragging = false
                                 if (pull > 90f && !refreshing && !listState.canScrollBackward) {
                                     // 保持当前偏移，等刷新结束再回顶
                                     onRefresh()
