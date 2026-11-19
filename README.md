@@ -6,7 +6,7 @@
 
 本仓库初始代码全部由 AI 完成，后续若有其他协作者会写入贡献者名单。公开出来是给同样想改造 Discuz 阅读体验的人做参考，不保证生产可用。
 
-当前版本：`3.0-M60`（versionCode 79），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
+当前版本：`3.0-M61`（versionCode 80），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
 
 ## 它是什么
 
@@ -85,6 +85,10 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 ## 更新日志
 
 只记录对使用有感知的改动，细节看提交记录。
+
+**3.0-M61（vc80）**
+- 主界面改为 `adjustNothing`：别的应用用悬浮窗弹输入框、唤起输入法时，本 App 不再跟着整体下移
+- 登录页 Dialog 自己处理键盘避让（imePadding），不受主界面这一改动影响
 
 **3.0-M60（vc79）**
 - 帖子页头像菜单新增「复制链接」：只复制帖子地址，不带标题

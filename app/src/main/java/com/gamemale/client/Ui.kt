@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -649,7 +650,8 @@ fun AppUi(
 
         if (verifyPage && verifyWeb != null) {
             Box(Modifier.fillMaxSize().background(colors.background)) {
-                Column(Modifier.fillMaxSize()) {
+                // 登录页自己处理键盘避让；主界面用 adjustNothing，不会被别的应用的悬浮输入框顶下去
+                Column(Modifier.fillMaxSize().imePadding()) {
                     Row(
                         Modifier.fillMaxWidth()
                             .windowInsetsPadding(WindowInsets.safeDrawing)
