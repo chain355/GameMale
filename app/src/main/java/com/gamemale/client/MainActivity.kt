@@ -83,6 +83,14 @@ class MainActivity : ComponentActivity() {
         // 账号表：上次用在哪个账号，启动时先按它展示
         accounts = Accounts.load(this)
         currentAccountId = Accounts.currentId(this)
+        // 覆盖升级/进程被杀后，CookieManager 里的登录 Cookie 可能丢，但账号表里有快照
+        runCatching {
+            val saved = accounts.firstOrNull { it.id == currentAccountId } ?: accounts.firstOrNull()
+            if (saved != null && !hasLoginCookie()) {
+                Diag.log("account", "Cookie 缺失，用账号快照恢复 " + saved.name)
+                Accounts.apply(saved.cookie) { }
+            }
+        }
 
         val prefs = getSharedPreferences("gm", MODE_PRIVATE)
         // 没手动选过就跟随系统的深浅色
@@ -1873,6 +1881,16 @@ class MainActivity : ComponentActivity() {
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.webViewClient = WebViewClient()
+        web.isFocusableInTouchMode = true
+        web.isFocusable = true
+        web.setOnTouchListener { v, _ ->
+            v.requestFocus()
+            runCatching {
+                (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                    .showSoftInput(v, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            }
+            false
+        }
         web.loadUrl(SITE + "member.php?mod=logging&action=login")
         loginWeb = web
         loginPage = true

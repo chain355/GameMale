@@ -786,7 +786,9 @@ private fun TopBar(
     val colors = CouiTheme.colorScheme
     var menuOpen by remember { mutableStateOf(false) }
     // 顶部只留头像：其余功能收进头像下方的菜单
+    val loggedOut = avatarUrl.isNullOrBlank()
     val menuItems = buildList {
+        if (loggedOut) add(Triple("登录", 4) { onLogin() })
         if (canShare) add(Triple("分享", 0) { onShare() })
         if (canShare) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
         if (canRefresh) add(Triple("刷新", 2) { onRefresh() })
@@ -832,7 +834,14 @@ private fun TopBar(
                         }
                 )
             } else {
-                CircleBtn(CouiIcons.Filled.UserCircle, onLogin)
+                // 未登录时点头像也展开菜单，菜单里第一项是"登录"
+                Box(
+                    Modifier
+                        .size(40.dp)
+                        .then(glassModifier(CircleShape))
+                        .lightPress { menuOpen = !menuOpen },
+                    contentAlignment = Alignment.Center
+                ) { IconImg(CouiIcons.Filled.UserCircle, 22.dp, colors.onSurface) }
             }
         }
 
@@ -872,6 +881,7 @@ private fun TopBar(
                             0 -> MenuIcon(AppIcon.Share)
                             1 -> MenuIcon(AppIcon.Browser)
                             2 -> MenuIcon(AppIcon.Refresh)
+                            4 -> MenuIcon(AppIcon.Login)
                             else -> MenuIcon(AppIcon.Setting)
                         }
                         Spacer(Modifier.width(12.dp))
@@ -884,7 +894,7 @@ private fun TopBar(
     }
 }
 
-private enum class AppIcon { Share, Browser, Refresh, Setting }
+private enum class AppIcon { Share, Browser, Refresh, Setting, Login }
 
 @Composable
 private fun MenuIcon(kind: AppIcon) {
@@ -893,6 +903,7 @@ private fun MenuIcon(kind: AppIcon) {
         AppIcon.Share -> IconImg(ShareVector, 20.dp, CouiTheme.colorScheme.onSurface)
         AppIcon.Browser -> IconBrowser()
         AppIcon.Refresh -> IconRefresh()
+        AppIcon.Login -> IconImg(CouiIcons.Filled.UserCircle, 20.dp, CouiTheme.colorScheme.onSurface)
     }
 }
 
