@@ -1007,6 +1007,11 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 busy = false
                 r.onSuccess { html ->
+                    // 帖子页也拿不到正文、且页面里没有退出链接：多半是 Cookie 过期被踢回登录页
+                    if (Site.parseThread(html).posts.isEmpty() && !html.contains("action=logout")) {
+                        promptLoginExpired()
+                        return@onSuccess
+                    }
                     val tp = Site.parseThread(html)
                     threadPage = tp
                     lastHtml = html
@@ -1457,6 +1462,8 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 r.onSuccess { xml ->
                     dumpText("submit-reply", xml)
+                    val (ok, detail) = judgeXml(xml)
+                    if (!ok && isLoginExpired(detail)) { promptLoginExpired(); return@onSuccess }
                     replyOpen = false
                     verifyReply(text)
                 }.onFailure {
@@ -1486,6 +1493,30 @@ class MainActivity : ComponentActivity() {
             if (!title.isNullOrBlank()) return ("站点返回：" + title).take(140)
         }
         return "站点没有返回结果（已保存返回页：下载/gamemale-submit.html）"
+    }
+
+    /** 站点返回里出现"请先登录"这类文案，说明 Cookie 已经过期 */
+    private fun isLoginExpired(text: String): Boolean {
+        val marks = listOf(
+            "请先登录", "您需要登录", "请登录后", "登录后才能",
+            "登录已失效", "请重新登录", "游客不能", "您还没有登录"
+        )
+        return marks.any { text.contains(it) }
+    }
+
+    /** Cookie 过期时统一提示，并直接给一个去登录的入口 */
+    private fun promptLoginExpired() {
+        busy = false
+        replyOpen = false
+        rateOpen = false
+        loggedIn = false
+        Diag.log("login", "提交时发现登录已失效")
+        android.app.AlertDialog.Builder(this)
+            .setTitle("登录状态已失效")
+            .setMessage("站点那边的登录有效期到了，需要重新登录一次才能继续回复、评分和下载附件。")
+            .setPositiveButton("去登录") { d, _ -> d.dismiss(); openLogin() }
+            .setNegativeButton("稍后") { d, _ -> d.dismiss() }
+            .show()
     }
 
     /** 站点 ajax 返回的统一判定：只看有没有 errorhandle_/alert_error */
@@ -1615,6 +1646,7 @@ class MainActivity : ComponentActivity() {
                 r.onSuccess { xml ->
                     dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
                     val (ok, detail) = judgeXml(xml)
+                    if (!ok && isLoginExpired(detail)) { promptLoginExpired(); return@onSuccess }
                     if (verifyText != null) {
                         onDone()
                         verifyReply(verifyText)
@@ -1639,6 +1671,7 @@ class MainActivity : ComponentActivity() {
                 r.onSuccess { xml ->
                     dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
                     val (ok, detail) = judgeXml(xml)
+                    if (!ok && isLoginExpired(detail)) { promptLoginExpired(); return@onSuccess }
                     if (verifyText != null) {
                         onDone()
                         verifyReply(verifyText)
@@ -1654,6 +1687,7 @@ class MainActivity : ComponentActivity() {
                 r.onSuccess { xml ->
                     dumpText("submit-" + if (submitOkText == "回复成功") "reply" else "rate", xml)
                     val (ok, detail) = judgeXml(xml)
+                    if (!ok && isLoginExpired(detail)) { promptLoginExpired(); return@onSuccess }
                     val msg = if (ok) submitOkText else detail.ifEmpty { "提交失败" }
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                     if (ok) {
@@ -1671,6 +1705,7 @@ class MainActivity : ComponentActivity() {
                             r2.onSuccess { xml2 ->
                                 dumpText("submit-rate", xml2)
                                 val (ok2, detail2) = judgeXml(xml2)
+                                if (!ok2 && isLoginExpired(detail2)) { promptLoginExpired(); return@onSuccess }
                                 val msg = if (ok2) submitOkText else detail2.ifEmpty { "提交失败" }
                                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
                                 if (ok2) {
