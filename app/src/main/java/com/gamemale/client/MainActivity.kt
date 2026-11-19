@@ -844,9 +844,11 @@ class MainActivity : ComponentActivity() {
         if (cached != null) {
             // 本地已有整页，立即还原；随后后台核对标题/编辑时间，有变化才替换
             runCatching {
-                threadPage = Site.parseThread(cached)
+                val tp = Site.parseThread(cached)
+                threadPage = tp
                 lastHtml = cached
                 refreshLogin(cached)
+                rememberThread(url, tp)
             }
             verifyThreadLater(url, cached)
             return
@@ -1308,8 +1310,22 @@ class MainActivity : ComponentActivity() {
             prefetchThreadImages(tp)
             val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
             if (tid != null) {
+                rememberThread(url, tp)
                 bgParse({ cache.save(tid, tp.subject, tp.lastEdit, html); true }) { refreshCacheStats() }
             }
+        }
+    }
+
+    /** 打开帖子后统一写浏览记录，并把正文首图登记为该帖的预览图 */
+    private fun rememberThread(url: String, tp: ThreadPage) {
+        val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1) ?: return
+        runCatching {
+            history = HistoryStore.record(this, tid.toLong(), tp.subject, url)
+            val imgs = tp.posts.flatMap { p ->
+                p.blocks.mapNotNull { (it as? Block.Image)?.url }
+            }.distinct()
+            if (imgs.isNotEmpty()) ThumbStore.put(tid, imgs.take(3))
+            Diag.log("thumb", "tid=" + tid + " 首图数=" + imgs.size)
         }
     }
 

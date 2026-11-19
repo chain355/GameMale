@@ -6,7 +6,7 @@
 
 本仓库初始代码全部由 AI 完成，后续若有其他协作者会写入贡献者名单。公开出来是给同样想改造 Discuz 阅读体验的人做参考，不保证生产可用。
 
-当前版本：`3.0-M57`（versionCode 76），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
+当前版本：`3.0-M58`（versionCode 77），实测机 OnePlus PLK110 / Android 17 (API 37)，`targetSdk 37`，单 APK 支持 Android 12+。
 
 ## 它是什么
 
@@ -85,6 +85,9 @@ apksigner sign --ks your.keystore --out Gamemale.apk aligned.apk
 ## 更新日志
 
 只记录对使用有感知的改动，细节看提交记录。
+
+**3.0-M58（vc77）**
+- 修浏览记录没有预览图：打开帖子的主路径（含缓存命中）现在都会把正文首图登记进 ThumbStore，日志里有 `[thumb] tid=... 首图数=...`
 
 **3.0-M57（vc76）**
 - 浏览记录改成和板块列表一样的「上标题、下预览图」卡片（1 张大图 / 2–3 张横排）
