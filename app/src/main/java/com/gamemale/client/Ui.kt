@@ -1521,10 +1521,10 @@ fun AppUi(
         }
         navDrag.onCommit = { idx ->
             val wasDrag = navDrag.moved
-            if (wasDrag || idx >= 2 || rootPager.settledPage != idx) {
+            if (wasDrag || rootPager.settledPage != idx) {
                 navTapIndex = -1
                 switchTab(idx)
-            } else {
+            } else if (idx <= 1) {
                 val now = android.os.SystemClock.uptimeMillis()
                 val st = navListState(idx)
                 val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
@@ -1537,6 +1537,12 @@ fun AppUi(
                     navTapAt = now
                     if (atTop) onRefresh() else scope.launch { st.animateScrollToItem(0) }
                 }
+            } else {
+                // 「收藏 / 浏览记录」：单击只回顶，列表已在顶部就什么都不做（不刷新）
+                navTapIndex = -1
+                val st = if (idx == 2) watchListState else historyListState
+                val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
+                if (!atTop) scope.launch { st.animateScrollToItem(0) }
             }
         }
         if (showBottomBar && !inHistorySelection) {
