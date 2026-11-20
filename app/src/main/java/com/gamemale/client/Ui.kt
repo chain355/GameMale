@@ -401,7 +401,21 @@ internal class PressDragState {
     var hover by mutableStateOf(-1)
     /** 手指是否真的从按下项滑到了另一项；直接点按不算 */
     var dragging by mutableStateOf(false)
+    /** 菜单整块在根坐标系里的位置，用来判断手指是否已经拖出菜单 */
+    var panel by mutableStateOf(androidx.compose.ui.geometry.Rect.Zero)
+    /** 手指的 Y（根坐标系），拖出菜单后高亮也要继续跟到这里 */
+    var pointerY by mutableStateOf(-1f)
+    var pointerX by mutableStateOf(-1f)
+    var inside by mutableStateOf(true)
     var onCommit: ((Int) -> Unit)? = null
+
+    fun reset() {
+        hover = -1
+        pointerY = -1f
+        pointerX = -1f
+        inside = true
+        dragging = false
+    }
 }
 
 /** 按住后手指可以滑到同组其它项：高亮跟着走，松手执行所在项 */
@@ -418,27 +432,42 @@ private fun Modifier.pressDragTarget(state: PressDragState, index: Int): Modifie
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
                 val start = down.position
+                val absDown = androidx.compose.ui.geometry.Offset(origin.x + down.position.x, origin.y + down.position.y)
                 state.hover = index
+                state.pointerY = absDown.y
+                state.pointerX = absDown.x
+                state.inside = state.panel == androidx.compose.ui.geometry.Rect.Zero ||
+                    state.panel.contains(absDown)
                 state.dragging = false
                 var last = index
                 while (true) {
                     val e = awaitPointerEvent()
                     val ch = e.changes.firstOrNull() ?: break
-                    // 手指要真的滑出一段距离才换高亮；直接点按时轻微抖动不算拖动
-                    val moved = (ch.position - start).getDistance()
-                    if (moved > viewConfiguration.touchSlop) {
-                        val pt = androidx.compose.ui.geometry.Offset(origin.x + ch.position.x, origin.y + ch.position.y)
-                        state.bounds.entries.firstOrNull { it.value.contains(pt) }
-                            ?.let {
-                                if (it.key != last) state.dragging = true
-                                last = it.key
-                                state.hover = it.key
-                            }
+                    val pt = androidx.compose.ui.geometry.Offset(origin.x + ch.position.x, origin.y + ch.position.y)
+                    state.pointerY = pt.y
+                    state.pointerX = pt.x
+                    state.inside = state.panel == androidx.compose.ui.geometry.Rect.Zero ||
+                        state.panel.contains(pt)
+                    // 手指要真的滑出一段距离才算拖动；直接点按时轻微抖动不算
+                    if ((ch.position - start).getDistance() > viewConfiguration.touchSlop) {
+                        val hit = state.bounds.entries
+                            .sortedBy { it.value.top }
+                            .firstOrNull { it.value.contains(pt) }
+                        if (hit != null) {
+                            if (hit.key != last) state.dragging = true
+                            last = hit.key
+                            state.hover = hit.key
+                        } else {
+                            state.dragging = true
+                        }
                     }
                     if (!ch.pressed) break
                 }
-                state.onCommit?.invoke(last)
-                state.hover = -1
+                // 松手时手指在菜单外：不执行任何功能，高亮直接复位消失
+                val onRow = state.bounds[state.hover]
+                    ?.contains(androidx.compose.ui.geometry.Offset(state.pointerX, state.pointerY)) == true
+                if (state.inside && state.hover >= 0 && onRow) state.onCommit?.invoke(last)
+                state.reset()
             }
         }
 }
@@ -843,6 +872,8 @@ fun AppUi(
     }
     var searchOpen by remember { mutableStateOf(false) }
     var topMenuOpen by remember { mutableStateOf(false) }
+    // 右上角「全选」按钮给当前选择页发信号；页面自己把可见条目全部勾上
+    var selectAllSignal by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
     val backdrop = rememberCouiBackdrop()
@@ -897,6 +928,20 @@ fun AppUi(
     val inHistorySelection = (nav is Nav.History && historySelecting) ||
         (nav is Nav.Watch && watchSelecting) ||
         (nav is Nav.Attachments && attachSelecting)
+    // 全选按钮的「已全选」态：按当前页可见条目（屏蔽词过滤后）算
+    val selectionAllSelected = when {
+        nav is Nav.Watch && watchSelecting ->
+            watchSelectionCount > 0 && watchSelectionCount >= watchLater.count {
+                !ContentPrefs.hit(it.title, blockedWords)
+            }
+        nav is Nav.History && historySelecting ->
+            historySelectionCount > 0 && historySelectionCount >= history.count {
+                !ContentPrefs.hit(it.title, blockedWords)
+            }
+        nav is Nav.Attachments && attachSelecting ->
+            attachSelectionCount > 0 && attachSelectionCount >= attachments.size
+        else -> false
+    }
     if (inHistorySelection) {
         androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
     }
@@ -929,6 +974,8 @@ fun AppUi(
             TopBar(
                 selectionMode = inHistorySelection,
                 onExitSelection = { historyExitSignal++ },
+                onSelectAll = { selectAllSignal++ },
+                selectionAllSelected = selectionAllSelected,
                 backdrop = backdrop,
                 blur = overlayBar && blurBg,
                 menuOpen = topMenuOpen,
@@ -1044,6 +1091,7 @@ fun AppUi(
                             blocked = blockedWords,
                             watch = watchWords,
                             exitSignal = historyExitSignal,
+                            selectAllSignal = selectAllSignal,
                             onSelectionCount = onWatchSelectionCount,
                             onSelectionMode = onWatchSelecting,
                             onDeleteSelected = onDeleteWatch,
@@ -1057,6 +1105,7 @@ fun AppUi(
                             blocked = blockedWords,
                             watch = watchWords,
                             exitSignal = historyExitSignal,
+                            selectAllSignal = selectAllSignal,
                             onSelectionCount = onHistorySelectionCount,
                             onSelectionMode = onHistorySelecting,
                             onDeleteSelected = onDeleteHistory,
@@ -1091,9 +1140,13 @@ fun AppUi(
                 AnimatedVisibility(
                     visible = overlayShown,
                     modifier = Modifier.fillMaxSize(),
-                    enter = if (nav is Nav.Thread || nav is Nav.Attachments) fadeIn(tween(220))
+                    // 设置页统一走淡入淡出，别再按「从右侧滑入」硬切；以后新页面也复用这套
+                    enter = if (nav is Nav.Thread || nav is Nav.Attachments || nav is Nav.Settings)
+                        fadeIn(tween(220, easing = FastOutSlowInEasing))
                     else slideInHorizontally(tween(280, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(160)),
-                    exit = if (heldOverlay is Nav.Thread || heldOverlay is Nav.Attachments) fadeOut(tween(180))
+                    exit = if (heldOverlay is Nav.Thread || heldOverlay is Nav.Attachments ||
+                        heldOverlay is Nav.Settings
+                    ) fadeOut(tween(180, easing = FastOutSlowInEasing))
                     else slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(140))
                 ) {
                     /*
@@ -1105,7 +1158,9 @@ fun AppUi(
                         targetState = overlayNav,
                         modifier = Modifier.fillMaxSize(),
                         transitionSpec = {
-                            if (initialState is Nav.Attachments || targetState is Nav.Attachments) {
+                            if (initialState is Nav.Attachments || targetState is Nav.Attachments ||
+                                initialState is Nav.Settings || targetState is Nav.Settings
+                            ) {
                                 fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
                                     fadeOut(tween(190, easing = FastOutSlowInEasing))
                             } else {
@@ -1158,6 +1213,7 @@ fun AppUi(
                                 blocked = blockedWords,
                                 watch = watchWords,
                                 exitSignal = historyExitSignal,
+                            selectAllSignal = selectAllSignal,
                                 onSelectionCount = onWatchSelectionCount,
                                 onSelectionMode = onWatchSelecting,
                                 onDeleteSelected = onDeleteWatch,
@@ -1171,6 +1227,7 @@ fun AppUi(
                                 blocked = blockedWords,
                                 watch = watchWords,
                                 exitSignal = historyExitSignal,
+                            selectAllSignal = selectAllSignal,
                                 onSelectionCount = onHistorySelectionCount,
                                 onSelectionMode = onHistorySelecting,
                                 onDeleteSelected = onDeleteHistory,
@@ -1188,7 +1245,8 @@ fun AppUi(
                                 LoginPromptView(onLogin)
                             cur is Nav.Forum -> ForumView(
                                 forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
-                                refreshing, onRefresh, onThumbNeeded, searchUpdating
+                                refreshing, onRefresh, onThumbNeeded, searchUpdating,
+                                blocked = blockedWords, watch = watchWords, readTids = readTids
                             )
                             cur is Nav.Thread -> ThreadView(
                                 page = threadPage, loading = loading, onLoad = onLoad, onExternal = onExternal,
@@ -1209,6 +1267,7 @@ fun AppUi(
                                 onSelectionMode = onAttachSelecting,
                                 onDeleteSelected = onDeleteAttachments,
                                 exitSignal = historyExitSignal,
+                            selectAllSignal = selectAllSignal,
                                 backdrop = backdrop,
                                 blur = blurBg
                             )
@@ -1670,6 +1729,8 @@ private fun TopBar(
     onToggleMenu: () -> Unit = {},
     selectionMode: Boolean = false,
     onExitSelection: () -> Unit = {},
+    onSelectAll: () -> Unit = {},
+    selectionAllSelected: Boolean = false,
     backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
     blur: Boolean = false
 ) {
@@ -1750,7 +1811,10 @@ private fun TopBar(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (!avatarUrl.isNullOrBlank()) {
+            if (selectionMode) {
+                // 选择模式下右上角统一是「全选」：和左上角返回同一尺寸、同一玻璃圆底
+                SelectAllBtn(active = selectionAllSelected, onClick = onSelectAll)
+            } else if (!avatarUrl.isNullOrBlank()) {
                 AsyncImage(
                     model = avatarUrl,
                     contentDescription = null,
@@ -1787,12 +1851,6 @@ private fun AvatarMenu(
 ) {
     val colors = CouiTheme.colorScheme
     val dragState = remember { PressDragState() }
-    val hlY = androidx.compose.animation.core.animateDpAsState(
-        targetValue = 6.dp + (dragState.hover.coerceAtLeast(0) * 46).dp,
-        // 只有「按住后滑到别的项」才需要平移；直接点第三项时高亮应直接出现在第三项
-        animationSpec = tween(if (dragState.dragging) 140 else 0, easing = LinearEasing),
-        label = "menuHighlight"
-    )
     dragState.onCommit = { idx ->
         onDismiss()
         items.getOrNull(idx)?.third?.invoke()
@@ -1826,6 +1884,12 @@ private fun AvatarMenu(
             Column(
                 Modifier
                     .width(216.dp)
+                    .onGloballyPositioned {
+                        val pos = it.positionInRoot()
+                        dragState.panel = androidx.compose.ui.geometry.Rect(
+                            pos, androidx.compose.ui.geometry.Size(it.size.width.toFloat(), it.size.height.toFloat())
+                        )
+                    }
                     .shadow(24.dp, RoundedCornerShape(30.dp), clip = false)
                     .clip(RoundedCornerShape(30.dp))
                     .then(
@@ -1838,11 +1902,14 @@ private fun AvatarMenu(
                     )
                     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(30.dp))
                     .drawBehind {
-                        if (dragState.hover >= 0) {
+                        if (dragState.inside && dragState.hover >= 0 && dragState.pointerY > 0f) {
                             val padX = 6.dp.toPx()
+                            // 直接点按时高亮直接落在手指所在行，不做从上一项平移过来的动画
+                            val top = (dragState.pointerY - dragState.panel.top - 23.dp.toPx())
+                                .coerceIn(6.dp.toPx(), size.height - 52.dp.toPx())
                             drawRoundRect(
                                 color = Color.White.copy(alpha = 0.12f),
-                                topLeft = androidx.compose.ui.geometry.Offset(padX, hlY.value.toPx()),
+                                topLeft = androidx.compose.ui.geometry.Offset(padX, top),
                                 size = androidx.compose.ui.geometry.Size(size.width - padX * 2f, 46.dp.toPx()),
                                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx())
                             )
@@ -1878,6 +1945,28 @@ private fun AvatarMenu(
                     }
                 }
             }
+        }
+        // 手指拖出菜单后：高亮不再受菜单圆角裁剪，继续跟随手指 Y 移动
+        if (!dragState.inside && dragState.hover >= 0 && dragState.pointerY > 0f &&
+            dragState.panel != androidx.compose.ui.geometry.Rect.Zero
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .drawBehind {
+                        val padX = 6.dp.toPx()
+                        val top = (dragState.pointerY - dragState.panel.top - 23.dp.toPx())
+                            .coerceIn(0f, size.height - 46.dp.toPx())
+                        drawRoundRect(
+                            color = Color.White.copy(alpha = 0.14f),
+                            topLeft = androidx.compose.ui.geometry.Offset(dragState.panel.left + padX, top),
+                            size = androidx.compose.ui.geometry.Size(
+                                dragState.panel.width - padX * 2f, 46.dp.toPx()
+                            ),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx())
+                        )
+                    }
+            )
         }
     }
 }
@@ -2031,6 +2120,34 @@ private fun CircleBtn(icon: ImageVector, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         IconImg(icon, 20.dp, colors.onSurfaceVariant)
+    }
+}
+
+/** 选择模式右上角的「双对勾」全选按钮，尺寸/圆底与左上返回完全一致 */
+@Composable
+private fun SelectAllBtn(active: Boolean, onClick: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Box(
+        Modifier
+            .size(40.dp)
+            .then(glassModifier(CircleShape))
+            .lightPress(onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.size(20.dp)) {
+            val tint = if (active) colors.accent else colors.onSurfaceVariant
+            val stroke = 1.7.dp.toPx()
+            fun tick(x0: Float, y0: Float, x1: Float, y1: Float, x2: Float, y2: Float) {
+                val p = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(x0 * size.width, y0 * size.height)
+                    lineTo(x1 * size.width, y1 * size.height)
+                    lineTo(x2 * size.width, y2 * size.height)
+                }
+                drawPath(p, color = tint, style = Stroke(width = stroke))
+            }
+            tick(0.04f, 0.56f, 0.24f, 0.76f, 0.52f, 0.34f)
+            tick(0.36f, 0.56f, 0.56f, 0.76f, 0.96f, 0.22f)
+        }
     }
 }
 
@@ -2211,24 +2328,8 @@ private fun CardBox(
                     gl.record { this@drawWithContent.drawContent() }
                     drawLayer(gl)
                 } else if (read) {
-                    // 已读只压灰：整卡过一次饱和度 0 的颜色矩阵，点击照旧
-                    val gray = androidx.compose.ui.graphics.Paint().apply {
-                        colorFilter = androidx.compose.ui.graphics.ColorFilter.colorMatrix(
-                            androidx.compose.ui.graphics.ColorMatrix().apply { setToSaturation(0f) }
-                        )
-                        alpha = 0.5f
-                    }
-                    drawIntoCanvas { c ->
-                        c.saveLayer(
-                            androidx.compose.ui.geometry.Rect(
-                                androidx.compose.ui.geometry.Offset.Zero,
-                                androidx.compose.ui.geometry.Size(size.width, size.height)
-                            ),
-                            gray
-                        )
-                        this@drawWithContent.drawContent()
-                        c.restore()
-                    }
+                    // 已读态只压暗预览图（在 ThumbsGrid 里做），卡片文字保持原亮度，不再整卡压灰
+                    drawContent()
                 } else {
                     drawContent()
                 }
@@ -2344,6 +2445,7 @@ private fun HistoryView(
     onDeleteSelected: (List<Long>) -> Unit = {},
     onSelectionMode: (Boolean) -> Unit = {},
     exitSignal: Int = 0,
+    selectAllSignal: Int = 0,
     backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
     blur: Boolean = false,
     blocked: List<String> = emptyList(),
@@ -2364,6 +2466,13 @@ private fun HistoryView(
         if (exitSignal > 0) {
             selecting = false
             selected = emptySet()
+        }
+    }
+    var seenSelectAll by remember { androidx.compose.runtime.mutableIntStateOf(selectAllSignal) }
+    LaunchedEffect(selectAllSignal) {
+        if (selectAllSignal != seenSelectAll) {
+            seenSelectAll = selectAllSignal
+            if (selecting) selected = shown.map { it.tid }.toSet()
         }
     }
     if (shown.isEmpty()) {
@@ -2719,7 +2828,7 @@ private fun ForumView(
                         )
                         if (t.thumbs.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
-                            ThumbsGrid(t.thumbs, onImage)
+                            ThumbsGrid(t.thumbs, onImage, dim = isRead)
                         }
                     }
                 }
@@ -2787,15 +2896,17 @@ private fun ListPullIndicator(
 }
 
 @Composable
-private fun ThumbsGrid(thumbs: List<Any>, onImage: ((String) -> Unit)? = null) {
+private fun ThumbsGrid(thumbs: List<Any>, onImage: ((String) -> Unit)? = null, dim: Boolean = false) {
     val items9 = thumbs.take(9)
     val shape = RoundedCornerShape(10.dp)
+    val dimMod = Modifier.graphicsLayer { alpha = if (dim) 0.62f else 1f }
     when {
         items9.size == 1 -> NetImage(
             url = items9[0],
             modifier = Modifier
                 .fillMaxWidth()
                 .height(180.dp)
+                .then(dimMod)
                 .clip(shape),
             onClick = (items9[0] as? String)?.let { u -> { onImage?.invoke(u) } },
             crop = true
@@ -2807,6 +2918,7 @@ private fun ThumbsGrid(thumbs: List<Any>, onImage: ((String) -> Unit)? = null) {
                     modifier = Modifier
                         .weight(1f)
                         .height(104.dp)
+                        .then(dimMod)
                         .clip(shape),
                     onClick = (u as? String)?.let { s0 -> { onImage?.invoke(s0) } },
                     crop = true
@@ -2822,6 +2934,7 @@ private fun ThumbsGrid(thumbs: List<Any>, onImage: ((String) -> Unit)? = null) {
                             modifier = Modifier
                                 .weight(1f)
                                 .height(96.dp)
+                                .then(dimMod)
                                 .clip(shape),
                             onClick = (u as? String)?.let { s0 -> { onImage?.invoke(s0) } },
                             crop = true
@@ -4128,40 +4241,103 @@ private fun SmallAction(text: String, enabled: Boolean = true, onClick: () -> Un
 @Composable
 private fun FileTypeIcon(name: String, size: Dp) {
     val kind = AttachmentStore.kindOf(name)
-    val bg = when (kind) {
-        "txt" -> Color(0xFF5B7FA6)
-        "pdf" -> Color(0xFFC0504D)
-        "word" -> Color(0xFF3F6FB0)
-        "pages" -> Color(0xFFD08A2C)
-        "archive" -> Color(0xFF7A6A9B)
-        "apk" -> Color(0xFF3E8E5A)
-        "image" -> Color(0xFF4E8C8A)
-        else -> Color(0xFF7A7F87)
+    val tint = when (kind) {
+        "txt" -> Color(0xFF7E9CBF)
+        "pdf" -> Color(0xFFD47C79)
+        "word" -> Color(0xFF7E9FD6)
+        "pages" -> Color(0xFFDDB173)
+        "archive" -> Color(0xFFA79AC0)
+        "apk" -> Color(0xFF7FB894)
+        "image" -> Color(0xFF83B7B4)
+        else -> Color(0xFF9AA0A8)
     }
-    val label = when (kind) {
-        "txt" -> "TXT"
-        "pdf" -> "PDF"
-        "word" -> "DOC"
-        "pages" -> "PAGE"
-        "archive" -> "ZIP"
-        "apk" -> "APK"
-        "image" -> "IMG"
-        else -> "FILE"
-    }
-    Box(
-        Modifier
-            .size(size)
-            // 附件图标统一为圆角正方形，圆角比例对齐列表卡片的观感
-            .clip(RoundedCornerShape(size.value * 0.30f))
-            .background(bg),
-        contentAlignment = Alignment.Center
-    ) {
-        Txt(
-            label,
-            size = (size.value * 0.27f).coerceIn(7f, 12f).sp,
-            weight = FontWeight.Bold,
-            color = Color.White
+    Canvas(Modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = 1.25.dp.toPx()
+        // 纸张轮廓 + 折角，去掉原来的纯色底
+        val doc = androidx.compose.ui.graphics.Path().apply {
+            moveTo(0.16f * w, 0.08f * h)
+            lineTo(0.62f * w, 0.08f * h)
+            lineTo(0.84f * w, 0.30f * h)
+            lineTo(0.84f * w, 0.92f * h)
+            lineTo(0.16f * w, 0.92f * h)
+            close()
+        }
+        drawPath(doc, color = tint, style = Stroke(width = stroke))
+        drawLine(
+            color = tint,
+            start = androidx.compose.ui.geometry.Offset(0.62f * w, 0.08f * h),
+            end = androidx.compose.ui.geometry.Offset(0.62f * w, 0.30f * h),
+            strokeWidth = stroke
         )
+        drawLine(
+            color = tint,
+            start = androidx.compose.ui.geometry.Offset(0.62f * w, 0.30f * h),
+            end = androidx.compose.ui.geometry.Offset(0.84f * w, 0.30f * h),
+            strokeWidth = stroke
+        )
+        when (kind) {
+            "image" -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = androidx.compose.ui.geometry.Offset(0.26f * w, 0.44f * h),
+                    size = androidx.compose.ui.geometry.Size(0.48f * w, 0.30f * h),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx()),
+                    style = Stroke(width = stroke)
+                )
+                val mountain = androidx.compose.ui.graphics.Path().apply {
+                    moveTo(0.28f * w, 0.72f * h)
+                    lineTo(0.42f * w, 0.56f * h)
+                    lineTo(0.52f * w, 0.66f * h)
+                    lineTo(0.60f * w, 0.54f * h)
+                    lineTo(0.72f * w, 0.72f * h)
+                }
+                drawPath(mountain, color = tint, style = Stroke(width = stroke))
+                drawCircle(tint, radius = 1.6.dp.toPx(), center = androidx.compose.ui.geometry.Offset(0.64f * w, 0.50f * h))
+            }
+            "archive" -> {
+                drawLine(
+                    color = tint,
+                    start = androidx.compose.ui.geometry.Offset(0.50f * w, 0.38f * h),
+                    end = androidx.compose.ui.geometry.Offset(0.50f * w, 0.84f * h),
+                    strokeWidth = stroke
+                )
+                for (i in 0..3) {
+                    val y = (0.42f + i * 0.10f) * h
+                    drawLine(
+                        color = tint,
+                        start = androidx.compose.ui.geometry.Offset(0.44f * w, y),
+                        end = androidx.compose.ui.geometry.Offset(0.56f * w, y),
+                        strokeWidth = stroke
+                    )
+                }
+            }
+            "apk" -> {
+                drawRoundRect(
+                    color = tint,
+                    topLeft = androidx.compose.ui.geometry.Offset(0.28f * w, 0.44f * h),
+                    size = androidx.compose.ui.geometry.Size(0.44f * w, 0.30f * h),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx()),
+                    style = Stroke(width = stroke)
+                )
+                drawCircle(tint, radius = 1.5.dp.toPx(), center = androidx.compose.ui.geometry.Offset(0.40f * w, 0.54f * h))
+                drawCircle(tint, radius = 1.5.dp.toPx(), center = androidx.compose.ui.geometry.Offset(0.60f * w, 0.54f * h))
+            }
+            else -> {
+                val lines = if (kind == "pdf") 3 else 3
+                for (i in 0 until lines) {
+                    val y = (0.46f + i * 0.11f) * h
+                    val endX = if (i == lines - 1) 0.58f else 0.72f
+                    drawLine(
+                        color = tint.copy(alpha = if (i == 0) 0.85f else 0.6f),
+                        start = androidx.compose.ui.geometry.Offset(0.26f * w, y),
+                        end = androidx.compose.ui.geometry.Offset(endX * w, y),
+                        strokeWidth = stroke
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -4257,6 +4433,7 @@ private fun AttachManagerPage(
     onDeleteSelected: (List<Long>) -> Unit,
     onSelectionMode: (Boolean) -> Unit,
     exitSignal: Int = 0,
+    selectAllSignal: Int = 0,
     backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
     blur: Boolean = false
 ) {
@@ -4269,6 +4446,13 @@ private fun AttachManagerPage(
     }
     LaunchedEffect(exitSignal) {
         if (exitSignal > 0) { selecting = false; selected = emptySet() }
+    }
+    var seenSelectAll by remember { androidx.compose.runtime.mutableIntStateOf(selectAllSignal) }
+    LaunchedEffect(selectAllSignal) {
+        if (selectAllSignal != seenSelectAll) {
+            seenSelectAll = selectAllSignal
+            if (selecting) selected = entries.map { it.id }.toSet()
+        }
     }
     LaunchedEffect(entries.size) {
         if (entries.isEmpty()) { selecting = false; selected = emptySet() }

@@ -99,6 +99,8 @@ data class FormDef(var action: String, val fields: MutableList<Pair<String, Stri
 
 object Site {
 
+    private val ATTACH_URL = Regex("""[^"'\s<>]{0,220}mod=attachment[^"'\s<>]*""")
+
     /** 解析购买附件窗口；页面不是购买窗口时返回 null */
     fun parseAttachPay(html: String, baseUrl: String = SITE): AttachPay? = runCatching {
         val doc = Jsoup.parse(html, baseUrl)
@@ -135,12 +137,67 @@ object Site {
             plain.contains("已经购买") || plain.contains("已购买此附件")
     }
 
-    /** 从购买页/回包里找出站点直接给的附件下载地址（带签名 aid） */
-    fun attachmentDownloadUrl(html: String, base: String = SITE): String? = runCatching {
+    /** 从购买页/回包里找出所有附件下载地址（带签名 aid），包括 JS 里拼接的地址 */
+    fun attachmentDownloadUrls(html: String, base: String = SITE): List<String> = runCatching {
         val doc = Jsoup.parse(html, base)
-        val a = doc.selectFirst("a[href*=mod=attachment]") ?: return@runCatching null
-        a.absUrl("href").ifBlank { SITE + a.attr("href") }.replace("&amp;", "&")
-    }.getOrNull()
+        val out = ArrayList<String>()
+        doc.select("[href*=mod=attachment]").forEach { el ->
+            val href = el.attr("href").replace("&amp;", "&")
+            if (href.isNotBlank()) {
+                val abs = el.absUrl("href").ifBlank {
+                    runCatching { java.net.URL(java.net.URL(base), href).toString() }.getOrDefault(href)
+                }
+                out.add(abs.replace("&amp;", "&"))
+            }
+        }
+        // 有些提示页只在脚本里写地址，Jsoup 的选择器抓不到，再扫一遍原文
+        ATTACH_URL.findAll(html).forEach { m ->
+            val raw = m.value.replace("&amp;", "&").trim('"', '\'', ',', ')', ';')
+            if (raw.isNotBlank()) {
+                val abs = runCatching { java.net.URL(java.net.URL(base), raw).toString() }
+                    .getOrDefault(raw)
+                out.add(abs.replace("&amp;", "&"))
+            }
+        }
+        out.distinct()
+    }.getOrDefault(emptyList())
+
+    /** 从购买页/回包里找出站点直接给的附件下载地址（带签名 aid） */
+    fun attachmentDownloadUrl(html: String, base: String = SITE): String? =
+        attachmentDownloadUrls(html, base).firstOrNull()
+
+    /**
+     * 按数字 aid 找到同一个附件的签名下载链。
+     * 站点的签名 aid 形如 base64("698248|signkey|expire|uid|tid")，纯数字的直链会被拒。
+     */
+    fun attachmentDownloadUrlForAid(html: String, base: String = SITE, aid: String): String? {
+        val want = aid.trim()
+        if (want.isBlank()) return null
+        val signed = findSignedAid(html, want) ?: return null
+        val url = runCatching {
+            java.net.URL(java.net.URL(base), "forum.php?mod=attachment&aid=" + signed).toString()
+        }.getOrNull() ?: return null
+        return url.replace("&amp;", "&")
+    }
+
+    /**
+     * 在帖子页/购买页里找同一个附件的签名 aid（页面里可能出现在附件链接或购买链接上）。
+     * 只认 base64 解码后以「数字aid|」开头的签名串，绝不接受纯数字 aid。
+     */
+    private fun findSignedAid(html: String, want: String): String? {
+        val matches = Regex("""(?:aid=|aid%3D)([A-Za-z0-9%_+\-/=]+)""").findAll(html)
+        for (m in matches) {
+            val raw = m.groupValues.getOrNull(1) ?: continue
+            val decoded = runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+            if (!decoded.contains('|')) continue
+            val payload = decoded.substringBefore('|')
+            val plain = runCatching {
+                String(android.util.Base64.decode(payload, android.util.Base64.DEFAULT), Charsets.UTF_8)
+            }.getOrNull() ?: continue
+            if (plain.startsWith(want + "|")) return raw
+        }
+        return null
+    }
 
     /** 帖子被删除 / 审核中的站点提示；命中后不应重试，也不该写浏览记录 */
     fun threadMissing(html: String): Boolean {

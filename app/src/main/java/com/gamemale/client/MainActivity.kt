@@ -1079,7 +1079,14 @@ class MainActivity : ComponentActivity() {
                             runCatching {
                                 refreshLogin(html)
                                 threadPage = Site.parseThread(html)
-                                threadPage?.let { tp ->
+                                val fresh = threadPage
+                                if (fresh == null || fresh.posts.isEmpty() || Site.threadMissing(html)) {
+                                    threadPage = keepThread
+                                    loading = false
+                                    toast("刷新失败，页面内容没有加载出来")
+                                    return@runOnUiThread
+                                }
+                                fresh?.let { tp ->
                                     tidOf(n.url)?.toLongOrNull()?.let { tid ->
                                         history = HistoryStore.record(this, tid, tp.subject, n.url)
                                         // 顺手把这篇帖子的首图记成它的预览图，浏览记录/列表都能用
@@ -1300,7 +1307,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openSettings() {
-        if (nav is Nav.Settings || nav is Nav.Search) return
+        // 搜索页也能进设置：之前这里把 Search 一起拦掉了，导致搜索页点头像完全没反应
+        if (nav is Nav.Settings) return
         backStack.add(nav)
         nav = Nav.Settings
         refreshCacheStats()
@@ -1823,6 +1831,17 @@ class MainActivity : ComponentActivity() {
                     load(canonical)
                     return@bgParse
                 }
+                // 空正文视为加载失败：不覆盖当前正文，也不写浏览记录
+                val plain = runCatching { org.jsoup.Jsoup.parse(html).text() }.getOrElse { "" }
+                error = when {
+                    plain.contains("网页无法打开") || plain.contains("无法访问") ||
+                        plain.contains("网络") || plain.contains("ERR_") -> "网络连接失败，请稍后重试"
+                    plain.contains("请稍候") || plain.contains("Just a moment") ->
+                        "站点安全验证未通过，请稍后重试"
+                    else -> "页面没有加载完整，请稍后重试"
+                }
+                loading = false
+                return@bgParse
             }
             threadPage = tp
             loadedThreadUrl = url
@@ -2625,9 +2644,17 @@ class MainActivity : ComponentActivity() {
                     if (pay == null) {
                         // 站点已经明说「已购买过，无需重复购买」：直接开始下载，别再弹确认或跳网页
                         if (Site.alreadyPurchased(html)) {
-                            val dl = Site.attachmentDownloadUrl(html, at.url) ?: attachmentUrl(at.url)
+                            val aid = Regex("""aid=(\d+)""").find(at.url)?.groupValues?.get(1).orEmpty()
+                            val dl = Site.attachmentDownloadUrl(html, at.url)
+                                ?: (if (aid.isNotBlank() && lastHtml.isNotBlank())
+                                    Site.attachmentDownloadUrlForAid(lastHtml, SITE, aid) else null)
                             attachPayAt = null
                             attachPayName = ""
+                            if (dl == null) {
+                                toast("没有获取到附件下载地址，请稍后重试")
+                                Diag.log("attach", "already purchased but no url tid=" + tid + " name=" + at.name)
+                                return@runOnUiThread
+                            }
                             Diag.log("attach", "already purchased, direct download tid=" + tid + " name=" + at.name)
                             toast("已购买过，开始下载")
                             downloadAttach(dl, at.name, tid, threadTitle, threadUrl)
@@ -2785,6 +2812,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // 购买成功的回包不一定带下载链；在后台再取一次，拿站点签名过的 aid，
+            // 绝不能退回纯数字 aid（那只会下到「该附件无法读取」的提示网页）
+            if (ok && dlOverride == null) dlOverride = findSignedAttachUrl(pay, threadUrl)
+
             runOnUiThread {
                 attachPayBusy = false
                 Diag.log(
@@ -2792,14 +2823,17 @@ class MainActivity : ComponentActivity() {
                     "http buy aid=" + pay.aid + " ok=" + ok + " already=" + already +
                         " dl=" + dlOverride.orEmpty() + " detail=" + detail
                 )
-                if (ok) {
+                if (ok && dlOverride != null) {
                     val dlName = pay.fileName.ifBlank { attachPayName }
-                    val dlUrl = dlOverride ?: attachmentUrl("aid=" + pay.aid)
                     attachPayInfo = null
                     attachPayAt = null
                     attachPayName = ""
                     toast(if (already) "已购买过，开始下载" else "购买成功，开始下载")
-                    downloadAttach(dlUrl, dlName, tid, title, pageUrl)
+                    downloadAttach(dlOverride!!, dlName, tid, title, pageUrl)
+                } else if (ok) {
+                    // 买是买成功了，但站点没把下载地址交出来，宁可提示也不要再存一个网页进附件
+                    toast("购买成功，但站点没有返回附件地址，请稍后重试")
+                    Diag.log("attach", "buy ok but no download url aid=" + pay.aid)
                 } else {
                     toast("购买失败：" + (msg ?: "站点拒绝了这次购买"))
                     // 自动支付没成：退回可见的购买页，用户自己点一次也能完成
@@ -2807,6 +2841,33 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }.start()
+    }
+
+    /**
+     * 站点购买成功后，用当前帖子页 / 购买页重新找带签名的附件下载链。
+     * 找不到再重新取一次帖子页；都找不到就返回 null，由调用方提示，不再退回数字 aid。
+     */
+    private fun findSignedAttachUrl(pay: AttachPay, threadUrl: String): String? {
+        val tid = pay.tid
+        val pages = ArrayList<String>()
+        val curThread = nav as? Nav.Thread
+        if (lastHtml.isNotBlank() && curThread != null &&
+            tidOf(curThread.url).orEmpty() == tid
+        ) pages.add(lastHtml)
+        runCatching {
+            val aid = java.net.URLEncoder.encode(pay.aid, "UTF-8")
+            val t = java.net.URLEncoder.encode(tid, "UTF-8")
+            httpGet(SITE + "forum.php?mod=misc&action=attachpay&aid=" + aid + "&tid=" + t)
+        }.getOrNull()?.let { pages.add(it) }
+        for (page in pages) {
+            Site.attachmentDownloadUrlForAid(page, SITE, pay.aid)?.let { return it }
+        }
+        if (threadUrl.isNotBlank()) {
+            runCatching { httpGet(threadUrl) }.getOrNull()?.let { page ->
+                Site.attachmentDownloadUrlForAid(page, SITE, pay.aid)?.let { return it }
+            }
+        }
+        return null
     }
 
     private fun closeAttachBuy() {
@@ -2859,10 +2920,11 @@ class MainActivity : ComponentActivity() {
                     }
                     if (code !in 200..299) throw java.io.IOException("HTTP $code")
                     val ctype = conn.contentType.orEmpty()
-                    if (ctype.contains("text/html", true) &&
-                        AttachmentStore.kindOf(safe) != "txt" &&
-                        !safe.lowercase().endsWith(".html")
-                    ) throw java.io.IOException("拿到的是网页而不是文件，可能登录失效")
+                    // 附件下载不能以扩展名放宽：.txt 也必须拒绝 text/html，
+                    // 否则「提示信息」网页会被当成 txt 附件存下来
+                    if (ctype.contains("text/html", true)) {
+                        throw java.io.IOException("拿到的是网页而不是文件，下载地址可能已失效")
+                    }
                     val total = conn.contentLengthLong
                     conn.inputStream.use { input ->
                         FileOutputStream(tmp).use { fos ->
@@ -2883,6 +2945,15 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     if (out.exists()) out.delete()
+                    // 双保险：有些错误页的 Content-Type 不规范，再看一眼前 512 字节
+                    val head = ByteArray(512)
+                    val hn = runCatching { java.io.FileInputStream(tmp).use { it.read(head) } }.getOrDefault(0)
+                    val headText = if (hn > 0) String(head, 0, hn, Charsets.UTF_8)
+                        .trimStart('\uFEFF', ' ', '\n', '\r', '\t').lowercase() else ""
+                    if (headText.startsWith("<!doctype html") || headText.startsWith("<html")) {
+                        tmp.delete()
+                        throw java.io.IOException("站点返回的是网页而不是附件")
+                    }
                     if (!tmp.renameTo(out)) {
                         tmp.copyTo(out, overwrite = true)
                         tmp.delete()
