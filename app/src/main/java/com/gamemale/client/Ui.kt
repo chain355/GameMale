@@ -874,6 +874,7 @@ fun AppUi(
     var topMenuOpen by remember { mutableStateOf(false) }
     // 右上角「全选」按钮给当前选择页发信号；页面自己把可见条目全部勾上
     var selectAllSignal by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    var clearSelectionSignal by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
     val backdrop = rememberCouiBackdrop()
@@ -974,7 +975,10 @@ fun AppUi(
             TopBar(
                 selectionMode = inHistorySelection,
                 onExitSelection = { historyExitSignal++ },
-                onSelectAll = { selectAllSignal++ },
+                onSelectAll = {
+                    // 已全选再点就是取消全选，否则一律补成全选
+                    if (selectionAllSelected) clearSelectionSignal++ else selectAllSignal++
+                },
                 selectionAllSelected = selectionAllSelected,
                 backdrop = backdrop,
                 blur = overlayBar && blurBg,
@@ -1092,6 +1096,7 @@ fun AppUi(
                             watch = watchWords,
                             exitSignal = historyExitSignal,
                             selectAllSignal = selectAllSignal,
+                            clearSelectionSignal = clearSelectionSignal,
                             onSelectionCount = onWatchSelectionCount,
                             onSelectionMode = onWatchSelecting,
                             onDeleteSelected = onDeleteWatch,
@@ -1106,6 +1111,7 @@ fun AppUi(
                             watch = watchWords,
                             exitSignal = historyExitSignal,
                             selectAllSignal = selectAllSignal,
+                            clearSelectionSignal = clearSelectionSignal,
                             onSelectionCount = onHistorySelectionCount,
                             onSelectionMode = onHistorySelecting,
                             onDeleteSelected = onDeleteHistory,
@@ -1214,6 +1220,7 @@ fun AppUi(
                                 watch = watchWords,
                                 exitSignal = historyExitSignal,
                             selectAllSignal = selectAllSignal,
+                            clearSelectionSignal = clearSelectionSignal,
                                 onSelectionCount = onWatchSelectionCount,
                                 onSelectionMode = onWatchSelecting,
                                 onDeleteSelected = onDeleteWatch,
@@ -1228,6 +1235,7 @@ fun AppUi(
                                 watch = watchWords,
                                 exitSignal = historyExitSignal,
                             selectAllSignal = selectAllSignal,
+                            clearSelectionSignal = clearSelectionSignal,
                                 onSelectionCount = onHistorySelectionCount,
                                 onSelectionMode = onHistorySelecting,
                                 onDeleteSelected = onDeleteHistory,
@@ -1268,6 +1276,7 @@ fun AppUi(
                                 onDeleteSelected = onDeleteAttachments,
                                 exitSignal = historyExitSignal,
                             selectAllSignal = selectAllSignal,
+                            clearSelectionSignal = clearSelectionSignal,
                                 backdrop = backdrop,
                                 blur = blurBg
                             )
@@ -1955,11 +1964,14 @@ private fun AvatarMenu(
                     .fillMaxSize()
                     .drawBehind {
                         val padX = 6.dp.toPx()
-                        val top = (dragState.pointerY - dragState.panel.top - 23.dp.toPx())
-                            .coerceIn(0f, size.height - 46.dp.toPx())
+                        // 横向拖出菜单后高亮继续跟随手指，但纵向要夹在菜单内部，不能溢出到菜单卡片外
+                        val localTop = (dragState.pointerY - dragState.panel.top - 23.dp.toPx())
+                            .coerceIn(6.dp.toPx(), dragState.panel.height - 52.dp.toPx())
                         drawRoundRect(
                             color = Color.White.copy(alpha = 0.14f),
-                            topLeft = androidx.compose.ui.geometry.Offset(dragState.panel.left + padX, top),
+                            topLeft = androidx.compose.ui.geometry.Offset(
+                                dragState.panel.left + padX, dragState.panel.top + localTop
+                            ),
                             size = androidx.compose.ui.geometry.Size(
                                 dragState.panel.width - padX * 2f, 46.dp.toPx()
                             ),
@@ -2328,8 +2340,9 @@ private fun CardBox(
                     gl.record { this@drawWithContent.drawContent() }
                     drawLayer(gl)
                 } else if (read) {
-                    // 已读态只压暗预览图（在 ThumbsGrid 里做），卡片文字保持原亮度，不再整卡压灰
+                    // 已读态明显压暗：整卡（图片和文字）统一降亮度，但不转黑白
                     drawContent()
+                    drawRect(Color.Black.copy(alpha = 0.45f))
                 } else {
                     drawContent()
                 }
@@ -2446,6 +2459,7 @@ private fun HistoryView(
     onSelectionMode: (Boolean) -> Unit = {},
     exitSignal: Int = 0,
     selectAllSignal: Int = 0,
+    clearSelectionSignal: Int = 0,
     backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
     blur: Boolean = false,
     blocked: List<String> = emptyList(),
@@ -2473,6 +2487,13 @@ private fun HistoryView(
         if (selectAllSignal != seenSelectAll) {
             seenSelectAll = selectAllSignal
             if (selecting) selected = shown.map { it.tid }.toSet()
+        }
+    }
+    var seenClearSelection by remember { androidx.compose.runtime.mutableIntStateOf(clearSelectionSignal) }
+    LaunchedEffect(clearSelectionSignal) {
+        if (clearSelectionSignal != seenClearSelection) {
+            seenClearSelection = clearSelectionSignal
+            if (selecting) selected = emptySet()
         }
     }
     if (shown.isEmpty()) {
@@ -2828,7 +2849,7 @@ private fun ForumView(
                         )
                         if (t.thumbs.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
-                            ThumbsGrid(t.thumbs, onImage, dim = isRead)
+                            ThumbsGrid(t.thumbs, onImage)
                         }
                     }
                 }
@@ -4434,6 +4455,7 @@ private fun AttachManagerPage(
     onSelectionMode: (Boolean) -> Unit,
     exitSignal: Int = 0,
     selectAllSignal: Int = 0,
+    clearSelectionSignal: Int = 0,
     backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
     blur: Boolean = false
 ) {
@@ -4452,6 +4474,13 @@ private fun AttachManagerPage(
         if (selectAllSignal != seenSelectAll) {
             seenSelectAll = selectAllSignal
             if (selecting) selected = entries.map { it.id }.toSet()
+        }
+    }
+    var seenClearSelection by remember { androidx.compose.runtime.mutableIntStateOf(clearSelectionSignal) }
+    LaunchedEffect(clearSelectionSignal) {
+        if (clearSelectionSignal != seenClearSelection) {
+            seenClearSelection = clearSelectionSignal
+            if (selecting) selected = emptySet()
         }
     }
     LaunchedEffect(entries.size) {

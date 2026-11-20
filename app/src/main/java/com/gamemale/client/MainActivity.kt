@@ -1088,7 +1088,9 @@ class MainActivity : ComponentActivity() {
                                 }
                                 fresh?.let { tp ->
                                     tidOf(n.url)?.toLongOrNull()?.let { tid ->
+                                        // 手动刷新出正文同样算成功打开：正常写浏览记录并标已读
                                         history = HistoryStore.record(this, tid, tp.subject, n.url)
+                                        readTids = ReadStore.mark(this, tid)
                                         // 顺手把这篇帖子的首图记成它的预览图，浏览记录/列表都能用
                                         val imgs = tp.posts.flatMap { p ->
                                             p.blocks.mapNotNull { (it as? Block.Image)?.url }
@@ -2812,35 +2814,72 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // 购买成功的回包不一定带下载链；在后台再取一次，拿站点签名过的 aid，
-            // 绝不能退回纯数字 aid（那只会下到「该附件无法读取」的提示网页）
-            if (ok && dlOverride == null) dlOverride = findSignedAttachUrl(pay, threadUrl)
-
-            runOnUiThread {
-                attachPayBusy = false
-                Diag.log(
-                    "attach",
-                    "http buy aid=" + pay.aid + " ok=" + ok + " already=" + already +
-                        " dl=" + dlOverride.orEmpty() + " detail=" + detail
-                )
-                if (ok && dlOverride != null) {
-                    val dlName = pay.fileName.ifBlank { attachPayName }
+            if (ok) {
+                // 买成功后立刻关窗，不再让用户盯着购买窗口等取链
+                val dlName = pay.fileName.ifBlank { attachPayName }
+                runOnUiThread {
+                    attachPayBusy = false
                     attachPayInfo = null
                     attachPayAt = null
                     attachPayName = ""
-                    toast(if (already) "已购买过，开始下载" else "购买成功，开始下载")
-                    downloadAttach(dlOverride!!, dlName, tid, title, pageUrl)
-                } else if (ok) {
-                    // 买是买成功了，但站点没把下载地址交出来，宁可提示也不要再存一个网页进附件
-                    toast("购买成功，但站点没有返回附件地址，请稍后重试")
-                    Diag.log("attach", "buy ok but no download url aid=" + pay.aid)
-                } else {
+                    toast(if (already) "已购买过，正在获取附件…" else "购买成功，正在获取附件…")
+                    Diag.log(
+                        "attach",
+                        "http buy aid=" + pay.aid + " ok=true already=" + already +
+                            " dl=" + dlOverride.orEmpty() + " detail=" + detail
+                    )
+                }
+                // 回包经常不带下载链；先站内找，再等几秒重取购买页（站点购买状态有时要过一会儿才反映出来）
+                var dl = dlOverride ?: findSignedAttachUrl(pay, threadUrl)
+                if (dl == null) dl = retrySignedAttachUrl(pay, threadUrl)
+                val fixed = dl
+                runOnUiThread {
+                    if (fixed != null) {
+                        downloadAttach(fixed, dlName, tid, title, pageUrl)
+                    } else {
+                        Diag.log("attach", "buy ok but still no download url aid=" + pay.aid)
+                        toast("购买成功，附件地址还在生成，请再点一次该附件")
+                    }
+                }
+            } else {
+                runOnUiThread {
+                    attachPayBusy = false
+                    Diag.log(
+                        "attach",
+                        "http buy aid=" + pay.aid + " ok=false already=" + already +
+                            " dl=" + dlOverride.orEmpty() + " detail=" + detail
+                    )
                     toast("购买失败：" + (msg ?: "站点拒绝了这次购买"))
                     // 自动支付没成：退回可见的购买页，用户自己点一次也能完成
                     srcAt?.let { openAttachInWeb(it) }
                 }
             }
         }.start()
+    }
+
+    /**
+     * 购买成功后站点偶尔要等一会儿才把附件状态改成「已购买」。
+     * 这里隔几秒重取购买页，直到拿到签名下载链；全程后台，不重新弹购买窗。
+     */
+    private fun retrySignedAttachUrl(pay: AttachPay, threadUrl: String): String? {
+        val url = SITE + "forum.php?mod=misc&action=attachpay&aid=" +
+            java.net.URLEncoder.encode(pay.aid, "UTF-8") + "&tid=" +
+            java.net.URLEncoder.encode(pay.tid, "UTF-8")
+        val waits = listOf(0L, 700L, 1800L, 4000L)
+        for (wait in waits) {
+            if (wait > 0) runCatching { Thread.sleep(wait) }
+            val html = runCatching { httpGet(url) }.getOrNull() ?: continue
+            Site.attachmentDownloadUrlForAid(html, SITE, pay.aid)?.let { return it }
+            if (Site.alreadyPurchased(html)) {
+                Site.attachmentDownloadUrl(html, url)?.let { return it }
+            }
+        }
+        if (threadUrl.isNotBlank()) {
+            runCatching { httpGet(threadUrl) }.getOrNull()?.let { page ->
+                Site.attachmentDownloadUrlForAid(page, SITE, pay.aid)?.let { return it }
+            }
+        }
+        return null
     }
 
     /**
