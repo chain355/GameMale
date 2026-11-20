@@ -12,6 +12,11 @@ import android.widget.Toast
 import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import android.os.Bundle
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -41,6 +46,7 @@ sealed interface Nav {
     data object Search : Nav
     data object History : Nav
     data object Watch : Nav
+    data object Attachments : Nav
 }
 
 class MainActivity : ComponentActivity() {
@@ -91,6 +97,20 @@ class MainActivity : ComponentActivity() {
     private var appVersionName: String = ""
     private var rateFormDef: FormDef? = null
     private var rateReasonName: String? = null
+    /** 已下载附件（私有目录 + 原帖关联） */
+    private var attachments by mutableStateOf<List<AttachmentStore.Entry>>(emptyList())
+    private var attachSelecting by mutableStateOf(false)
+    private var attachSelectionCount by mutableStateOf(0)
+    /** 下载中的进度，键见 attachKey */
+    private var attachLoads by mutableStateOf<Map<String, AttachLoad>>(emptyMap())
+    /** txt 附件读出来的正文，下载完自动填 */
+    private var attachTexts by mutableStateOf<Map<String, String>>(emptyMap())
+    /** 下载完要把帖子滚到哪个附件 */
+    private var attachFocus by mutableStateOf<String?>(null)
+    /** 文本展示窗口（自由复制 / 查看 txt） */
+    private var fileTextOpen by mutableStateOf(false)
+    private var fileTextTitle by mutableStateOf("")
+    private var fileTextBody by mutableStateOf("")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -103,6 +123,7 @@ class MainActivity : ComponentActivity() {
         accounts = Accounts.load(this)
         currentAccountId = Accounts.currentId(this)
         history = HistoryStore.load(this)
+        attachments = AttachmentStore.load(this)
         // 覆盖升级/进程被杀后，CookieManager 里的登录 Cookie 可能丢，但账号表里有快照
         runCatching {
             val saved = accounts.firstOrNull { it.id == currentAccountId } ?: accounts.firstOrNull()
@@ -225,7 +246,7 @@ class MainActivity : ComponentActivity() {
                         toast("缓存已清除")
                     },
                     canGoBack = backStack.isNotEmpty() || nav is Nav.Thread ||
-                        nav is Nav.Settings || nav is Nav.Search,
+                        nav is Nav.Settings || nav is Nav.Search || nav is Nav.Attachments,
                     refreshing = refreshing,
                     searchUpdating = searchUpdating,
                     dailyFailed = dailyFailed,
@@ -299,6 +320,30 @@ class MainActivity : ComponentActivity() {
                     attachPayBusy = attachPayBusy,
                     onConfirmAttachPay = { confirmAttachBuy() },
                     onCloseAttachPay = { closeAttachBuy() },
+                    threadTid = threadTid()?.toLongOrNull(),
+                    attachments = attachments,
+                    attachLoads = attachLoads,
+                    attachTexts = attachTexts,
+                    attachFocus = attachFocus,
+                    onFocusConsumed = { attachFocus = null },
+                    onNeedAttachText = { key -> ensureAttachText(key) },
+                    onOpenAttachment = { e -> openAttachment(e) },
+                    onCopyText = { copyText(it) },
+                    onFreeCopyText = { title, text -> showAttachmentText(title, text) },
+                    onOpenAttachManager = { openAttachManager() },
+                    attachmentCount = attachments.size,
+                    attachSelecting = attachSelecting,
+                    attachSelectionCount = attachSelectionCount,
+                    onAttachSelectionCount = { attachSelectionCount = it },
+                    onAttachSelecting = { attachSelecting = it },
+                    onDeleteAttachments = { ids ->
+                        attachments = AttachmentStore.removeMany(this, ids)
+                        toast("已删除 " + ids.size + " 个附件")
+                    },
+                    fileTextOpen = fileTextOpen,
+                    fileTextTitle = fileTextTitle,
+                    fileTextBody = fileTextBody,
+                    onCloseFileText = { fileTextOpen = false },
                     onClearHistory = { history = HistoryStore.clear(this) },
                     historySelectionCount = historySelectionCount,
                     onHistorySelectionCount = { historySelectionCount = it },
@@ -930,7 +975,7 @@ class MainActivity : ComponentActivity() {
 
     private fun reload() {
         when (val n = nav) {
-            Nav.Settings, Nav.Search, Nav.History, Nav.Watch -> {}
+            Nav.Settings, Nav.Search, Nav.History, Nav.Watch, Nav.Attachments -> {}
             is Nav.Home -> loadHome()
             is Nav.Forum -> load(n.url)
             is Nav.Thread -> {
@@ -1445,7 +1490,7 @@ class MainActivity : ComponentActivity() {
             when (val n = nav) {
                 Nav.Search -> {}
                 Nav.Settings -> {}
-                Nav.History, Nav.Watch -> {}
+                Nav.History, Nav.Watch, Nav.Attachments -> {}
                 is Nav.Home -> loadHome()
                 is Nav.Forum -> {
                     // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
@@ -2061,7 +2106,7 @@ class MainActivity : ComponentActivity() {
         is Nav.Thread -> n.url
         is Nav.Search -> SITE + "search.php?mod=forum"
         Nav.Home -> SITE + "forum.php"
-        Nav.Settings, Nav.History, Nav.Watch -> ""
+        Nav.Settings, Nav.History, Nav.Watch, Nav.Attachments -> ""
     }
 
     /** 回复：用页面里的 #fastpostform 字段，补上 message 后 POST（带 inajax=1 拿纯文本结果） */
@@ -2376,15 +2421,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 附件：付费的先走购买表单，免费的直接下载 */
+    /** 附件：已下载的直接打开；付费的先走购买表单；免费的直接下载 */
     private fun openAttach(at: AttachItem) {
         if (!loggedIn) {
             toast("未登录不能下载附件，请先登录")
             return
         }
+        val tid = threadTid()?.toLongOrNull() ?: 0L
+        val done = if (tid > 0L) AttachmentStore.find(this, tid, at.name) else null
+        if (done != null) {
+            openAttachment(done)
+            return
+        }
+        val key = attachKey(tid, at.name)
+        val st = attachLoads[key]
+        if (st != null && !st.failed && st.progress < 1f) return
+        val threadTitle = threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() }
+        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty()
         if (!at.url.contains("action=attachpay")) {
             // 免费附件 / 已经付过费：链接本身就是下载地址
-            startDownload(attachmentUrl(at.url), at.name)
+            downloadAttach(attachmentUrl(at.url), at.name, tid, threadTitle, threadUrl)
             return
         }
         // 需要付费或权限：先把购买窗口取回来，再决定怎么付
@@ -2397,7 +2453,7 @@ class MainActivity : ComponentActivity() {
                     if (pay == null) {
                         // 取不到购买表单：多半是权限不足或已经买过，先按已购买试一次下载
                         toast("没拿到购买信息，按已购买处理并尝试下载")
-                        startDownload(attachmentUrl(at.url), at.name)
+                        downloadAttach(attachmentUrl(at.url), at.name, tid, threadTitle, threadUrl)
                     } else {
                         attachPayInfo = pay.copy(fileName = pay.fileName.ifBlank { at.name })
                     }
@@ -2432,10 +2488,15 @@ class MainActivity : ComponentActivity() {
                     if (ok) {
                         val dlName = pay.fileName.ifBlank { attachPayName }
                         val dlUrl = attachmentUrl("aid=" + pay.aid)
+                        val tid = pay.tid.toLongOrNull() ?: threadTid()?.toLongOrNull() ?: 0L
+                        val title = threadPage?.subject.orEmpty().ifBlank {
+                            (nav as? Nav.Thread)?.title.orEmpty()
+                        }
+                        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty()
                         attachPayInfo = null
                         attachPayName = ""
                         toast("购买成功，开始下载")
-                        startDownload(dlUrl, dlName)
+                        downloadAttach(dlUrl, dlName, tid, title, threadUrl)
                     } else {
                         val msg = Regex("alert_(?:error|right)[^>]*>\\s*<p[^>]*>([^<]{1,40})")
                             .find(html)?.groupValues?.get(1)?.trim()
@@ -2451,6 +2512,178 @@ class MainActivity : ComponentActivity() {
     private fun closeAttachBuy() {
         attachPayInfo = null
         attachPayName = ""
+    }
+
+    /** 内置下载：落到 filesDir/attachments/<tid>/，带 Cookie，边下边推进度 */
+    private fun downloadAttach(url: String, name: String, tid: Long, title: String, threadUrl: String) {
+        val key = attachKey(tid, name)
+        synchronized(attachLoads) {
+            val st = attachLoads[key]
+            if (st != null && st.progress < 1f && !st.failed) return
+        }
+        attachLoads = attachLoads + (key to AttachLoad(0f, false, false))
+        Diag.log("attach", "download start tid=" + tid + " name=" + name + " url=" + url)
+        Thread {
+            var dest: File? = null
+            var failure: String? = null
+            runCatching {
+                val safe = name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120)
+                    .ifBlank { "attachment" }
+                val dir = AttachmentStore.dirFor(this, tid)
+                val tmp = File(dir, "$safe.part")
+                val out = File(dir, safe)
+                var current = URL(url)
+                var finished = false
+                var hops = 0
+                while (!finished && hops < 6) {
+                    hops++
+                    val conn = (current.openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = false
+                        connectTimeout = 20000
+                        readTimeout = 45000
+                        setRequestProperty("Referer", SITE)
+                        setRequestProperty(
+                            "User-Agent",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                        )
+                        CookieManager.getInstance().getCookie(SITE)?.takeIf { it.isNotBlank() }
+                            ?.let { setRequestProperty("Cookie", it) }
+                    }
+                    val code = conn.responseCode
+                    if (code in 300..399) {
+                        val loc = conn.getHeaderField("Location") ?: throw java.io.IOException("跳转地址缺失")
+                        current = URL(current, loc)
+                        continue
+                    }
+                    if (code !in 200..299) throw java.io.IOException("HTTP $code")
+                    val ctype = conn.contentType.orEmpty()
+                    if (ctype.contains("text/html", true) &&
+                        AttachmentStore.kindOf(safe) != "txt" &&
+                        !safe.lowercase().endsWith(".html")
+                    ) throw java.io.IOException("拿到的是网页而不是文件，可能登录失效")
+                    val total = conn.contentLengthLong
+                    conn.inputStream.use { input ->
+                        FileOutputStream(tmp).use { fos ->
+                            val buf = ByteArray(8192)
+                            var read = 0L
+                            var lastRpt = 0L
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n <= 0) break
+                                fos.write(buf, 0, n)
+                                read += n
+                                if (total > 0 && System.currentTimeMillis() - lastRpt > 180) {
+                                    lastRpt = System.currentTimeMillis()
+                                    val p = (read.toFloat() / total).coerceIn(0f, 0.99f)
+                                    runOnUiThread { attachLoads = attachLoads + (key to AttachLoad(p, false, false)) }
+                                }
+                            }
+                        }
+                    }
+                    if (out.exists()) out.delete()
+                    if (!tmp.renameTo(out)) {
+                        tmp.copyTo(out, overwrite = true)
+                        tmp.delete()
+                    }
+                    dest = out
+                    finished = true
+                }
+                if (dest == null) throw java.io.IOException("未拿到文件")
+            }.onFailure { failure = it.message ?: it.javaClass.simpleName }
+
+            val file = dest
+            if (file != null && file.exists() && file.length() > 0) {
+                runOnUiThread {
+                    val entry = AttachmentStore.add(this, tid, title, threadUrl, name, file)
+                    attachments = AttachmentStore.load(this)
+                    attachLoads = attachLoads + (key to AttachLoad(1f, true, false))
+                    if (AttachmentStore.kindOf(name) == "txt") {
+                        val text = runCatching { AttachmentStore.readText(file) }.getOrNull()
+                        if (text != null) attachTexts = attachTexts + (key to text)
+                    }
+                    val onThisThread = (nav as? Nav.Thread)?.url == threadUrl
+                    if (onThisThread) attachFocus = key
+                    toast(if (AttachmentStore.kindOf(name) == "txt") "下载完成，已读取正文" else "下载完成：" + name)
+                    Diag.log("attach", "download ok tid=" + tid + " name=" + name + " size=" + entry.size)
+                }
+            } else {
+                runOnUiThread {
+                    attachLoads = attachLoads + (key to AttachLoad(0f, false, true))
+                    toast("附件下载失败：" + (failure ?: "未知错误"))
+                    Diag.log("attach", "download fail tid=" + tid + " name=" + name + " err=" + failure)
+                }
+            }
+        }.start()
+    }
+
+    /** 列表/详情点已下载的附件：txt 进文本窗口，其他交给系统应用 */
+    private fun openAttachment(e: AttachmentStore.Entry) {
+        if (!e.exists) {
+            toast("文件已不存在，可能被清理掉了")
+            attachments = AttachmentStore.load(this)
+            return
+        }
+        if (AttachmentStore.kindOf(e.name) == "txt") {
+            val text = runCatching { AttachmentStore.readText(e.file) }.getOrElse {
+                toast("读取失败：" + (it.message ?: "无法解码"))
+                return
+            }
+            fileTextTitle = e.name
+            fileTextBody = text
+            fileTextOpen = true
+        } else openAttachmentExternally(e)
+    }
+
+    private fun openAttachmentExternally(e: AttachmentStore.Entry) {
+        runCatching {
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this, packageName + ".fileprovider", e.file
+            )
+            val intent = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, AttachmentStore.mimeOf(e.name))
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(intent)
+        }.onFailure {
+            toast("没有能打开这个文件的应用")
+        }
+    }
+
+    private fun showAttachmentText(title: String, text: String) {
+        fileTextTitle = title
+        fileTextBody = text
+        fileTextOpen = true
+    }
+
+    private fun copyText(text: String) {
+        runCatching {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("附件正文", text))
+            toast("已复制全文")
+        }.onFailure { toast("复制失败") }
+    }
+
+    /** 详情页需要内联展示 txt 时按需读一次，读到的放缓存 */
+    private fun ensureAttachText(key: String) {
+        if (attachTexts.containsKey(key)) return
+        val sep = key.lastIndexOf('|')
+        if (sep < 0) return
+        val tid = key.substring(0, sep).toLongOrNull() ?: return
+        val name = key.substring(sep + 1)
+        Thread {
+            val e = AttachmentStore.find(this, tid, name) ?: return@Thread
+            val text = runCatching { AttachmentStore.readText(e.file) }.getOrNull() ?: return@Thread
+            runOnUiThread { attachTexts = attachTexts + (key to text) }
+        }.start()
+    }
+
+    private fun openAttachManager() {
+        attachments = AttachmentStore.load(this)
+        if (nav is Nav.Attachments) return
+        backStack.add(nav)
+        nav = Nav.Attachments
+        error = null
+        loading = false
     }
 
     /** 附件卡链接里带 aid，拼出真正下载地址 */

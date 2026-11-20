@@ -65,6 +65,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -84,10 +85,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
@@ -100,6 +100,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.layout.positionInParent
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -739,7 +745,29 @@ fun AppUi(
     attachPayBalance: String = "",
     attachPayBusy: Boolean = false,
     onConfirmAttachPay: () -> Unit = {},
-    onCloseAttachPay: () -> Unit = {}
+    onCloseAttachPay: () -> Unit = {},
+    threadTid: Long? = null,
+    threadListState: LazyListState = rememberLazyListState(),
+    attachments: List<AttachmentStore.Entry> = emptyList(),
+    attachLoads: Map<String, AttachLoad> = emptyMap(),
+    attachTexts: Map<String, String> = emptyMap(),
+    attachFocus: String? = null,
+    onFocusConsumed: () -> Unit = {},
+    onNeedAttachText: (String) -> Unit = {},
+    onOpenAttachment: (AttachmentStore.Entry) -> Unit = {},
+    onCopyText: (String) -> Unit = {},
+    onFreeCopyText: (String, String) -> Unit = { _, _ -> },
+    onOpenAttachManager: () -> Unit = {},
+    attachmentCount: Int = 0,
+    attachSelecting: Boolean = false,
+    attachSelectionCount: Int = 0,
+    onAttachSelecting: (Boolean) -> Unit = {},
+    onAttachSelectionCount: (Int) -> Unit = {},
+    onDeleteAttachments: (List<Long>) -> Unit = {},
+    fileTextOpen: Boolean = false,
+    fileTextTitle: String = "",
+    fileTextBody: String = "",
+    onCloseFileText: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -754,6 +782,7 @@ fun AppUi(
     val historyListState = rememberLazyListState()
     val watchListState = rememberLazyListState()
     val overlayHistoryState = rememberLazyListState()
+    val attachListState = rememberLazyListState()
     val animeListState = rememberLazyListState()
     val gameListState = rememberLazyListState()
     val rootPager = rememberPagerState(initialPage = 0) { 4 }
@@ -847,7 +876,8 @@ fun AppUi(
         }
     }
     val inHistorySelection = (nav is Nav.History && historySelecting) ||
-        (nav is Nav.Watch && watchSelecting)
+        (nav is Nav.Watch && watchSelecting) ||
+        (nav is Nav.Attachments && attachSelecting)
     if (inHistorySelection) {
         androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
     }
@@ -911,6 +941,7 @@ fun AppUi(
                     Nav.Search -> "搜索"
                     Nav.Watch -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "稍后再看"
                     Nav.History -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
+                    Nav.Attachments -> if (attachSelecting) "已选择 " + attachSelectionCount + " 项" else "附件管理"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
                     is Nav.Thread -> nav.title.ifEmpty { "帖子" }
                 },
@@ -1097,8 +1128,26 @@ fun AppUi(
                                 refreshing, onRefresh, onThumbNeeded, searchUpdating
                             )
                             cur is Nav.Thread -> ThreadView(
-                                threadPage, loading, onLoad, onExternal,
-                                onReply, onRate, onAttach, onImage
+                                page = threadPage, loading = loading, onLoad = onLoad, onExternal = onExternal,
+                                onReply = onReply, onRate = onRate, onAttach = onAttach, onImage = onImage,
+                                listState = threadListState, threadTid = threadTid,
+                                attachments = attachments, attachLoads = attachLoads, attachTexts = attachTexts,
+                                attachFocus = attachFocus, onFocusConsumed = onFocusConsumed,
+                                onNeedAttachText = onNeedAttachText,
+                                onOpenAttachment = onOpenAttachment,
+                                onCopyText = onCopyText, onFreeCopyText = onFreeCopyText
+                            )
+                            cur is Nav.Attachments -> AttachManagerPage(
+                                entries = attachments,
+                                listState = attachListState,
+                                onOpenThread = { e -> onOpenHistory(e.url, e.title) },
+                                onView = onOpenAttachment,
+                                onSelectionCount = onAttachSelectionCount,
+                                onSelectionMode = onAttachSelecting,
+                                onDeleteSelected = onDeleteAttachments,
+                                exitSignal = historyExitSignal,
+                                backdrop = backdrop,
+                                blur = blurBg
                             )
                             cur is Nav.Settings -> SettingsView(
                                 onAccounts = onOpenAccounts,
@@ -1119,7 +1168,9 @@ fun AppUi(
                                 onSetCacheMb = onSetCacheMb,
                                 onClearCache = onClearCache,
                                 onExportLogs = onExportLogs,
-                                onExternal = onExternal
+                                onExternal = onExternal,
+                                onOpenAttachManager = onOpenAttachManager,
+                                attachmentCount = attachmentCount
                             )
                         }
                         if (loading && overlayShown && (cur is Nav.Forum || cur is Nav.Thread)) {
@@ -1494,6 +1545,12 @@ fun AppUi(
             onAdd = onAddContentPref,
             onDelete = onDeleteContentPref,
             onClose = onCloseContentPref
+        )
+        if (fileTextOpen) FileTextDialog(
+            title = fileTextTitle,
+            text = fileTextBody,
+            onOpen = onExternal,
+            onClose = onCloseFileText
         )
         if (attachPayOpen) AttachBuyDialog(
             name = attachPayName,
@@ -2694,11 +2751,38 @@ private fun ThreadView(
     onReply: () -> Unit,
     onRate: (String) -> Unit,
     onAttach: (AttachItem) -> Unit,
-    onImage: (String) -> Unit
+    onImage: (String) -> Unit,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    threadTid: Long?,
+    attachments: List<AttachmentStore.Entry>,
+    attachLoads: Map<String, AttachLoad>,
+    attachTexts: Map<String, String>,
+    attachFocus: String?,
+    onFocusConsumed: () -> Unit,
+    onNeedAttachText: (String) -> Unit,
+    onOpenAttachment: (AttachmentStore.Entry) -> Unit,
+    onCopyText: (String) -> Unit,
+    onFreeCopyText: (String, String) -> Unit
 ) {
     val colors = CouiTheme.colorScheme
+    val attachOffsets = remember { androidx.compose.runtime.mutableStateMapOf<String, Float>() }
+    val focusTopPx = with(androidx.compose.ui.platform.LocalDensity.current) { 84.dp.toPx() }
+    LaunchedEffect(attachFocus) {
+        val key = attachFocus ?: return@LaunchedEffect
+        val idx = page?.posts?.indexOfFirst { p ->
+            p.attachments.any { attachKey(threadTid, it.name) == key }
+        } ?: -1
+        if (idx >= 0) {
+            listState.animateScrollToItem(idx + 1)
+            delay(160)
+            val off = attachOffsets[key] ?: 0f
+            listState.scrollBy((off - focusTopPx).coerceAtLeast(0f))
+        }
+        onFocusConsumed()
+    }
     LazyColumn(
-        Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + LocalBarInset.current, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -2795,20 +2879,106 @@ private fun ThreadView(
                         Spacer(Modifier.height(10.dp))
                         Txt("附件", size = 12.sp, weight = FontWeight.SemiBold, color = colors.onSurfaceVariant)
                         post.attachments.forEach { at ->
+                            val key = attachKey(threadTid, at.name)
+                            val load = attachLoads[key]
+                            val entry = attachments.firstOrNull {
+                                it.tid == (threadTid ?: 0L) && it.name == at.name.trim()
+                            }
+                            val txt = attachTexts[key]
+                            val downloaded = entry != null || load?.done == true
                             Spacer(Modifier.height(6.dp))
-                            Box(
+                            Column(
                                 Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(colors.card)
-                                    .clickable { onAttach(at) }
-                                    .padding(10.dp)
+                                    .onGloballyPositioned { attachOffsets[key] = it.positionInParent().y }
                             ) {
-                                Column {
-                                    Txt(at.name, size = 14.sp, weight = FontWeight.Medium, color = colors.accent)
-                                    val meta = listOfNotNull(at.meta.takeIf { it.isNotEmpty() }, at.price)
-                                        .joinToString("  ")
-                                    if (meta.isNotEmpty()) Txt(meta, size = 12.sp, color = colors.onSurfaceVariant)
+                                if (downloadTxt(entry, txt, key, downloaded, onNeedAttachText)) {
+                                    // txt：正文直接替换附件区内容
+                                    Column(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(colors.card)
+                                            .padding(10.dp)
+                                    ) {
+                                        Txt(at.name, size = 13.sp, weight = FontWeight.Medium, color = colors.accent)
+                                        Spacer(Modifier.height(6.dp))
+                                        LinkifiedText(
+                                            txt.orEmpty(),
+                                            size = 14.sp,
+                                            color = colors.onSurface,
+                                            lineHeight = 1.55f,
+                                            onOpen = onExternal
+                                        )
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    AttachActionRow(
+                                        downloaded = downloaded,
+                                        txt = txt,
+                                        onOpen = {
+                                            entry?.let(onOpenAttachment) ?: onAttach(at)
+                                        },
+                                        onCopy = { onCopyText(txt.orEmpty()) },
+                                        onFree = { onFreeCopyText(at.name, txt.orEmpty()) }
+                                    )
+                                } else {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(colors.card)
+                                            .clickable { if (entry != null) onOpenAttachment(entry) else onAttach(at) }
+                                            .padding(10.dp)
+                                    ) {
+                                        Column {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                FileTypeIcon(at.name, 22.dp)
+                                                Spacer(Modifier.width(8.dp))
+                                                Column(Modifier.weight(1f)) {
+                                                    Txt(at.name, size = 14.sp, weight = FontWeight.Medium, color = colors.accent)
+                                                    val meta = listOfNotNull(
+                                                        at.meta.takeIf { it.isNotEmpty() }, at.price
+                                                    ).joinToString("  ")
+                                                    if (meta.isNotEmpty()) Txt(meta, size = 12.sp, color = colors.onSurfaceVariant)
+                                                }
+                                            }
+                                            if (load != null && !load.done && !load.failed) {
+                                                Spacer(Modifier.height(8.dp))
+                                                Box(
+                                                    Modifier
+                                                        .fillMaxWidth()
+                                                        .height(4.dp)
+                                                        .clip(RoundedCornerShape(2.dp))
+                                                        .background(colors.onSurfaceVariant.copy(alpha = 0.18f))
+                                                ) {
+                                                    Box(
+                                                        Modifier
+                                                            .fillMaxWidth(load.progress.coerceIn(0f, 1f))
+                                                            .height(4.dp)
+                                                            .clip(RoundedCornerShape(2.dp))
+                                                            .background(colors.accent)
+                                                    )
+                                                }
+                                                Spacer(Modifier.height(4.dp))
+                                                Txt(
+                                                    if (load.failed) "下载失败，点一下重试"
+                                                    else "正在下载 ${(load.progress * 100).toInt()}%",
+                                                    size = 11.sp,
+                                                    color = if (load.failed) Color(0xFFB0392F) else colors.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (downloaded) {
+                                        Spacer(Modifier.height(6.dp))
+                                        AttachActionRow(
+                                            downloaded = true,
+                                            txt = null,
+                                            onOpen = { entry?.let(onOpenAttachment) ?: onAttach(at) },
+                                            onCopy = null,
+                                            onFree = null
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -3491,6 +3661,8 @@ private fun SettingsView(
     watchWords: List<String> = emptyList(),
     onOpenContentPref: (Int) -> Unit = {},
     onOpenChangelog: () -> Unit = {},
+    onOpenAttachManager: () -> Unit = {},
+    attachmentCount: Int = 0,
     appVersion: String = ""
 ) {
     val colors = CouiTheme.colorScheme
@@ -3620,6 +3792,34 @@ private fun SettingsView(
             }
         }
         item {
+            section("附件管理") {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onOpenAttachManager() }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FileTypeIcon("file", 20.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Txt("已下载附件", size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
+                    Txt(
+                        if (attachmentCount == 0) "暂无" else "$attachmentCount 个",
+                        size = 12.sp, color = colors.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconImg(CouiIcons.Filled.Next, 18.dp, colors.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(4.dp))
+                Txt(
+                    "附件保存在 App 私有目录，删除 App 数据会一起清掉。",
+                    size = 11.sp,
+                    color = colors.onSurfaceVariant
+                )
+            }
+        }
+        item {
             section("帖子缓存") {
                 val mb = (cacheBytes / 1024.0 / 1024.0)
                 Txt(
@@ -3690,6 +3890,359 @@ private fun SettingsView(
     }
 }
 
+
+/** txt 附件是否可以内联展示：下载完且正文读出来了才替换附件区 */
+@Composable
+private fun downloadTxt(
+    entry: AttachmentStore.Entry?,
+    txt: String?,
+    key: String,
+    downloaded: Boolean,
+    onNeed: (String) -> Unit
+): Boolean {
+    val name = entry?.name ?: key.substringAfter("|")
+    val isTxt = AttachmentStore.kindOf(name) == "txt"
+    if (!isTxt) return false
+    if (!downloaded) return false
+    if (txt == null) {
+        LaunchedEffect(key) { onNeed(key) }
+        return false
+    }
+    return true
+}
+
+/** 附件卡片下方的操作按钮：打开文件 / 复制全文 / 自由复制 */
+@Composable
+private fun AttachActionRow(
+    downloaded: Boolean,
+    txt: String?,
+    onOpen: () -> Unit,
+    onCopy: (() -> Unit)?,
+    onFree: (() -> Unit)?
+) {
+    val colors = CouiTheme.colorScheme
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SmallAction("打开文件", enabled = downloaded, onClick = onOpen)
+        if (txt != null && onCopy != null) SmallAction("复制全文", onClick = onCopy)
+        if (txt != null && onFree != null) SmallAction("自由复制", onClick = onFree)
+    }
+}
+
+@Composable
+private fun SmallAction(text: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(colors.accent.copy(alpha = if (enabled) 0.14f else 0.06f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Txt(
+            text,
+            size = 12.sp,
+            color = if (enabled) colors.accent else colors.onSurfaceVariant.copy(alpha = 0.6f),
+            weight = FontWeight.Medium
+        )
+    }
+}
+
+/** 按文件类型区分的图标：不同底色 + 类型缩写 */
+@Composable
+private fun FileTypeIcon(name: String, size: Dp) {
+    val kind = AttachmentStore.kindOf(name)
+    val bg = when (kind) {
+        "txt" -> Color(0xFF5B7FA6)
+        "pdf" -> Color(0xFFC0504D)
+        "word" -> Color(0xFF3F6FB0)
+        "pages" -> Color(0xFFD08A2C)
+        "archive" -> Color(0xFF7A6A9B)
+        "apk" -> Color(0xFF3E8E5A)
+        "image" -> Color(0xFF4E8C8A)
+        else -> Color(0xFF7A7F87)
+    }
+    val label = when (kind) {
+        "txt" -> "TXT"
+        "pdf" -> "PDF"
+        "word" -> "DOC"
+        "pages" -> "PAGE"
+        "archive" -> "ZIP"
+        "apk" -> "APK"
+        "image" -> "IMG"
+        else -> "FILE"
+    }
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(size.value * 0.22f))
+            .background(bg),
+        contentAlignment = Alignment.Center
+    ) {
+        Txt(
+            label,
+            size = (size.value * 0.27f).coerceIn(7f, 12f).sp,
+            weight = FontWeight.Bold,
+            color = Color.White
+        )
+    }
+}
+
+/** 找出文本里的裸链接，供可选中文本标注用 */
+private fun findBareLinks(text: String): List<Pair<IntRange, String>> {
+    val out = ArrayList<Pair<IntRange, String>>()
+    for (m in BARE_URL.findAll(text)) {
+        var raw = m.value.trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"')
+        if (raw.length <= 4) continue
+        val href = if (raw.startsWith("http")) raw else "https://$raw"
+        val range = m.range.first until (m.range.first + raw.length)
+        if (out.any { it.first.first < range.last && range.first < it.first.last }) continue
+        out.add(range to href)
+    }
+    return out
+}
+
+/** 可长按选中复制的文本，链接仍可点开 */
+@Composable
+private fun SelectableLinkText(text: String, size: androidx.compose.ui.unit.TextUnit, color: Color, onOpen: (String) -> Unit) {
+    val accent = CouiTheme.colorScheme.accent
+    val open = rememberUpdatedState(onOpen)
+    val annotated = remember(text, accent) {
+        val links = findBareLinks(text)
+        if (links.isEmpty()) AnnotatedString(text)
+        else buildAnnotatedString {
+            var last = 0
+            for ((range, href) in links) {
+                append(text.substring(last, range.first))
+                withLink(
+                    LinkAnnotation.Url(
+                        href,
+                        TextLinkStyles(SpanStyle(color = accent, textDecoration = TextDecoration.Underline)),
+                        LinkInteractionListener { open.value(href) }
+                    )
+                ) { append(text.substring(range.first, range.last + 1)) }
+                last = range.last + 1
+            }
+            if (last < text.length) append(text.substring(last))
+        }
+    }
+    BasicText(
+        text = annotated,
+        style = TextStyle(color = color, fontSize = size, lineHeight = (size.value * 1.55f).sp)
+    )
+}
+
+/** 文本展示窗口：支持链接跳转、长按自由选择复制 */
+@Composable
+private fun FileTextDialog(title: String, text: String, onOpen: (String) -> Unit, onClose: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Dialog(onDismissRequest = onClose) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Txt(
+                    title.ifBlank { "附件正文" },
+                    modifier = Modifier.weight(1f),
+                    size = 16.sp,
+                    weight = FontWeight.Bold,
+                    color = colors.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(8.dp))
+                CircleBtn(CouiIcons.Filled.Close, onClose)
+            }
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(end = 4.dp)
+                ) {
+                    SelectionContainer {
+                        SelectableLinkText(text, 14.sp, colors.onSurface, onOpen)
+                    }
+                    Spacer(Modifier.height(20.dp))
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Txt(
+                "长按可自由选择并复制文本",
+                size = 11.sp,
+                color = colors.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 附件管理：已下载列表，复用浏览记录的长按多选与删除胶囊 */
+@Composable
+private fun AttachManagerPage(
+    entries: List<AttachmentStore.Entry>,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    onOpenThread: (AttachmentStore.Entry) -> Unit,
+    onView: (AttachmentStore.Entry) -> Unit,
+    onSelectionCount: (Int) -> Unit,
+    onDeleteSelected: (List<Long>) -> Unit,
+    onSelectionMode: (Boolean) -> Unit,
+    exitSignal: Int = 0,
+    backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
+    blur: Boolean = false
+) {
+    val colors = CouiTheme.colorScheme
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(setOf<Long>()) }
+    LaunchedEffect(selecting, selected.size) {
+        onSelectionCount(if (selecting) selected.size else 0)
+        onSelectionMode(selecting)
+    }
+    LaunchedEffect(exitSignal) {
+        if (exitSignal > 0) { selecting = false; selected = emptySet() }
+    }
+    LaunchedEffect(entries.size) {
+        if (entries.isEmpty()) { selecting = false; selected = emptySet() }
+    }
+    if (entries.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Txt("还没有下载过附件", size = 14.sp, color = colors.onSurfaceVariant)
+        }
+        return
+    }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp + LocalBarInset.current, bottom = 110.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                Txt(
+                    "共 ${entries.size} 个附件 · 长按可多选",
+                    Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    size = 12.sp,
+                    color = colors.onSurfaceVariant
+                )
+            }
+            items(entries, key = { it.id }) { e ->
+                val picked = e.id in selected
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (picked) Modifier
+                                .clip(RoundedCornerShape(18.dp))
+                                .border(1.5.dp, colors.accent, RoundedCornerShape(18.dp))
+                            else Modifier
+                        )
+                ) {
+                    CardBox(
+                        onClick = {
+                            if (selecting) selected = if (picked) selected - e.id else selected + e.id
+                            else onView(e)
+                        },
+                        onLongClick = {
+                            selecting = true
+                            selected = selected + e.id
+                        }
+                    ) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            FileTypeIcon(e.name, 38.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Txt(
+                                    e.name,
+                                    size = 14.sp,
+                                    weight = FontWeight.Medium,
+                                    color = colors.onSurface
+                                    // 文件名不限行数，右侧按钮固定宽度，不会压到一起
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Txt(
+                                    listOf(AttachmentStore.sizeText(e.size), historyTime(e.ts))
+                                        .joinToString(" · "),
+                                    size = 11.sp,
+                                    color = colors.onSurfaceVariant
+                                )
+                                if (e.title.isNotBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Txt(
+                                        "来自：" + e.title,
+                                        size = 11.sp,
+                                        color = colors.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Column(horizontalAlignment = Alignment.End) {
+                                TinyAction("查看原帖") { onOpenThread(e) }
+                                Spacer(Modifier.height(6.dp))
+                                TinyAction("查看文件") { onView(e) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (selecting) {
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 18.dp)
+                    .width(150.dp)
+                    .height(56.dp)
+                    .clip(RoundedCornerShape(26.dp))
+                    .background(
+                        if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f)
+                        else Color(0xFF8E3B3B).copy(alpha = 0.92f)
+                    )
+                    .border(
+                        1.dp,
+                        Brush.linearGradient(
+                            listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.03f))
+                        ),
+                        RoundedCornerShape(26.dp)
+                    )
+                    .clickable(enabled = selected.isNotEmpty()) {
+                        val ids = selected.toList()
+                        selected = emptySet()
+                        selecting = false
+                        onDeleteSelected(ids)
+                    }
+                    .padding(vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                IconTrash(tint = colors.onAccent)
+                Spacer(Modifier.height(2.dp))
+                Txt("删除", size = 12.sp, color = colors.onAccent)
+            }
+        }
+    }
+}
+
+/** 列表右侧的小按钮，固定宽度避免被长文件名挤压 */
+@Composable
+private fun TinyAction(text: String, onClick: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Box(
+        Modifier
+            .width(64.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(colors.accent.copy(alpha = 0.13f))
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Txt(text, size = 11.sp, color = colors.accent, weight = FontWeight.Medium)
+    }
+}
 
 /** 购买附件：展示售价与购买后余额，确认后走 attachpay POST */
 @Composable
