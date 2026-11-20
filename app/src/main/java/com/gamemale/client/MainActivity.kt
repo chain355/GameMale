@@ -336,7 +336,7 @@ class MainActivity : ComponentActivity() {
                     onOpenChangelog = { changelogOpen = true },
                     onCloseChangelog = { changelogOpen = false },
                     upgradeReleases = upgradeReleases,
-                    onDismissUpgradeLog = { upgradeReleases = emptyList() },
+                    onDismissUpgradeLog = { markUpgradeLogShown() },
                     appVersion = appVersionName
                 )
             }
@@ -1333,22 +1333,55 @@ class MainActivity : ComponentActivity() {
         openThreadUrl(url, title)
     }
 
-    /** 升级后首次启动：后台算出跨过的版本区间，再弹窗；不阻塞首页刷新 */
+    /**
+     * 升级后首次启动：后台算出跨过的版本区间，再弹窗；不阻塞首页刷新。
+     *
+     * 旧版本可能压根没写过 lastSeenVersion（这个功能是 4.3.0 才加的），
+     * 所以不能只看「有没有值」，还要看这台设备以前有没有用过：
+     * 设置项或浏览记录存在就当升级，至少把当前版本的更新点展示一次。
+     * 另外 lastSeenVersion 只在用户关掉弹窗时才落盘，避免中途被杀之后再也看不到。
+     */
     private fun checkUpgradeLog(prefs: android.content.SharedPreferences) {
         val current = appVersionName
         if (current.isBlank()) return
         val last = prefs.getString("lastSeenVersion", null)
-        if (last == null) {
-            // 全新安装：只记下版本，不弹更新日志
-            prefs.edit().putString("lastSeenVersion", current).apply()
+        val shown = prefs.getString("logShownVersion", null)
+        val usedBefore = prefs.contains("themeMode") || prefs.contains("blurBg") ||
+            prefs.contains("fontScale") || java.io.File(filesDir, "history.json").exists()
+
+        val span: List<Changelog.Release> = when {
+            last == null && !usedBefore -> emptyList()      // 真正的新装：不打扰
+            last == null -> Changelog.find(current)?.let { listOf(it) } ?: emptyList()
+            else -> Changelog.between(last, current)
+        }
+        // 上一版升级时没能把日志展示出来的，顺手补上那一版
+        val extra: Changelog.Release? =
+            if (shown == null && last != null) Changelog.find(last) else null
+        val target: List<Changelog.Release> = (span + listOfNotNull(extra))
+            .distinctBy { it.version }
+
+        if (target.isEmpty()) {
+            prefs.edit()
+                .putString("lastSeenVersion", current)
+                .putString("logShownVersion", current)
+                .apply()
             return
         }
-        if (last == current) return
-        prefs.edit().putString("lastSeenVersion", current).apply()
         Thread {
-            val list = runCatching { Changelog.between(last, current) }.getOrDefault(emptyList())
-            if (list.isNotEmpty()) runOnUiThread { upgradeReleases = list }
+            val sorted: List<Changelog.Release> = runCatching {
+                target.sortedByDescending { r -> Changelog.all.indexOf(r) }
+            }.getOrDefault(target)
+            runOnUiThread { upgradeReleases = sorted }
         }.start()
+    }
+
+    /** 用户在弹窗上点「知道了」后调用：这时才记下「已看过哪个版本」 */
+    private fun markUpgradeLogShown() {
+        upgradeReleases = emptyList()
+        getSharedPreferences("gm", MODE_PRIVATE).edit()
+            .putString("lastSeenVersion", appVersionName)
+            .putString("logShownVersion", appVersionName)
+            .apply()
     }
 
     private fun goBack() {

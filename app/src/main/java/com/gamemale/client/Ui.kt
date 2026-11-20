@@ -1942,6 +1942,7 @@ private fun CardBox(
                         colorFilter = androidx.compose.ui.graphics.ColorFilter.colorMatrix(
                             androidx.compose.ui.graphics.ColorMatrix().apply { setToSaturation(0f) }
                         )
+                        alpha = 0.5f
                     }
                     drawIntoCanvas { c ->
                         c.saveLayer(
@@ -1962,14 +1963,18 @@ private fun CardBox(
             .clip(shape)
             .background(if (pressed) colors.card else colors.container)
             .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    touch = down.position
-                    while (true) {
-                        val e = awaitPointerEvent()
-                        val ch = e.changes.firstOrNull { it.id == down.id } ?: break
-                        touch = ch.position
-                        if (!ch.pressed) break
+                // 这里只读位置给柔光用，不消费事件；外面套一层保护，
+                // 免得长按/选择模式切换时指针协程被取消抛出异常把 App 带走
+                runCatching {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        touch = down.position
+                        while (true) {
+                            val e = awaitPointerEvent()
+                            val ch = e.changes.firstOrNull { it.id == down.id } ?: break
+                            touch = ch.position
+                            if (!ch.pressed) break
+                        }
                     }
                 }
             }
@@ -2176,16 +2181,16 @@ private fun HistoryView(
                     .width(150.dp)
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
-                    .then(
-                        if (selected.isNotEmpty() && blur && backdrop != null) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { RoundedCornerShape(26.dp) },
-                            effects = { blur(28f) },
-                            onDrawSurface = { drawRect(Color(0xFF8E3B3B).copy(alpha = 0.88f)) }
-                        ) else Modifier.background(
-                            if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f)
-                            else Color(0xFF8E3B3B)
-                        )
+                    .background(
+                        if (selected.isEmpty()) colors.onSurfaceVariant.copy(alpha = 0.35f)
+                        else Color(0xFF8E3B3B).copy(alpha = 0.92f)
+                    )
+                    .border(
+                        1.dp,
+                        Brush.linearGradient(
+                            listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.03f))
+                        ),
+                        RoundedCornerShape(26.dp)
                     )
                     .clickable(enabled = selected.isNotEmpty()) {
                         val ids = selected.toList()
@@ -2394,10 +2399,11 @@ private fun ForumView(
                 LaunchedEffect(t.tid, t.thumbs.size) {
                     if (t.thumbs.isEmpty()) onThumbNeeded(t)
                 }
+                val isRead = t.tid.toLongOrNull()?.let { it in readTids } == true
                 CardBox(
                     onClick = { onThread(t) },
                     zoomKey = t.tid,
-                    read = t.tid.toLongOrNull()?.let { it in readTids } == true
+                    read = isRead
                 ) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2417,7 +2423,8 @@ private fun ForumView(
                                 modifier = Modifier.weight(1f),
                                 size = 15.sp,
                                 weight = FontWeight.SemiBold,
-                                color = colors.onSurface,
+                                color = if (isRead) colors.onSurfaceVariant.copy(alpha = 0.72f)
+                                else colors.onSurface,
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -2431,7 +2438,8 @@ private fun ForumView(
                                 if (t.views.isNotEmpty()) "查看 ${t.views}" else null
                             ).joinToString("  ·  "),
                             size = 12.sp,
-                            color = colors.onSurfaceVariant
+                            color = if (isRead) colors.onSurfaceVariant.copy(alpha = 0.55f)
+                            else colors.onSurfaceVariant
                         )
                         if (t.thumbs.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
@@ -2747,7 +2755,7 @@ private fun ReplyDialog(submitting: Boolean, onCancel: () -> Unit, onSend: (Stri
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 120.dp)
+                    .height(168.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(colors.container)
                     .padding(12.dp)
@@ -2759,7 +2767,7 @@ private fun ReplyDialog(submitting: Boolean, onCancel: () -> Unit, onSend: (Stri
                     value = text,
                     onValueChange = { text = it },
                     textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 110.dp).focusRequester(focus)
+                    modifier = Modifier.fillMaxSize().focusRequester(focus)
                 )
             }
             if (submitting) {
@@ -2822,7 +2830,7 @@ private fun RateDialog(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 80.dp)
+                    .height(96.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(colors.container)
                     .padding(12.dp)
@@ -2832,7 +2840,7 @@ private fun RateDialog(
                     value = reason,
                     onValueChange = { reason = it },
                     textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 70.dp)
+                    modifier = Modifier.fillMaxSize()
                 )
             }
             Spacer(Modifier.height(14.dp))
@@ -3444,7 +3452,7 @@ private fun SettingsView(
                         .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconImg(CouiIcons.Outlined.Search, 20.dp, colors.onSurface)
+                    IconNoEntry(20.dp)
                     Spacer(Modifier.width(12.dp))
                     Txt("屏蔽词", size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
                     Txt(
@@ -3724,7 +3732,7 @@ private fun ContentPrefDialog(
                     Modifier
                         .padding(horizontal = 18.dp)
                         .fillMaxWidth()
-                        .heightIn(min = 132.dp)
+                        .height(128.dp)
                         .clip(RoundedCornerShape(14.dp))
                         .background(colors.container)
                         .padding(12.dp)
@@ -3740,7 +3748,7 @@ private fun ContentPrefDialog(
                         value = text,
                         onValueChange = { text = it },
                         textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 108.dp)
+                        modifier = Modifier.fillMaxSize()
                     )
                 }
                 Spacer(Modifier.height(4.dp))
@@ -3997,6 +4005,28 @@ private fun IconTrash(tint: Color? = null) {
         // 两条竖纹
         drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.42f, h * 0.42f), androidx.compose.ui.geometry.Offset(w * 0.44f, h * 0.78f), sw * 0.8f)
         drawLine(c, androidx.compose.ui.geometry.Offset(w * 0.58f, h * 0.42f), androidx.compose.ui.geometry.Offset(w * 0.56f, h * 0.78f), sw * 0.8f)
+    }
+}
+
+/**
+ * 屏蔽词图标：圆圈加一道斜杠，跟系统的禁止符号一致。
+ * COUI 图标集里没有这个形状，直接用 Canvas 画。
+ */
+@Composable
+private fun IconNoEntry(size: Dp = 20.dp) {
+    val c = CouiTheme.colorScheme.onSurface
+    Canvas(Modifier.size(size)) {
+        val sw = 1.8.dp.toPx()
+        val r = this.size.minDimension * 0.42f
+        drawCircle(color = c, radius = r, style = Stroke(width = sw))
+        // 斜杠压在圆内，两端各留一点，避免出圈
+        val k = r * 0.7071f
+        drawLine(
+            color = c,
+            start = androidx.compose.ui.geometry.Offset(center.x - k * 0.86f, center.y - k * 0.86f),
+            end = androidx.compose.ui.geometry.Offset(center.x + k * 0.86f, center.y + k * 0.86f),
+            strokeWidth = sw
+        )
     }
 }
 
