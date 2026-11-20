@@ -77,6 +77,17 @@ class MainActivity : ComponentActivity() {
     private var cacheMb by mutableStateOf(300)
     private var cacheBytes by mutableStateOf(0L)
     private var cacheCount by mutableStateOf(0)
+    /** 内容偏好：屏蔽词 / 特别关注，只作用于首页三个板块 */
+    private var blockedWords by mutableStateOf<List<String>>(emptyList())
+    private var watchWords by mutableStateOf<List<String>>(emptyList())
+    private var contentPrefOpen by mutableStateOf(false)
+    private var contentPrefKind by mutableStateOf(0)
+    /** 已读帖子 tid，独立于浏览记录 */
+    private var readTids by mutableStateOf<Set<Long>>(emptySet())
+    private var changelogOpen by mutableStateOf(false)
+    /** 升级后首次启动要展示的版本区间，非空时弹窗 */
+    private var upgradeReleases by mutableStateOf<List<Changelog.Release>>(emptyList())
+    private var appVersionName: String = ""
     private var rateFormDef: FormDef? = null
     private var rateReasonName: String? = null
 
@@ -118,9 +129,17 @@ class MainActivity : ComponentActivity() {
         SnapshotStore.init(this)
         Diag.init(this)
         Diag.init(this)
+        appVersionName = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrNull().orEmpty()
+        blockedWords = ContentPrefs.loadBlocked(this)
+        watchWords = ContentPrefs.loadWatch(this)
+        readTids = ReadStore.load(this)
         cache = ThreadCache(this)
         cacheMb = cache.limitMb
         refreshCacheStats()
+        // 版本比对放后台线程，不挡首页首屏
+        checkUpgradeLog(prefs)
         applyStatusBar()
 
         browserHost = FrameLayout(this)
@@ -282,7 +301,43 @@ class MainActivity : ComponentActivity() {
                     gamePage = gamePage,
                     animeUrl = animeUrl,
                     gameUrl = gameUrl,
-                    onRootTab = { selectRootTab(it) }
+                    onRootTab = { selectRootTab(it) },
+                    blockedWords = blockedWords,
+                    watchWords = watchWords,
+                    readTids = readTids,
+                    contentPrefOpen = contentPrefOpen,
+                    contentPrefKind = contentPrefKind,
+                    contentPrefItems = if (contentPrefKind == 0) blockedWords else watchWords,
+                    onOpenContentPref = { k ->
+                        contentPrefKind = k
+                        contentPrefOpen = true
+                    },
+                    onCloseContentPref = { contentPrefOpen = false },
+                    onAddContentPref = { words ->
+                        if (contentPrefKind == 0) {
+                            blockedWords = (blockedWords + words).distinct()
+                            ContentPrefs.save(this, blockedWords, watchWords)
+                        } else {
+                            watchWords = (watchWords + words).distinct()
+                            ContentPrefs.save(this, blockedWords, watchWords)
+                        }
+                        toast(if (contentPrefKind == 0) "已添加 ${words.size} 个屏蔽词" else "已添加 ${words.size} 个特别关注")
+                    },
+                    onDeleteContentPref = { w ->
+                        if (contentPrefKind == 0) {
+                            blockedWords = blockedWords - w
+                            ContentPrefs.save(this, blockedWords, watchWords)
+                        } else {
+                            watchWords = watchWords - w
+                            ContentPrefs.save(this, blockedWords, watchWords)
+                        }
+                    },
+                    changelogOpen = changelogOpen,
+                    onOpenChangelog = { changelogOpen = true },
+                    onCloseChangelog = { changelogOpen = false },
+                    upgradeReleases = upgradeReleases,
+                    onDismissUpgradeLog = { upgradeReleases = emptyList() },
+                    appVersion = appVersionName
                 )
             }
         }
@@ -292,7 +347,10 @@ class MainActivity : ComponentActivity() {
         val deep = threadUrlFromIntent(intent)
         if (deep != null) {
             // 外部分享/深链进来的帖子也要记入浏览记录
-            tidOf(deep)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, "帖子", deep) }
+            tidOf(deep)?.toLongOrNull()?.let {
+                history = HistoryStore.record(this, it, "帖子", deep)
+                readTids = ReadStore.mark(this, it)
+            }
             nav = Nav.Thread(deep, "帖子")
             load(deep)
         } else {
@@ -989,7 +1047,10 @@ class MainActivity : ComponentActivity() {
         backStack.add(nav)
         val url = canonicalThreadUrl(rawUrl)
         openThreadTid = tidOf(url)
-        tidOf(url)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, title, url) }
+        tidOf(url)?.toLongOrNull()?.let {
+            history = HistoryStore.record(this, it, title, url)
+            readTids = ReadStore.mark(this, it)
+        }
         nav = Nav.Thread(url, title)
         val tid = tidOf(url)
         val disk = tid?.let { cache.read(it) }
@@ -1269,6 +1330,24 @@ class MainActivity : ComponentActivity() {
 
     fun openFromHistory(url: String, title: String) {
         openThreadUrl(url, title)
+    }
+
+    /** 升级后首次启动：后台算出跨过的版本区间，再弹窗；不阻塞首页刷新 */
+    private fun checkUpgradeLog(prefs: android.content.SharedPreferences) {
+        val current = appVersionName
+        if (current.isBlank()) return
+        val last = prefs.getString("lastSeenVersion", null)
+        if (last == null) {
+            // 全新安装：只记下版本，不弹更新日志
+            prefs.edit().putString("lastSeenVersion", current).apply()
+            return
+        }
+        if (last == current) return
+        prefs.edit().putString("lastSeenVersion", current).apply()
+        Thread {
+            val list = runCatching { Changelog.between(last, current) }.getOrDefault(emptyList())
+            if (list.isNotEmpty()) runOnUiThread { upgradeReleases = list }
+        }.start()
     }
 
     private fun goBack() {

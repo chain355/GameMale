@@ -11,8 +11,8 @@ android {
         applicationId = "com.gamemale.app"
         minSdk = 31
         targetSdk = 37
-        versionCode = 100
-        versionName = "4.2.1"
+        versionCode = 101
+        versionName = "4.3.0"
     }
 
     buildFeatures {

@@ -17,6 +17,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.AnimatedVisibilityScope
@@ -683,7 +684,23 @@ fun AppUi(
     gamePage: ForumPage? = null,
     animeUrl: String = ANIME_URL,
     gameUrl: String = GAME_URL,
-    onRootTab: (Int) -> Unit = {}
+    onRootTab: (Int) -> Unit = {},
+    blockedWords: List<String> = emptyList(),
+    watchWords: List<String> = emptyList(),
+    readTids: Set<Long> = emptySet(),
+    contentPrefOpen: Boolean = false,
+    contentPrefKind: Int = 0,
+    contentPrefItems: List<String> = emptyList(),
+    onOpenContentPref: (Int) -> Unit = {},
+    onCloseContentPref: () -> Unit = {},
+    onAddContentPref: (List<String>) -> Unit = {},
+    onDeleteContentPref: (String) -> Unit = {},
+    changelogOpen: Boolean = false,
+    onOpenChangelog: () -> Unit = {},
+    onCloseChangelog: () -> Unit = {},
+    upgradeReleases: List<Changelog.Release> = emptyList(),
+    onDismissUpgradeLog: () -> Unit = {},
+    appVersion: String = ""
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -892,7 +909,10 @@ fun AppUi(
                             onRetry = onRetry,
                             onDump = onDump,
                             onLogin = onLogin,
-                            onOpenSite = onOpenSite
+                            onOpenSite = onOpenSite,
+                            blocked = blockedWords,
+                            watch = watchWords,
+                            readTids = readTids
                         )
                         1 -> HomeBoardPage(
                             page = gamePage,
@@ -911,10 +931,15 @@ fun AppUi(
                             onRetry = onRetry,
                             onDump = onDump,
                             onLogin = onLogin,
-                            onOpenSite = onOpenSite
+                            onOpenSite = onOpenSite,
+                            blocked = blockedWords,
+                            watch = watchWords,
+                            readTids = readTids
                         )
                         else -> HistoryView(
                             history, historyListState, onOpenHistory, onClearHistory,
+                            blocked = blockedWords,
+                            watch = watchWords,
                             exitSignal = historyExitSignal,
                             onSelectionCount = onHistorySelectionCount,
                             onSelectionMode = onHistorySelecting,
@@ -975,6 +1000,8 @@ fun AppUi(
                             cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
                             cur is Nav.History -> HistoryView(
                                 history, overlayHistoryState, onOpenHistory, onClearHistory,
+                                blocked = blockedWords,
+                                watch = watchWords,
                                 exitSignal = historyExitSignal,
                                 onSelectionCount = onHistorySelectionCount,
                                 onSelectionMode = onHistorySelecting,
@@ -1001,6 +1028,11 @@ fun AppUi(
                             )
                             cur is Nav.Settings -> SettingsView(
                                 onAccounts = onOpenAccounts,
+                                blockedWords = blockedWords,
+                                watchWords = watchWords,
+                                onOpenContentPref = onOpenContentPref,
+                                onOpenChangelog = onOpenChangelog,
+                                appVersion = appVersion,
                                 fontScale = fontScale,
                                 themeMode = themeMode,
                                 cacheMb = cacheMb,
@@ -1369,6 +1401,15 @@ fun AppUi(
         if (accountsOpen) AccountDialog(
             accounts, currentAccountId, onSwitchAccount, onDeleteAccount, onAddAccount, onCloseAccounts
         )
+        if (contentPrefOpen) ContentPrefDialog(
+            kind = contentPrefKind,
+            items = contentPrefItems,
+            onAdd = onAddContentPref,
+            onDelete = onDeleteContentPref,
+            onClose = onCloseContentPref
+        )
+        if (changelogOpen) ChangelogDialog(Changelog.all, onCloseChangelog)
+        if (upgradeReleases.isNotEmpty()) UpgradeLogDialog(upgradeReleases, onDismissUpgradeLog)
         if (replyOpen) ReplyDialog(busy, onCancelReply, onSendReply)
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) {
@@ -1866,6 +1907,7 @@ private fun CardBox(
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     zoomKey: String? = null,
+    read: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
@@ -1894,6 +1936,24 @@ private fun CardBox(
                 if (pressed) {
                     gl.record { this@drawWithContent.drawContent() }
                     drawLayer(gl)
+                } else if (read) {
+                    // 已读只压灰：整卡过一次饱和度 0 的颜色矩阵，点击照旧
+                    val gray = androidx.compose.ui.graphics.Paint().apply {
+                        colorFilter = androidx.compose.ui.graphics.ColorFilter.colorMatrix(
+                            androidx.compose.ui.graphics.ColorMatrix().apply { setToSaturation(0f) }
+                        )
+                    }
+                    drawIntoCanvas { c ->
+                        c.saveLayer(
+                            androidx.compose.ui.geometry.Rect(
+                                androidx.compose.ui.geometry.Offset.Zero,
+                                androidx.compose.ui.geometry.Size(size.width, size.height)
+                            ),
+                            gray
+                        )
+                        this@drawWithContent.drawContent()
+                        c.restore()
+                    }
                 } else {
                     drawContent()
                 }
@@ -2006,9 +2066,12 @@ private fun HistoryView(
     onSelectionMode: (Boolean) -> Unit = {},
     exitSignal: Int = 0,
     backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
-    blur: Boolean = false
+    blur: Boolean = false,
+    blocked: List<String> = emptyList(),
+    watch: List<String> = emptyList()
 ) {
     val colors = CouiTheme.colorScheme
+    val shown = history.filter { e -> !ContentPrefs.hit(e.title, blocked) }
     // 选择模式：长按进入，点按切换选中；顶栏显示已选数量
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<Long>()) }
@@ -2022,9 +2085,12 @@ private fun HistoryView(
             selected = emptySet()
         }
     }
-    if (history.isEmpty()) {
+    if (shown.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Txt("还没有浏览记录", size = 14.sp, color = colors.onSurfaceVariant)
+            Txt(
+                if (history.isEmpty()) "还没有浏览记录" else "屏蔽词把浏览记录里的帖子全隐藏了",
+                size = 14.sp, color = colors.onSurfaceVariant
+            )
         }
         return
     }
@@ -2040,7 +2106,7 @@ private fun HistoryView(
                     Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Txt("共 ${history.size} 条", size = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    Txt("共 ${shown.size} 条", size = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
                     if (!selecting) {
                         Txt(
                             "清空",
@@ -2051,7 +2117,7 @@ private fun HistoryView(
                     }
                 }
             }
-            items(history, key = { it.tid }) { e ->
+            items(shown, key = { it.tid }) { e ->
                 // 预览图优先用本地字节（ImageStore），没有本地文件才退回地址，由 Coil 读它自己的磁盘缓存
                 val thumbs = remember(e.tid) {
                     ThumbStore.get(e.tid.toString()).take(3).map { url -> ImageStore.local(url) ?: url }
@@ -2081,7 +2147,8 @@ private fun HistoryView(
                     ) {
                         Column {
                             Txt(
-                                e.title.ifBlank { "帖子 " + e.tid },
+                                (if (ContentPrefs.hit(e.title, watch)) "✨ " else "") +
+                                    e.title.ifBlank { "帖子 " + e.tid },
                                 size = 15.sp,
                                 weight = FontWeight.SemiBold,
                                 color = colors.onSurface,
@@ -2169,7 +2236,10 @@ private fun HomeBoardPage(
     onRetry: () -> Unit,
     onDump: () -> Unit,
     onLogin: () -> Unit,
-    onOpenSite: () -> Unit
+    onOpenSite: () -> Unit,
+    blocked: List<String> = emptyList(),
+    watch: List<String> = emptyList(),
+    readTids: Set<Long> = emptySet()
 ) {
     when {
         error != null -> ErrorView(error, onRetry, onDump, onLogin)
@@ -2180,7 +2250,8 @@ private fun HomeBoardPage(
         }
         else -> ForumView(
             page, loading, onOpenThread, onLoad, url, onImage, listState,
-            refreshing, onRefresh, onThumbNeeded
+            refreshing, onRefresh, onThumbNeeded,
+            blocked = blocked, watch = watch, readTids = readTids
         )
     }
 }
@@ -2197,7 +2268,10 @@ private fun ForumView(
     refreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onThumbNeeded: (ThreadItem) -> Unit = {},
-    searchUpdating: Boolean = false
+    searchUpdating: Boolean = false,
+    blocked: List<String> = emptyList(),
+    watch: List<String> = emptyList(),
+    readTids: Set<Long> = emptySet()
 ) {
     val colors = CouiTheme.colorScheme
     val density = LocalDensity.current
@@ -2311,12 +2385,20 @@ private fun ForumView(
             contentPadding = PaddingValues(start = 12.dp, top = 12.dp + LocalBarInset.current, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            val list = page?.threads ?: emptyList()
+            val list = (page?.threads ?: emptyList())
+                .filter { t -> !ContentPrefs.hit(t.title, blocked) }
+                .map { t ->
+                    if (ContentPrefs.hit(t.title, watch)) t.copy(title = "✨ " + t.title) else t
+                }
             items(list, key = { it.tid }) { t ->
                 LaunchedEffect(t.tid, t.thumbs.size) {
                     if (t.thumbs.isEmpty()) onThumbNeeded(t)
                 }
-                CardBox(onClick = { onThread(t) }, zoomKey = t.tid) {
+                CardBox(
+                    onClick = { onThread(t) },
+                    zoomKey = t.tid,
+                    read = t.tid.toLongOrNull()?.let { it in readTids } == true
+                ) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (!t.typeName.isNullOrEmpty()) {
@@ -3297,7 +3379,12 @@ private fun SettingsView(
     onClearCache: () -> Unit,
     onExportLogs: () -> Unit = {},
     onAccounts: () -> Unit = {},
-    onExternal: (String) -> Unit
+    onExternal: (String) -> Unit,
+    blockedWords: List<String> = emptyList(),
+    watchWords: List<String> = emptyList(),
+    onOpenContentPref: (Int) -> Unit = {},
+    onOpenChangelog: () -> Unit = {},
+    appVersion: String = ""
 ) {
     val colors = CouiTheme.colorScheme
     @Composable
@@ -3345,6 +3432,54 @@ private fun SettingsView(
                     Txt("账号管理", size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
                     IconImg(CouiIcons.Filled.Next, 18.dp, colors.onSurfaceVariant)
                 }
+            }
+        }
+        item {
+            section("内容偏好") {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onOpenContentPref(0) }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconImg(CouiIcons.Outlined.Search, 20.dp, colors.onSurface)
+                    Spacer(Modifier.width(12.dp))
+                    Txt("屏蔽词", size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
+                    Txt(
+                        if (blockedWords.isEmpty()) "未设置" else "${blockedWords.size} 个",
+                        size = 12.sp, color = colors.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconImg(CouiIcons.Filled.Next, 18.dp, colors.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onOpenContentPref(1) }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconImg(CouiIcons.Outlined.Album, 20.dp, colors.onSurface)
+                    Spacer(Modifier.width(12.dp))
+                    Txt("特别关注", size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
+                    Txt(
+                        if (watchWords.isEmpty()) "未设置" else "${watchWords.size} 个",
+                        size = 12.sp, color = colors.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    IconImg(CouiIcons.Filled.Next, 18.dp, colors.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(6.dp))
+                Txt(
+                    "屏蔽词命中的帖子会从首页列表里消失；特别关注命中的帖子标题前会加 ✨。两者只作用于首页的和谐动漫、和谐游戏和浏览记录，搜索结果与外部分享进来的帖子不受影响。",
+                    size = 11.sp,
+                    color = colors.onSurfaceVariant,
+                    lineHeight = 1.5f
+                )
             }
         }
         item {
@@ -3411,7 +3546,10 @@ private fun SettingsView(
         }
         item {
             section("关于") {
-                Txt("GameMale 客户端 3.0", size = 14.sp, weight = FontWeight.Medium, color = colors.onSurface)
+                Txt(
+                    if (appVersion.isBlank()) "GameMale 客户端" else "GameMale 客户端 $appVersion",
+                    size = 14.sp, weight = FontWeight.Medium, color = colors.onSurface
+                )
                 Spacer(Modifier.height(6.dp))
                 Txt(
                     "非官方 Android 客户端，界面基于开源 COUI-Kit（仿 ColorOS 17）绘制，数据来自 gamemale.com 网页。代码全程由 AI 编写。",
@@ -3438,6 +3576,8 @@ private fun SettingsView(
                     color = colors.accent,
                     modifier = Modifier.clickable { onExternal("https://github.com/chain355/GameMale") }
                 )
+                Spacer(Modifier.height(12.dp))
+                Pill("更新日志", onOpenChangelog, primary = false)
             }
         }
     }
@@ -3532,6 +3672,278 @@ private fun AccountDialog(
                 horizontalArrangement = Arrangement.End
             ) {
                 Pill("关闭", onClose, primary = false)
+            }
+        }
+    }
+}
+
+/** 内容偏好：屏蔽词 / 特别关注。列表样式沿用账号管理（首行新增、右侧垃圾桶） */
+@Composable
+private fun ContentPrefDialog(
+    kind: Int,
+    items: List<String>,
+    onAdd: (List<String>) -> Unit,
+    onDelete: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    val title = if (kind == 0) "屏蔽词" else "特别关注"
+    val tip = if (kind == 0) {
+        "命中的帖子会从首页列表里直接消失（和谐动漫 / 和谐游戏 / 浏览记录）"
+    } else {
+        "命中的帖子标题前会加 ✨（和谐动漫 / 和谐游戏 / 浏览记录）"
+    }
+    var adding by remember { mutableStateOf(false) }
+    var text by remember { mutableStateOf("") }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(vertical = 14.dp)
+        ) {
+            Txt(
+                title,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                size = 17.sp,
+                weight = FontWeight.Bold,
+                color = colors.onSurface
+            )
+            Txt(
+                tip,
+                modifier = Modifier.padding(horizontal = 18.dp),
+                size = 11.sp,
+                color = colors.onSurfaceVariant,
+                lineHeight = 1.5f
+            )
+            Spacer(Modifier.height(10.dp))
+
+            if (adding) {
+                Box(
+                    Modifier
+                        .padding(horizontal = 18.dp)
+                        .fillMaxWidth()
+                        .heightIn(min = 132.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.container)
+                        .padding(12.dp)
+                ) {
+                    if (text.isEmpty()) {
+                        Txt(
+                            "支持换行批量输入，一行一个关键词",
+                            size = 13.sp,
+                            color = colors.onSurfaceVariant
+                        )
+                    }
+                    BasicTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 108.dp)
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Txt(
+                    "换行、逗号、分号都能分隔；重复的会自动去掉。",
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                    size = 11.sp,
+                    color = colors.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Pill("取消", {
+                        adding = false
+                        text = ""
+                    }, primary = false)
+                    Spacer(Modifier.width(10.dp))
+                    Pill("添加", {
+                        val parsed = ContentPrefs.parseBatch(text)
+                        if (parsed.isNotEmpty()) {
+                            onAdd(parsed)
+                            text = ""
+                            adding = false
+                        }
+                    }, primary = true)
+                }
+            } else {
+                if (items.isEmpty()) {
+                    Txt(
+                        "还没有关键词",
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                        size = 13.sp,
+                        color = colors.onSurfaceVariant
+                    )
+                } else {
+                    Column(
+                        Modifier
+                            .heightIn(max = 340.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        items.forEach { w ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 18.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Txt(w, size = 14.sp, color = colors.onSurface, modifier = Modifier.weight(1f))
+                                Box(
+                                    Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .clickable { onDelete(w) },
+                                    contentAlignment = Alignment.Center
+                                ) { IconTrash() }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            text = ""
+                            adding = true
+                        }
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconImg(CouiIcons.Filled.Add, 20.dp, colors.accent)
+                    Spacer(Modifier.width(12.dp))
+                    Txt("新增关键词", size = 14.sp, color = colors.accent)
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Pill("关闭", onClose, primary = false)
+            }
+        }
+    }
+}
+
+/** 更新日志：历代版本，新增功能带 ✨，修复点排在后面 */
+@Composable
+private fun ChangelogDialog(releases: List<Changelog.Release>, onClose: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(vertical = 14.dp)
+        ) {
+            Txt(
+                "更新日志",
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                size = 17.sp,
+                weight = FontWeight.Bold,
+                color = colors.onSurface
+            )
+            Column(
+                Modifier
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                ReleaseList(releases)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Pill("关闭", onClose, primary = false)
+            }
+        }
+    }
+}
+
+/** 升级后首次启动的弹窗：只列本次跨越的版本区间 */
+@Composable
+private fun UpgradeLogDialog(releases: List<Changelog.Release>, onDismiss: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(vertical = 14.dp)
+        ) {
+            Txt(
+                "已更新到 " + releases.first().version,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+                size = 17.sp,
+                weight = FontWeight.Bold,
+                color = colors.onSurface
+            )
+            Txt(
+                "以下是这次更新带来的变化",
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp),
+                size = 11.sp,
+                color = colors.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            Column(
+                Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                ReleaseList(releases, compact = true)
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Pill("知道了", onDismiss, primary = true)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReleaseList(releases: List<Changelog.Release>, compact: Boolean = false) {
+    val colors = CouiTheme.colorScheme
+    releases.forEachIndexed { idx, r ->
+        if (idx > 0 || compact) {
+            Txt(
+                if (compact) "v" + r.version else r.version,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = if (compact) 8.dp else 6.dp),
+                size = if (compact) 13.sp else 14.sp,
+                weight = FontWeight.SemiBold,
+                color = colors.accent
+            )
+        } else {
+            Txt(
+                r.version,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                size = 14.sp,
+                weight = FontWeight.SemiBold,
+                color = colors.accent
+            )
+        }
+        r.features.forEach { f ->
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 3.dp)) {
+                Txt("✨", size = 12.sp, color = colors.accent)
+                Spacer(Modifier.width(6.dp))
+                Txt(f, size = 12.sp, color = colors.onSurface, lineHeight = 1.55f)
+            }
+        }
+        r.fixes.forEach { f ->
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 3.dp)) {
+                Txt("·", size = 12.sp, color = colors.onSurfaceVariant)
+                Spacer(Modifier.width(6.dp))
+                Txt(f, size = 12.sp, color = colors.onSurfaceVariant, lineHeight = 1.55f)
             }
         }
     }
