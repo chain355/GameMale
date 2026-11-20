@@ -61,6 +61,16 @@ object WatchStore {
         return next
     }
 
+    /** 正文解析出真实标题后，把已收藏那条的占位标题改掉（保留收藏时间与顺序） */
+    fun rename(ctx: Context, tid: Long, title: String): List<Entry> {
+        if (title.isBlank()) return load(ctx)
+        val cur = load(ctx)
+        if (cur.none { it.tid == tid }) return cur
+        val next = cur.map { if (it.tid == tid) it.copy(title = title) else it }
+        save(ctx, next)
+        return next
+    }
+
     fun remove(ctx: Context, tid: Long): List<Entry> {
         val next = load(ctx).filter { it.tid != tid }
         save(ctx, next)

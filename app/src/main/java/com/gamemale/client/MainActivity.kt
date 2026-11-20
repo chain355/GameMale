@@ -156,6 +156,25 @@ class MainActivity : ComponentActivity() {
         SnapshotStore.init(this)
         Diag.init(this)
         Diag.init(this)
+        // 冷启动先沿用上次的登录态：头像/昵称直接显示，别再闪一下默认人头。
+        // 注意不要在这里读 CookieManager：冷启动时 Cookie 还没初始化完，
+        // 读到空值会把「上次明明是登录状态」误判成未登录。
+        // 只有刷新后明确看到站点登录入口（action=login）才判定掉登录。
+        loggedIn = prefs.getBoolean("wasLoggedIn", false)
+        loginName = prefs.getString("lastLoginName", null)?.takeIf { it.isNotBlank() }
+        avatarUrl = prefs.getString("lastAvatar", null)
+            ?.takeIf { it.isNotBlank() && !it.contains("uid=0") }
+        if (avatarUrl.isNullOrBlank()) {
+            // 兜底：账号表里存着上次的头像（老版本可能没写 lastAvatar）
+            val accs = Accounts.load(this)
+            val curId = Accounts.currentId(this)
+            avatarUrl = accs.firstOrNull { it.id == curId && it.avatar.isNotBlank() }?.avatar
+                ?: accs.firstOrNull { loginName != null && it.name == loginName && it.avatar.isNotBlank() }?.avatar
+                ?: accs.firstOrNull { it.avatar.isNotBlank() }?.avatar
+            if (!avatarUrl.isNullOrBlank()) {
+                prefs.edit().putString("lastAvatar", avatarUrl).apply()
+            }
+        }
         appVersionName = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrNull().orEmpty()
@@ -437,11 +456,8 @@ class MainActivity : ComponentActivity() {
         // 默认直接进「动漫」版块，省掉版块总览这一层
         val deep = threadUrlFromIntent(intent)
         if (deep != null) {
-            // 外部分享/深链进来的帖子也要记入浏览记录
-            tidOf(deep)?.toLongOrNull()?.let {
-                history = HistoryStore.record(this, it, "帖子", deep)
-                readTids = ReadStore.mark(this, it)
-            }
+            // 外部分享/深链进来的帖子：先不写浏览记录，等正文解析成功后再写。
+            // 帖子被删/审核中时不能留下一条标题是「帖子」的空记录。
             nav = Nav.Thread(deep, "帖子")
             load(deep)
         } else {
@@ -471,7 +487,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         val url = threadUrlFromIntent(intent) ?: return
-        tidOf(url)?.toLongOrNull()?.let { history = HistoryStore.record(this, it, "帖子", url) }
+        // 同样推迟到解析成功后再写，避免删帖/审核页留下空记录
         backStack.clear()
         nav = Nav.Thread(url, "帖子")
         threadPage = null
@@ -811,7 +827,34 @@ class MainActivity : ComponentActivity() {
                                 }
                                 loadedForumUrl = url
                                 loadedForumTitle = (nav as Nav.Forum).title
-                                if (!loggedIn && isLoginRequired(html)) {
+                                // 页面结构校验：冷启动网络差时站点可能只回了 2KB 异常页/验证页，
+                                // 这种既不是「未登录」也不是「空版块」，应报加载失败而不是误导用户去登录。
+                                val looksForumPage = html.contains("threadlisttableid") ||
+                                    html.contains("normalthread_") || html.contains("separatorline")
+                                val challengePage = html.contains("Just a moment") ||
+                                    html.contains("请稍候") || html.contains("challenges.cloudflare.com") ||
+                                    html.contains("turnstile")
+                                // 正常版块页 150KB+，游客提示页也有 40KB+；2KB 级别的一定是异常页。
+                                // 这类页面里也可能残留 threadlisttableid 模板字样，所以不能只看结构标记。
+                                if (url.contains("mod=forumdisplay") &&
+                                    (html.length < 20_000 || (!looksForumPage && html.length < 60_000))
+                                ) {
+                                    Diag.log(
+                                        "load",
+                                        "页面不完整 bytes=" + html.length + " challenge=" + challengePage +
+                                            " url=" + url
+                                    )
+                                    needLogin = false
+                                    needUpgrade = false
+                                    refreshing = false
+                                    loading = false
+                                    error = if (challengePage)
+                                        "站点安全验证未通过（网络不稳时常见），点重试再来一次"
+                                    else
+                                        "页面没有完整加载（网络中断或站点返回异常页），点重试再来一次"
+                                    return@onSuccess
+                                }
+                                if (!loggedIn && !challengePage && isLoginRequired(html)) {
                                     Diag.log("load", "未登录且需要登录 url=" + url)
                                     needLogin = true
                                     needUpgrade = false
@@ -913,9 +956,24 @@ class MainActivity : ComponentActivity() {
                     refreshing = false
                     loading = false
                     searchUpdating = false
-                    Diag.log("load", "fail url=" + url + " reason=" + (it.message ?: it.javaClass.simpleName))
-                    if ((it.message ?: "").contains("Cloudflare")) {
+                    val reason = it.message ?: it.javaClass.simpleName
+                    Diag.log("load", "fail url=" + url + " reason=" + reason)
+                    if (reason.contains("Cloudflare")) {
                         openVerify(url)
+                        return@onFailure
+                    }
+                    if (nav is Nav.Thread &&
+                        (reason.contains("删除") || reason.contains("审核") ||
+                            reason.contains("不存在") || reason.contains("不是目标帖子"))
+                    ) {
+                        // 帖子没了：不写浏览记录，把之前可能记下的那条也删掉。
+                        // 「拿到的不是目标帖子」在删帖/审核时也会反复出现（站点只回异常页），
+                        // 不能无限重试，直接给明确提示并清掉记录。
+                        tidOf((nav as Nav.Thread).url)?.toLongOrNull()?.let { tid ->
+                            history = HistoryStore.remove(this, tid)
+                        }
+                        error = "这篇帖子可能已被删除或正在审核，无法查看\n可以复制链接到浏览器确认，或稍后再试"
+                        retryCount = 0
                         return@onFailure
                     }
                     if (nav is Nav.Forum && retryCount < 1) {
@@ -1009,6 +1067,9 @@ class MainActivity : ComponentActivity() {
             is Nav.Home -> loadHome()
             is Nav.Forum -> load(n.url)
             is Nav.Thread -> {
+                // 从「加载不出来」页点重试时，补一层和首次加载一样的全屏刷新动画；
+                // 普通评分/回复后的静默刷新不加，避免每次提交都遮一屏。
+                if (error != null) loading = true
                 // 评分/回复后刷新正文：失败时保留当前页面，不要变成“加载失败”
                 val keepThread = threadPage
                 fetcher.fetch(n.url) { r ->
@@ -1077,9 +1138,9 @@ class MainActivity : ComponentActivity() {
     /** 详情页右上角菜单：收藏 / 取消收藏当前帖子 */
     private fun toggleWatchLater() {
         val tid = (nav as? Nav.Thread)?.url?.let { tidOf(it) }?.toLongOrNull() ?: return
-        val title = (nav as? Nav.Thread)?.title.orEmpty().ifBlank {
-            threadPage?.subject.orEmpty()
-        }
+        // 优先用正文解析出来的真实标题，避免深链刚进来时把「帖子」存进稍后再看
+        val title = threadPage?.subject?.takeIf { it.isNotBlank() }
+            ?: (nav as? Nav.Thread)?.title.orEmpty()
         val url = (nav as? Nav.Thread)?.url.orEmpty()
         val saved = watchLater.any { it.tid == tid } || WatchStore.has(this, tid)
         watchLater = if (saved) WatchStore.remove(this, tid)
@@ -1166,10 +1227,8 @@ class MainActivity : ComponentActivity() {
         backStack.add(nav)
         val url = canonicalThreadUrl(rawUrl)
         openThreadTid = tidOf(url)
-        tidOf(url)?.toLongOrNull()?.let {
-            history = HistoryStore.record(this, it, title, url)
-            readTids = ReadStore.mark(this, it)
-        }
+        // 浏览记录推迟到正文真的解析成功后再写：
+        // 帖子被删/审核中时不应该留下一条「帖子」这种空标题记录。
         nav = Nav.Thread(url, title)
         val tid = tidOf(url)
         val disk = tid?.let { cache.read(it) }
@@ -1607,13 +1666,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshLogin(html: String) {
-        if (!Site.isLoggedIn(html)) return          // 页面没有登录信息时不动，避免把头像刷回默认
-        loggedIn = true
-        Site.parseLoginName(html)?.takeIf { it.isNotBlank() }?.let { loginName = it }
-        val newAvatar = Site.parseLoginAvatar(html)
-        if (!newAvatar.isNullOrBlank() && !newAvatar.contains("uid=0")) avatarUrl = newAvatar
-        commitPendingAccount()
-        ensureAccountForCurrentLogin()
+        if (Site.isLoggedIn(html)) {
+            loggedIn = true
+            Site.parseLoginName(html)?.takeIf { it.isNotBlank() }?.let { loginName = it }
+            val newAvatar = Site.parseLoginAvatar(html)
+            if (!newAvatar.isNullOrBlank() && !newAvatar.contains("uid=0")) avatarUrl = newAvatar
+            persistLoginState()
+            commitPendingAccount()
+            ensureAccountForCurrentLogin()
+            return
+        }
+        // 只有「像完整页面」且明确出现登录入口时才判掉登录，
+        // 避免网络失败时拿到的 2KB 异常页/验证页把登录态误杀。
+        if (html.length > 30_000 && html.contains("action=login")) {
+            loggedIn = false
+            loginName = null
+            avatarUrl = null
+            persistLoginState()
+        }
+    }
+
+    private fun persistLoginState() {
+        getSharedPreferences("gm", MODE_PRIVATE).edit()
+            .putBoolean("wasLoggedIn", loggedIn)
+            .putString("lastLoginName", loginName.orEmpty())
+            .putString("lastAvatar", avatarUrl.orEmpty())
+            .apply()
     }
 
     /**
@@ -1712,6 +1790,14 @@ class MainActivity : ComponentActivity() {
 
     /** 帖子页：后台解析 + 后台落盘，只在最后一刻回主线程更新界面 */
     private fun applyThreadHtml(html: String, url: String) {
+        if (html.contains("主题不存在") || html.contains("正在被审核") ||
+            (html.length < 60_000 && html.contains("已被删除"))
+        ) {
+            tidOf(url)?.toLongOrNull()?.let { tid -> history = HistoryStore.remove(this, tid) }
+            error = "这篇帖子已被删除或正在审核，无法查看"
+            loading = false
+            return
+        }
         val t0 = System.currentTimeMillis()
         bgParse({ Site.parseThread(html) }) { res ->
             val tp = res.getOrNull()
@@ -1743,6 +1829,7 @@ class MainActivity : ComponentActivity() {
             refreshing = false
             prefetchThreadImages(tp)
             val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
+            if (tp.subject.isNotBlank()) syncThreadSubject(url, tp.subject)
             if (tid != null) {
                 rememberThread(url, tp)
                 bgParse({ cache.save(tid, tp.subject, tp.lastEdit, html); true }) { refreshCacheStats() }
@@ -1750,11 +1837,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 正文解析出真实标题后，把顶栏和「稍后再看」里的占位标题一起换掉。
+     * 用 tid 比对而不是整串 URL：深链地址可能带参数，URL 不等但其实是同一帖。
+     */
+    private fun syncThreadSubject(url: String, subject: String) {
+        if (subject.isBlank()) return
+        val tid = tidOf(url)?.toLongOrNull()
+        val cur = nav as? Nav.Thread
+        if (cur != null && tid != null && tidOf(cur.url)?.toLongOrNull() == tid) {
+            if (cur.title != subject) nav = Nav.Thread(cur.url, subject)
+        }
+        if (tid != null) watchLater = WatchStore.rename(this, tid, subject)
+    }
+
     /** 打开帖子后统一写浏览记录，并把正文首图登记为该帖的预览图 */
     private fun rememberThread(url: String, tp: ThreadPage) {
         val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1) ?: return
         runCatching {
             history = HistoryStore.record(this, tid.toLong(), tp.subject, url)
+            readTids = ReadStore.mark(this, tid.toLong())
+            // 深链进来时标题只有「帖子」，正文解析出真实标题后同步到导航与稍后再看
+            if (tp.subject.isNotBlank()) syncThreadSubject(url, tp.subject)
             val imgs = tp.posts.flatMap { p ->
                 p.blocks.mapNotNull { (it as? Block.Image)?.url }
             }.distinct()
@@ -2266,6 +2370,7 @@ class MainActivity : ComponentActivity() {
         replyOpen = false
         rateOpen = false
         loggedIn = false
+        persistLoginState()
         Diag.log("login", "提交时发现登录已失效")
         android.app.AlertDialog.Builder(this)
             .setTitle("登录状态已失效")
@@ -2518,6 +2623,16 @@ class MainActivity : ComponentActivity() {
                 r.onSuccess { html ->
                     val pay = Site.parseAttachPay(html, at.url)
                     if (pay == null) {
+                        // 站点已经明说「已购买过，无需重复购买」：直接开始下载，别再弹确认或跳网页
+                        if (Site.alreadyPurchased(html)) {
+                            val dl = Site.attachmentDownloadUrl(html, at.url) ?: attachmentUrl(at.url)
+                            attachPayAt = null
+                            attachPayName = ""
+                            Diag.log("attach", "already purchased, direct download tid=" + tid + " name=" + at.name)
+                            toast("已购买过，开始下载")
+                            downloadAttach(dl, at.name, tid, threadTitle, threadUrl)
+                            return@runOnUiThread
+                        }
                         // 取不到表单：多半是权限不足 / 金币不足 / 已购买但站点直接拒绝，先看站点怎么说
                         val notice = Site.attachPayNotice(html)
                         if (notice != null) {
@@ -2544,6 +2659,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }.start()
+    }
+
+    /** 从「已购买/开始下载」页里抠出站点给的下载地址（带签名 aid），抠不到就返回 null 走数字 aid */
+    private fun extractAttachDownload(html: String, base: String): String? {
+        val m = Regex("""[^"'\s<>]*mod=attachment[^"'\s<>]*""").find(html) ?: return null
+        val raw = m.value.replace("&amp;", "&")
+        return runCatching { URL(URL(base), raw).toString() }.getOrNull()
     }
 
     /** 带登录 Cookie 的 GET，专供购买页这类不该占用隐藏 WebView 的请求 */
@@ -2593,8 +2715,10 @@ class MainActivity : ComponentActivity() {
         val pageUrl = (nav as? Nav.Thread)?.url.orEmpty()
         Thread {
             var ok = false
+            var already = false
             var msg: String? = null
             var detail = ""
+            var dlOverride: String? = null
             runCatching {
                 val fields = listOf(
                     "formhash" to pay.formhash,
@@ -2638,11 +2762,16 @@ class MainActivity : ComponentActivity() {
                     val plain = html.replace(Regex("<[^>]*>"), " ")
                     val challenge = plain.contains("Just a moment") || plain.contains("请稍候") ||
                         plain.contains("challenges.cloudflare.com") || plain.contains("cf_chl")
-                    val bad = plain.contains("参数错误") || plain.contains("失败") ||
-                        plain.contains("抱歉") || plain.contains("不能") || plain.contains("无法") ||
-                        plain.contains("余额不足") || plain.contains("权限")
-                    ok = !challenge && !bad &&
-                        (plain.contains("成功") || plain.contains("下载"))
+                    // 站点对「已经买过」的附件会回一句：您已购买过此附件，无需重复购买，现在将开始附件下载。
+                    // 这不是失败，直接走下载，绝不再退到 WebView 购买页。
+                    already = plain.contains("已购买") || plain.contains("无需重复购买") ||
+                        plain.contains("开始附件下载")
+                    val bad = plain.contains("参数错误") ||
+                        plain.contains("余额不足") || plain.contains("权限不足") ||
+                        plain.contains("不能购买") || plain.contains("无法购买")
+                    ok = !challenge && (already || (!bad &&
+                        (plain.contains("购买成功") || plain.contains("成功"))))
+                    if (already) dlOverride = extractAttachDownload(html, pay.action)
                     if (!ok) {
                         msg = Site.attachPayNotice(html)
                             ?: if (challenge) "站点验证未通过" else if (code !in 200..299) "HTTP $code" else null
@@ -2658,14 +2787,18 @@ class MainActivity : ComponentActivity() {
 
             runOnUiThread {
                 attachPayBusy = false
-                Diag.log("attach", "http buy aid=" + pay.aid + " ok=" + ok + " detail=" + detail)
+                Diag.log(
+                    "attach",
+                    "http buy aid=" + pay.aid + " ok=" + ok + " already=" + already +
+                        " dl=" + dlOverride.orEmpty() + " detail=" + detail
+                )
                 if (ok) {
                     val dlName = pay.fileName.ifBlank { attachPayName }
-                    val dlUrl = attachmentUrl("aid=" + pay.aid)
+                    val dlUrl = dlOverride ?: attachmentUrl("aid=" + pay.aid)
                     attachPayInfo = null
                     attachPayAt = null
                     attachPayName = ""
-                    toast("购买成功，开始下载")
+                    toast(if (already) "已购买过，开始下载" else "购买成功，开始下载")
                     downloadAttach(dlUrl, dlName, tid, title, pageUrl)
                 } else {
                     toast("购买失败：" + (msg ?: "站点拒绝了这次购买"))
@@ -3044,6 +3177,7 @@ class MainActivity : ComponentActivity() {
             loginName = acc.name
             if (acc.avatar.isNotBlank()) avatarUrl = acc.avatar
             loggedIn = true
+            persistLoginState()
             homeWarmed = false
             homeAlt = false
             reload()
@@ -3067,6 +3201,7 @@ class MainActivity : ComponentActivity() {
             loggedIn = false
             loginName = null
             avatarUrl = null
+            persistLoginState()
             Accounts.clear {
                 homeWarmed = false
                 homeAlt = false

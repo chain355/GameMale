@@ -128,6 +128,28 @@ object Site {
         AttachPay(action, aid, tid, formhash, referer, fileName, price, balance)
     }.getOrNull()
 
+    /** 站点在购买页/购买回包里说「已购买过此附件」：这种情况不用再走网页，直接下载 */
+    fun alreadyPurchased(html: String): Boolean {
+        val plain = runCatching { Jsoup.parse(html).text() }.getOrElse { html }
+        return plain.contains("已购买过") || plain.contains("无需重复购买") ||
+            plain.contains("已经购买") || plain.contains("已购买此附件")
+    }
+
+    /** 从购买页/回包里找出站点直接给的附件下载地址（带签名 aid） */
+    fun attachmentDownloadUrl(html: String, base: String = SITE): String? = runCatching {
+        val doc = Jsoup.parse(html, base)
+        val a = doc.selectFirst("a[href*=mod=attachment]") ?: return@runCatching null
+        a.absUrl("href").ifBlank { SITE + a.attr("href") }.replace("&amp;", "&")
+    }.getOrNull()
+
+    /** 帖子被删除 / 审核中的站点提示；命中后不应重试，也不该写浏览记录 */
+    fun threadMissing(html: String): Boolean {
+        val plain = runCatching { Jsoup.parse(html).text() }.getOrElse { html }
+        return plain.contains("指定的主题不存在") || plain.contains("主题不存在") ||
+            plain.contains("已被删除") || plain.contains("正在被审核") ||
+            plain.contains("主题已删除")
+    }
+
     /**
      * 购买页/购买返回页上站点给的提示语（权限不足、金币不足、不能购买自己附件等）。
      * 取第一个 alert_error / alert_info 或含关键词的短句，给用户看人话，而不是「请求超时」。

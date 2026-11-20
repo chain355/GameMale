@@ -347,6 +347,14 @@ class Fetcher(private val ctx: Context) {
                         }, 900)
                     }
                 }
+                // 帖子被删/审核中：站点返回的页面里没有自己的 thread 链接，
+                // 之前会被当成「拿到的不是目标帖子」重试三次，白等一轮。直接判定、直接失败。
+                (html.contains("主题不存在") || html.contains("已被删除") ||
+                    html.contains("正在被审核") || html.contains("指定的主题不存在")) &&
+                    (html.length < 60_000 || !html.contains("id=\"postlist\"")) -> {
+                    if (early) return@evaluateJavascript
+                    finish(Result.failure(IllegalStateException("帖子已被删除或正在审核")))
+                }
                 tid != null && !html.contains("thread-$tid") ->
                     if (early) return@evaluateJavascript else retryOrFail("拿到的不是目标帖子")
                 // 提前取到的可能只是半截 DOM，没看到正文容器就等 onPageFinished 再取

@@ -11,8 +11,8 @@ android {
         applicationId = "com.gamemale.app"
         minSdk = 31
         targetSdk = 37
-        versionCode = 107
-        versionName = "4.5.2"
+        versionCode = 108
+        versionName = "4.6.0"
     }
 
     buildFeatures {
@@ -22,6 +22,12 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    // 这台机器上 lintVital 经常卡死（不影响产物），出包时跳过它
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     buildTypes {

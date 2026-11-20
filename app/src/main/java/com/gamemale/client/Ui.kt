@@ -1,6 +1,10 @@
 package com.gamemale.client
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.ui.layout.onSizeChanged
@@ -395,6 +399,8 @@ private fun IconImg(image: ImageVector, size: Dp, tint: Color) {
 internal class PressDragState {
     val bounds = androidx.compose.runtime.mutableStateMapOf<Int, androidx.compose.ui.geometry.Rect>()
     var hover by mutableStateOf(-1)
+    /** 手指是否真的从按下项滑到了另一项；直接点按不算 */
+    var dragging by mutableStateOf(false)
     var onCommit: ((Int) -> Unit)? = null
 }
 
@@ -410,15 +416,25 @@ private fun Modifier.pressDragTarget(state: PressDragState, index: Int): Modifie
         }
         .pointerInput(index, state) {
             awaitEachGesture {
-                awaitFirstDown(requireUnconsumed = false)
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val start = down.position
                 state.hover = index
+                state.dragging = false
                 var last = index
                 while (true) {
                     val e = awaitPointerEvent()
                     val ch = e.changes.firstOrNull() ?: break
-                    val pt = androidx.compose.ui.geometry.Offset(origin.x + ch.position.x, origin.y + ch.position.y)
-                    state.bounds.entries.firstOrNull { it.value.contains(pt) }
-                        ?.let { last = it.key; state.hover = it.key }
+                    // 手指要真的滑出一段距离才换高亮；直接点按时轻微抖动不算拖动
+                    val moved = (ch.position - start).getDistance()
+                    if (moved > viewConfiguration.touchSlop) {
+                        val pt = androidx.compose.ui.geometry.Offset(origin.x + ch.position.x, origin.y + ch.position.y)
+                        state.bounds.entries.firstOrNull { it.value.contains(pt) }
+                            ?.let {
+                                if (it.key != last) state.dragging = true
+                                last = it.key
+                                state.hover = it.key
+                            }
+                    }
                     if (!ch.pressed) break
                 }
                 state.onCommit?.invoke(last)
@@ -894,7 +910,8 @@ fun AppUi(
         if (nav is Nav.Thread) add(
             Triple(if (watchTidSaved) "取消稍后再看" else "稍后再看", 8) { onToggleWatch() }
         )
-        add(Triple("设置", 3) { onSettings() })
+        // 已经在设置页/附件管理页时不再给「设置」，否则点头像会把自己再打开一次
+        if (nav !is Nav.Settings && nav !is Nav.Attachments) add(Triple("设置", 3) { onSettings() })
         // 今日自动签到/抽卡有失败时，给出手动入口
         if (dailyFailed) {
             add(Triple("手动签到", 6) { onOpenSign() })
@@ -916,8 +933,12 @@ fun AppUi(
                 blur = overlayBar && blurBg,
                 menuOpen = topMenuOpen,
                 onToggleMenu = {
-                    // 只有一项时没必要展开菜单，直接执行
-                    if (topMenuItems.size == 1 && topMenuOpen.not()) {
+                    // 设置页/附件管理页：头像纯展示，点了不展开菜单也不打开设置
+                    if (nav is Nav.Settings || nav is Nav.Attachments) return@TopBar
+                    // 只有一项时没必要展开菜单，直接执行；一项都没有就什么都不做
+                    if (topMenuItems.isEmpty()) {
+                        // 设置页/附件管理页已经没别的动作，点头像不再打开设置
+                    } else if (topMenuItems.size == 1 && topMenuOpen.not()) {
                         topMenuItems.first().third()
                     } else {
                         topMenuOpen = !topMenuOpen
@@ -929,6 +950,7 @@ fun AppUi(
                 onRefresh = onRefreshThread,
                 onOpenBrowser = onOpenBrowser,
                 avatarUrl = avatarUrl,
+                avatarInert = nav is Nav.Settings || nav is Nav.Attachments,
                 onShare = onShare,
                 onDump = onDump,
                 title = if (showBottomBar) {
@@ -1074,7 +1096,25 @@ fun AppUi(
                     exit = if (heldOverlay is Nav.Thread || heldOverlay is Nav.Attachments) fadeOut(tween(180))
                     else slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(140))
                 ) {
-                    val cur = overlayNav ?: return@AnimatedVisibility
+                    /*
+                     * 用 AnimatedContent 管 overlay 内部的页面切换：附件管理页 <-> 设置页/详情页
+                     * 都是 overlay，外层 AnimatedVisibility 的 visible 不变，必须在这里补淡入淡出。
+                     * 其它页面切换保持硬切，避免和卡片放大、外层的滑入动画叠在一起。
+                     */
+                    AnimatedContent(
+                        targetState = overlayNav,
+                        modifier = Modifier.fillMaxSize(),
+                        transitionSpec = {
+                            if (initialState is Nav.Attachments || targetState is Nav.Attachments) {
+                                fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
+                                    fadeOut(tween(190, easing = FastOutSlowInEasing))
+                            } else {
+                                EnterTransition.None togetherWith ExitTransition.None
+            }
+                        },
+                        label = "overlayPage"
+                    ) { target ->
+                    val cur = target ?: return@AnimatedContent
                     Box(
                         Modifier
                             .fillMaxSize()
@@ -1199,6 +1239,7 @@ fun AppUi(
                         if (loading && overlayShown && (cur is Nav.Forum || cur is Nav.Thread)) {
                             LoadingLayer("正在加载…")
                         }
+                    }
                     }
                 }
             }
@@ -1615,6 +1656,7 @@ private fun TopBar(
     onRefresh: () -> Unit = {},
     onOpenBrowser: () -> Unit = {},
     avatarUrl: String?,
+    avatarInert: Boolean = false,
     showSettings: Boolean = false,
     onAvatar: () -> Unit = {},
     onBack: () -> Unit,
@@ -1717,7 +1759,7 @@ private fun TopBar(
                         .size(40.dp)
                         .clip(CircleShape)
                         .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                        .clickable { onToggleMenu() }
+                        .clickable(enabled = !avatarInert) { onToggleMenu() }
                 )
             } else {
                 // 未登录时点头像也展开菜单，菜单里第一项是"登录"
@@ -1725,7 +1767,7 @@ private fun TopBar(
                     Modifier
                         .size(40.dp)
                         .then(glassModifier(CircleShape))
-                        .lightPress { onToggleMenu() },
+                        .lightPress { if (!avatarInert) onToggleMenu() },
                     contentAlignment = Alignment.Center
                 ) { IconImg(CouiIcons.Filled.UserCircle, 22.dp, colors.onSurface) }
             }
@@ -1747,7 +1789,8 @@ private fun AvatarMenu(
     val dragState = remember { PressDragState() }
     val hlY = androidx.compose.animation.core.animateDpAsState(
         targetValue = 6.dp + (dragState.hover.coerceAtLeast(0) * 46).dp,
-        animationSpec = tween(140, easing = LinearEasing),
+        // 只有「按住后滑到别的项」才需要平移；直接点第三项时高亮应直接出现在第三项
+        animationSpec = tween(if (dragState.dragging) 140 else 0, easing = LinearEasing),
         label = "menuHighlight"
     )
     dragState.onCommit = { idx ->
@@ -2013,6 +2056,29 @@ private fun DialogHead(
                 Txt(subtitle, size = 12.sp, color = colors.onSurfaceVariant)
             }
         }
+    }
+}
+
+/** 等宽分段按钮：一排选项按屏幕宽度均分，窄屏也不会把最后一项挤出屏幕 */
+@Composable
+private fun SegBtn(text: String, on: Boolean, onClick: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (on) colors.accent else colors.container)
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Txt(
+            text,
+            size = 12.sp,
+            weight = FontWeight.Medium,
+            color = if (on) colors.onAccent else colors.onSurfaceVariant,
+            maxLines = 1
+        )
     }
 }
 
@@ -3901,7 +3967,13 @@ private fun SettingsView(
                 Txt("存储上限", size = 12.sp, color = colors.onSurfaceVariant)
                 Spacer(Modifier.height(6.dp))
                 val limits = listOf(100, 300, 500, 1000)
-                choices(limits.map { "$it MB" to (cacheMb == it) }) { i -> onSetCacheMb(limits[i]) }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    limits.forEach { mb ->
+                        Box(Modifier.weight(1f)) {
+                            SegBtn("$mb MB", cacheMb == mb) { onSetCacheMb(mb) }
+                        }
+                    }
+                }
                 Spacer(Modifier.height(10.dp))
                 Pill("清除全部缓存", { clearAsk = true }, primary = false)
                 Spacer(Modifier.height(4.dp))
@@ -4079,8 +4151,8 @@ private fun FileTypeIcon(name: String, size: Dp) {
     Box(
         Modifier
             .size(size)
-            // 附件图标统一为「圆角正方形」，不再用接近圆形的圆角
-            .clip(RoundedCornerShape(size.value * 0.16f))
+            // 附件图标统一为圆角正方形，圆角比例对齐列表卡片的观感
+            .clip(RoundedCornerShape(size.value * 0.30f))
             .background(bg),
         contentAlignment = Alignment.Center
     ) {
