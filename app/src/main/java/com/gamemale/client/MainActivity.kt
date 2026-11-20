@@ -1293,8 +1293,17 @@ class MainActivity : ComponentActivity() {
                             threadPage = tp
                             nav = Nav.Thread(url, tp.subject)
                         } else {
-                            val fp = Site.parseForumPage(html)
-                            val shown = fp.copy(cats = mergeCats(prevCats(url), fp.cats))
+                            var fp = Site.parseForumPage(html)
+                            // 搜索结果的 DOM 不是版块列表：第二页用版块解析会得到空列表，
+                            // 之前就出现「页码在、内容是空白」，要拉一次才补上。这里补搜索解析。
+                            if (fp.threads.isEmpty() && url.contains("search.php")) {
+                                val hits = Site.parseSearchResults(html)
+                                if (hits.isNotEmpty()) fp = fp.copy(threads = hits)
+                            }
+                            val shown = fp.copy(
+                                cats = mergeCats(prevCats(url), fp.cats),
+                                threads = withCachedThumbs(fp.threads)
+                            )
                             showForum(url, shown)
                             loadedForumUrl = url
                             val keepTitle = backStack.isEmpty() &&

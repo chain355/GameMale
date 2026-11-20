@@ -3717,9 +3717,23 @@ private fun NetImage(
     crop: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var attempt by remember(url) { androidx.compose.runtime.mutableIntStateOf(0) }
+    var failed by remember(url) { mutableStateOf(false) }
+    var retrying by remember(url) { mutableStateOf(false) }
+    // 第 0 次正常走缓存；点击失败图后换一个禁用缓存的请求，保证真的重新联网取图
+    val model = remember(url, attempt) {
+        if (attempt == 0) url else coil.request.ImageRequest.Builder(ctx)
+            .data(url)
+            .memoryCachePolicy(coil.request.CachePolicy.DISABLED)
+            .diskCachePolicy(coil.request.CachePolicy.DISABLED)
+            .build()
+    }
     SubcomposeAsyncImage(
-        model = url,
+        model = model,
         onSuccess = { st ->
+            failed = false
+            retrying = false
             // 远程图加载成功后把字节写进 ImageStore，浏览记录等页面以后就能纯本地读
             if (url is String) {
                 val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
@@ -3734,10 +3748,23 @@ private fun NetImage(
                 }
             }
         },
+        onError = {
+            failed = true
+            retrying = false
+        },
         contentDescription = null,
         contentScale = if (crop) ContentScale.Crop else ContentScale.FillWidth,
         modifier = modifier.then(
-            if (onClick != null) Modifier.clickable { onClick() } else Modifier
+            Modifier.clickable(enabled = onClick != null || failed) {
+                if (failed) {
+                    // 失败图点一下是重新拉取，不再打开大图
+                    failed = false
+                    retrying = true
+                    attempt++
+                } else {
+                    onClick?.invoke()
+                }
+            }
         ),
         loading = {
             Box(
@@ -3747,9 +3774,16 @@ private fun NetImage(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconImg(CouiIcons.Outlined.Photo, 28.dp, colors.onSurfaceVariant)
+                    if (retrying) {
+                        MiniSpinner(24.dp)
+                    } else {
+                        IconImg(CouiIcons.Outlined.Photo, 28.dp, colors.onSurfaceVariant)
+                    }
                     Spacer(Modifier.height(6.dp))
-                    Txt("图片加载中…", size = 12.sp, color = colors.onSurfaceVariant)
+                    Txt(
+                        if (retrying) "正在重新加载…" else "图片加载中…",
+                        size = 12.sp, color = colors.onSurfaceVariant
+                    )
                 }
             }
         },
@@ -3761,9 +3795,9 @@ private fun NetImage(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconImg(CouiIcons.Outlined.Close, 24.dp, colors.onSurfaceVariant)
+                    IconRefresh()
                     Spacer(Modifier.height(6.dp))
-                    Txt("图片加载失败，点一下可查看大图", size = 12.sp, color = colors.onSurfaceVariant)
+                    Txt("图片加载失败，点一下重试", size = 12.sp, color = colors.onSurfaceVariant)
                 }
             }
         }
