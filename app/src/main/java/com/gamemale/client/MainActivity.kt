@@ -620,12 +620,7 @@ class MainActivity : ComponentActivity() {
                 if (fp.threads.isEmpty()) return@runOnUiThread
                 val page = fp.copy(
                     title = title,
-                    threads = fp.threads.map { item ->
-                        if (item.thumbs.isEmpty()) {
-                            val cachedThumbs = ThumbStore.get(item.tid)
-                            if (cachedThumbs.isNotEmpty()) item.copy(thumbs = cachedThumbs) else item
-                        } else item
-                    }
+                    threads = withCachedThumbs(fp.threads)
                 )
                 forumCache[url] = page
                 SnapshotStore.put(url, page)
@@ -781,12 +776,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
-                                fp = fp.copy(threads = fp.threads.map { item ->
-                                    if (item.thumbs.isEmpty()) {
-                                        val cachedThumbs = ThumbStore.get(item.tid)
-                                        if (cachedThumbs.isNotEmpty()) item.copy(thumbs = cachedThumbs) else item
-                                    } else item
-                                })
+                                fp = fp.copy(threads = withCachedThumbs(fp.threads))
                                 refreshing = false
                                 searchUpdating = false
                                 Diag.log("load", "forum ok threads=" + fp.threads.size + " bytes=" + html.length + " url=" + url)
@@ -1156,6 +1146,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 版块页 HTML 没有预览图。解析结果缺图时，用 ThumbStore 里已经缓存的首图补上。 */
+    private fun withCachedThumbs(threads: List<ThreadItem>): List<ThreadItem> {
+        return threads.map { item ->
+            if (item.thumbs.isNotEmpty()) item
+            else {
+                val cached = ThumbStore.get(item.tid)
+                if (cached.isNotEmpty()) item.copy(thumbs = cached) else item
+            }
+        }
+    }
+
     /** 下拉刷新：不动现有列表，成功后再整体替换 */
     private fun refreshCurrentForum() {
         Diag.log("refresh", "nav=" + nav)
@@ -1182,7 +1183,7 @@ class MainActivity : ComponentActivity() {
                         val cur = forumPage
                         val merged = fp.copy(
                             cats = mergeCats(cur?.cats ?: emptyList(), fp.cats),
-                            threads = fp.threads
+                            threads = withCachedThumbs(fp.threads)
                         )
                         showForum(url, merged)
                         forumCache[url] = merged
