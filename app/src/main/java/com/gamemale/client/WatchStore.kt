@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/** 稍后再看：手动收藏的帖子，按收藏时间倒序，最近的在最前 */
+/** 收藏：手动收藏的帖子，按收藏时间倒序，最近的在最前 */
 object WatchStore {
     const val MAX = 200
 

@@ -174,6 +174,7 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -401,6 +402,8 @@ internal class PressDragState {
     var hover by mutableStateOf(-1)
     /** 手指是否真的从按下项滑到了另一项；直接点按不算 */
     var dragging by mutableStateOf(false)
+    /** 手指是否发生过超过 touchSlop 的位移；用于区分点按与按压拖动 */
+    var moved by mutableStateOf(false)
     /** 菜单整块在根坐标系里的位置，用来判断手指是否已经拖出菜单 */
     var panel by mutableStateOf(androidx.compose.ui.geometry.Rect.Zero)
     /** 手指的 Y（根坐标系），拖出菜单后高亮也要继续跟到这里 */
@@ -415,6 +418,7 @@ internal class PressDragState {
         pointerX = -1f
         inside = true
         dragging = false
+        moved = false
     }
 }
 
@@ -450,6 +454,7 @@ private fun Modifier.pressDragTarget(state: PressDragState, index: Int): Modifie
                         state.panel.contains(pt)
                     // 手指要真的滑出一段距离才算拖动；直接点按时轻微抖动不算
                     if ((ch.position - start).getDistance() > viewConfiguration.touchSlop) {
+                        state.moved = true
                         val hit = state.bounds.entries
                             .sortedBy { it.value.top }
                             .firstOrNull { it.value.contains(pt) }
@@ -548,7 +553,7 @@ private fun NavButtonSlot(
     }
 }
 
-/** 五角星：稍后再看用（COUI 图标集里没有星形） */
+/** 五角星：收藏用（COUI 图标集里没有星形） */
 @Composable
 private fun IconStar(size: Dp = 20.dp, color: Color = CouiTheme.colorScheme.onSurface) {
     Canvas(Modifier.size(size)) {
@@ -958,7 +963,7 @@ fun AppUi(
         if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
         if (nav is Nav.Thread) add(Triple("刷新", 2) { onRefreshThread() })
         if (nav is Nav.Thread) add(
-            Triple(if (watchTidSaved) "取消稍后再看" else "稍后再看", 8) { onToggleWatch() }
+            Triple(if (watchTidSaved) "取消收藏" else "收藏", 8) { onToggleWatch() }
         )
         // 已经在设置页/附件管理页时不再给「设置」，否则点头像会把自己再打开一次
         if (nav !is Nav.Settings && nav !is Nav.Attachments) add(Triple("设置", 3) { onSettings() })
@@ -1012,14 +1017,14 @@ fun AppUi(
                     when (rootPager.currentPage) {
                         0 -> "和谐动漫"
                         1 -> "和谐游戏"
-                        2 -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "稍后再看"
+                        2 -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "收藏"
                         else -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
                     }
                 } else when (nav) {
                     is Nav.Home -> "GameMale"
                     Nav.Settings -> "设置"
                     Nav.Search -> "搜索"
-                    Nav.Watch -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "稍后再看"
+                    Nav.Watch -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "收藏"
                     Nav.History -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
                     Nav.Attachments -> if (attachSelecting) "已选择 " + attachSelectionCount + " 项" else "附件管理"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
@@ -1106,7 +1111,7 @@ fun AppUi(
                             onDeleteSelected = onDeleteWatch,
                             backdrop = backdrop,
                             blur = blurBg,
-                            emptyText = "还没有稍后再看",
+                            emptyText = "还没有收藏",
                             deleteText = "移除"
                         )
                         else -> HistoryView(
@@ -1230,7 +1235,7 @@ fun AppUi(
                                 onDeleteSelected = onDeleteWatch,
                                 backdrop = backdrop,
                                 blur = blurBg,
-                                emptyText = "还没有稍后再看",
+                                emptyText = "还没有收藏",
                                 deleteText = "移除"
                             )
                             cur is Nav.History -> HistoryView(
@@ -1504,8 +1509,35 @@ fun AppUi(
         }
         // 底部三个 tab，跟首页 pager 同一页；按住可以滑到旁边的项
         val navDrag = remember { PressDragState() }
-        navDrag.onCommit = { idx ->
+        // 「和谐动漫 / 和谐游戏」：单击在顶部时刷新，否则回顶；300ms 内双击刷新当前列表。
+        // 按压拖动（超过 touchSlop）只执行原来的切页，不触发回顶或刷新。
+        var navTapIndex by remember { mutableIntStateOf(-1) }
+        var navTapAt by remember { mutableLongStateOf(0L) }
+        val navListState: (Int) -> androidx.compose.foundation.lazy.LazyListState = { idx ->
+            if (idx == 0) animeListState else gameListState
+        }
+        val switchTab: (Int) -> Unit = { idx ->
             scope.launch { rootPager.animateScrollToPage(idx) }
+        }
+        navDrag.onCommit = { idx ->
+            val wasDrag = navDrag.moved
+            if (wasDrag || idx >= 2 || rootPager.settledPage != idx) {
+                navTapIndex = -1
+                switchTab(idx)
+            } else {
+                val now = android.os.SystemClock.uptimeMillis()
+                val st = navListState(idx)
+                val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
+                if (navTapIndex == idx && now - navTapAt <= 300L) {
+                    // 第二次点击落在 300ms 内：按双击处理，刷新当前列表
+                    navTapIndex = -1
+                    onRefresh()
+                } else {
+                    navTapIndex = idx
+                    navTapAt = now
+                    if (atTop) onRefresh() else scope.launch { st.animateScrollToItem(0) }
+                }
+            }
         }
         if (showBottomBar && !inHistorySelection) {
             // 导航栏 + 搜索 FAB 作为一整组，底部居中；两者之间留 8dp
@@ -1605,7 +1637,7 @@ fun AppUi(
                     showActiveBg = false
                 ) { scope.launch { rootPager.animateScrollToPage(1) } }
                 NavButtonSlot(
-                    label = "稍后再看",
+                    label = "收藏",
                     active = tab == 2,
                     modifier = Modifier.width(68.dp),
                     dragState = navDrag,
@@ -5031,7 +5063,7 @@ private fun ContentPrefDialog(
     }
 }
 
-/** 更新日志：只有以「新增」开头的功能条目前面加 ✨；调整、优化与修复都不加 */
+/** 更新日志：新增功能排最前并带「- ✨」，调整优化与修复用灰色「- 」条目 */
 @Composable
 private fun ChangelogDialog(releases: List<Changelog.Release>, onClose: () -> Unit) {
     val colors = CouiTheme.colorScheme
@@ -5082,7 +5114,7 @@ private fun FirstRunNoticeDialog(onDismiss: () -> Unit) {
             Column(Modifier.padding(horizontal = 18.dp)) {
                 NoticeLine("本应用为个人学习研究作品，非 GameMale 官方客户端，不得用于任何商业用途，也不提供任何付费服务。")
                 NoticeLine("应用内展示的帖子、图片与附件均来自原站点，版权归站点及原作者所有；请遵守站点规则和当地法律法规。")
-                NoticeLine("登录状态、浏览记录、稍后再看与已下载附件只保存在本机，不会上传到第三方服务器；卸载应用会一并清除。")
+                NoticeLine("登录状态、浏览记录、收藏与已下载附件只保存在本机，不会上传到第三方服务器；卸载应用会一并清除。")
                 NoticeLine("继续使用即表示你已阅读并理解上述说明。")
             }
             Spacer(Modifier.height(10.dp))
@@ -5165,27 +5197,22 @@ private fun ReleaseList(releases: List<Changelog.Release>, compact: Boolean = fa
             )
         }
         r.features.forEach { f ->
-            val isNew = f.trimStart().startsWith("新增")
             Row(Modifier.padding(horizontal = 18.dp, vertical = 3.dp)) {
-                Txt(
-                    if (isNew) "✨" else "·",
-                    size = 12.sp,
-                    color = if (isNew) colors.accent else colors.onSurfaceVariant
-                )
+                Txt("- ✨", size = 12.sp, color = colors.accent)
                 Spacer(Modifier.width(6.dp))
                 Txt(f, size = 12.sp, color = colors.onSurface, lineHeight = 1.55f)
             }
         }
         r.changes.forEach { f ->
             Row(Modifier.padding(horizontal = 18.dp, vertical = 3.dp)) {
-                Txt("·", size = 12.sp, color = colors.onSurfaceVariant)
+                Txt("-", size = 12.sp, color = colors.onSurfaceVariant)
                 Spacer(Modifier.width(6.dp))
-                Txt(f, size = 12.sp, color = colors.onSurface, lineHeight = 1.55f)
+                Txt(f, size = 12.sp, color = colors.onSurfaceVariant, lineHeight = 1.55f)
             }
         }
         r.fixes.forEach { f ->
             Row(Modifier.padding(horizontal = 18.dp, vertical = 3.dp)) {
-                Txt("·", size = 12.sp, color = colors.onSurfaceVariant)
+                Txt("-", size = 12.sp, color = colors.onSurfaceVariant)
                 Spacer(Modifier.width(6.dp))
                 Txt(f, size = 12.sp, color = colors.onSurfaceVariant, lineHeight = 1.55f)
             }

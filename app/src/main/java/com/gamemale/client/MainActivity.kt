@@ -337,11 +337,11 @@ class MainActivity : ComponentActivity() {
                     onOpenWatch = { url, title -> openFromHistory(url, title) },
                     onClearWatch = {
                         watchLater = WatchStore.clear(this)
-                        toast("稍后再看已清空")
+                        toast("收藏已清空")
                     },
                     onDeleteWatch = { tids ->
                         watchLater = WatchStore.removeMany(this, tids)
-                        toast("已移出稍后再看 " + tids.size + " 条")
+                        toast("已移出收藏 " + tids.size + " 条")
                     },
                     watchTidSaved = ((nav as? Nav.Thread)?.url?.let { tidOf(it) }?.toLongOrNull())
                         ?.let { t -> watchLater.any { it.tid == t } } == true,
@@ -1152,14 +1152,14 @@ class MainActivity : ComponentActivity() {
     /** 详情页右上角菜单：收藏 / 取消收藏当前帖子 */
     private fun toggleWatchLater() {
         val tid = (nav as? Nav.Thread)?.url?.let { tidOf(it) }?.toLongOrNull() ?: return
-        // 优先用正文解析出来的真实标题，避免深链刚进来时把「帖子」存进稍后再看
+        // 优先用正文解析出来的真实标题，避免深链刚进来时把「帖子」存进收藏
         val title = threadPage?.subject?.takeIf { it.isNotBlank() }
             ?: (nav as? Nav.Thread)?.title.orEmpty()
         val url = (nav as? Nav.Thread)?.url.orEmpty()
         val saved = watchLater.any { it.tid == tid } || WatchStore.has(this, tid)
         watchLater = if (saved) WatchStore.remove(this, tid)
         else WatchStore.add(this, tid, title, url)
-        toast(if (saved) "已取消稍后再看" else "已加入稍后再看")
+        toast(if (saved) "已取消收藏" else "已加入收藏")
     }
 
     private fun openQuick(url: String, title: String) {
@@ -1889,7 +1889,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 正文解析出真实标题后，把顶栏和「稍后再看」里的占位标题一起换掉。
+     * 正文解析出真实标题后，把顶栏和「收藏」里的占位标题一起换掉。
      * 用 tid 比对而不是整串 URL：深链地址可能带参数，URL 不等但其实是同一帖。
      */
     private fun syncThreadSubject(url: String, subject: String) {
@@ -1908,7 +1908,7 @@ class MainActivity : ComponentActivity() {
         runCatching {
             history = HistoryStore.record(this, tid.toLong(), tp.subject, url)
             readTids = ReadStore.mark(this, tid.toLong())
-            // 深链进来时标题只有「帖子」，正文解析出真实标题后同步到导航与稍后再看
+            // 深链进来时标题只有「帖子」，正文解析出真实标题后同步到导航与收藏
             if (tp.subject.isNotBlank()) syncThreadSubject(url, tp.subject)
             val imgs = tp.posts.flatMap { p ->
                 p.blocks.mapNotNull { (it as? Block.Image)?.url }
@@ -1942,7 +1942,7 @@ class MainActivity : ComponentActivity() {
     /** 浏览记录选择模式下已选中的条数（显示在顶栏标题） */
     private var historySelectionCount by mutableStateOf(0)
     private var historySelecting by mutableStateOf(false)
-    /** 稍后再看 */
+    /** 收藏 */
     private var watchLater by mutableStateOf<List<WatchStore.Entry>>(emptyList())
     private var watchSelectionCount by mutableStateOf(0)
     private var watchSelecting by mutableStateOf(false)
