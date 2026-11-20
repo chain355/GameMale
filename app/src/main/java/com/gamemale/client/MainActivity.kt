@@ -63,7 +63,8 @@ class MainActivity : ComponentActivity() {
     private var gamePage by mutableStateOf<ForumPage?>(null)
     private var animeUrl by mutableStateOf(ANIME_URL)
     private var gameUrl by mutableStateOf(GAME_URL)
-    private val boardWarm = mutableSetOf<String>()
+    /** 冷启动后还没手动进过「和谐游戏」：首次切过去要自动联网刷新一次，之后的切换不再刷新 */
+    private var gameFirstSwitchPending = true
     private var threadPage by mutableStateOf<ThreadPage?>(null)
     private var loading by mutableStateOf(false)
     private var error by mutableStateOf<String?>(null)
@@ -470,7 +471,7 @@ class MainActivity : ComponentActivity() {
             SnapshotStore.get(GAME_URL)?.let { gamePage = it.copy(title = "和谐游戏") }
             nav = Nav.Forum(ANIME_URL, "和谐动漫")
             load(ANIME_URL)
-            preloadBoard(GAME_URL, "和谐游戏")
+            // 冷启动只刷「和谐动漫」：游戏板块先铺本地快照，等用户首次切过去时再联网刷新
         }
     }
 
@@ -679,6 +680,9 @@ class MainActivity : ComponentActivity() {
         } else if (url.contains("fid=152")) {
             gamePage = page
             gameUrl = url
+            // 游戏板块已经拿到新数据（不管是首次切换的自动刷新，还是用户自己刷新），
+            // 就不再占用「冷启动首次切换」这次机会
+            gameFirstSwitchPending = false
         }
     }
 
@@ -708,7 +712,17 @@ class MainActivity : ComponentActivity() {
             }
             1 -> {
                 if ((nav as? Nav.Forum)?.url?.contains("fid=152") == true) return
+                // 冷启动只刷了「和谐动漫」，游戏板块的数据还是上次的本地快照。
+                // 所以冷启动后第一次切过来时补一次联网刷新；之后再切回来只复用已有列表。
+                val firstSwitch = gameFirstSwitchPending
+                gameFirstSwitchPending = false
+                val hasLocal = (forumCache[gameUrl] ?: SnapshotStore.get(gameUrl) ?: gamePage)
+                    ?.threads?.isNotEmpty() == true
                 openQuick(gameUrl, "和谐游戏")
+                if (firstSwitch && hasLocal) {
+                    refreshing = true
+                    fetchForumForRefresh(gameUrl, attempt = 0)
+                }
             }
             2 -> {
                 if (nav is Nav.Watch) return
@@ -717,61 +731,6 @@ class MainActivity : ComponentActivity() {
             else -> {
                 if (nav is Nav.History) return
                 openHistory()
-            }
-        }
-    }
-
-    /** 另一个版块在后台铺好，滑过去时不用等空白 */
-    private fun preloadBoard(url: String, title: String) {
-        val key = when {
-            url.contains("fid=150") -> "150"
-            url.contains("fid=152") -> "152"
-            else -> return
-        }
-        val ready = if (key == "152") gamePage?.threads?.isNotEmpty() == true
-        else animePage?.threads?.isNotEmpty() == true
-        if (ready) return
-        val cached = forumCache[url] ?: SnapshotStore.get(url)
-        if (cached != null && cached.threads.isNotEmpty()) {
-            val page = cached.copy(title = title)
-            forumCache[url] = page
-            if (key == "152") gamePage = page else animePage = page
-            return
-        }
-        if (!boardWarm.add(key)) return
-        fetcher.fetch(url) { r ->
-            runOnUiThread {
-                boardWarm.remove(key)
-                val html = r.getOrNull() ?: return@runOnUiThread
-                val fp = runCatching { Site.parseForumPage(html) }.getOrNull() ?: return@runOnUiThread
-                if (fp.threads.isEmpty()) return@runOnUiThread
-                val page = fp.copy(
-                    title = title,
-                    threads = withCachedThumbs(fp.threads)
-                )
-                forumCache[url] = page
-                SnapshotStore.put(url, page)
-                if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
-                val onThisBoard = backStack.isEmpty() && (nav as? Nav.Forum)?.url?.contains("fid=$key") == true
-                if (key == "152") {
-                    gamePage = page
-                    if (onThisBoard && forumPage?.threads.isNullOrEmpty()) {
-                        forumPage = page
-                        loadedForumUrl = url
-                        loading = false
-                        refreshing = false
-                        error = null
-                    }
-                } else {
-                    animePage = page
-                    if (onThisBoard && forumPage?.threads.isNullOrEmpty()) {
-                        forumPage = page
-                        loadedForumUrl = url
-                        loading = false
-                        refreshing = false
-                        error = null
-                    }
-                }
             }
         }
     }
@@ -939,10 +898,8 @@ class MainActivity : ComponentActivity() {
                                 forumCache[url] = shown
                                 SnapshotStore.put(url, shown)
                                 if (forumCache.size > 6) forumCache.remove(forumCache.keys.first())
-                                if (backStack.isEmpty()) {
-                                    if (url.contains("fid=150")) preloadBoard(GAME_URL, "和谐游戏")
-                                    else if (url.contains("fid=152")) preloadBoard(ANIME_URL, "和谐动漫")
-                                }
+                                // 不再顺手在后台刷新另一个板块：冷启动与日常刷新都只动当前板块，
+                                // 另一个板块等用户真正切过去时再取
                                 if (fp.threads.isEmpty()) {
                                     val tp = Site.parseThread(html)
                                     if (tp.posts.isNotEmpty()) {
