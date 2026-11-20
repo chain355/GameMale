@@ -746,6 +746,11 @@ fun AppUi(
     attachPayBusy: Boolean = false,
     onConfirmAttachPay: () -> Unit = {},
     onCloseAttachPay: () -> Unit = {},
+    attachConfirmOpen: Boolean = false,
+    attachConfirmName: String = "",
+    attachConfirmMeta: String = "",
+    onConfirmAttachDownload: () -> Unit = {},
+    onCloseAttachConfirm: () -> Unit = {},
     threadTid: Long? = null,
     threadListState: LazyListState = rememberLazyListState(),
     attachments: List<AttachmentStore.Entry> = emptyList(),
@@ -1372,7 +1377,7 @@ fun AppUi(
             scope.launch { rootPager.animateScrollToPage(idx) }
         }
         if (showBottomBar && !inHistorySelection) {
-            // 导航栏 + 搜索 FAB 作为一整组，底部居中；两者之间留 15dp
+            // 导航栏 + 搜索 FAB 作为一整组，底部居中；两者之间留 8dp
             Row(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -1491,7 +1496,7 @@ fun AppUi(
                 }
             }
 
-            Spacer(Modifier.width(15.dp))
+            Spacer(Modifier.width(8.dp))
             // 搜索 FAB 与导航栏并排，同属底部那一组
             Box(
                 Modifier
@@ -1551,6 +1556,12 @@ fun AppUi(
             text = fileTextBody,
             onOpen = onExternal,
             onClose = onCloseFileText
+        )
+        if (attachConfirmOpen) AttachInfoDialog(
+            name = attachConfirmName,
+            meta = attachConfirmMeta,
+            onConfirm = onConfirmAttachDownload,
+            onCancel = onCloseAttachConfirm
         )
         if (attachPayOpen) AttachBuyDialog(
             name = attachPayName,
@@ -4241,6 +4252,57 @@ private fun TinyAction(text: String, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         Txt(text, size = 11.sp, color = colors.accent, weight = FontWeight.Medium)
+    }
+}
+
+/** 权限/金币附件：下载前先说明要求，用户确认才下载 */
+@Composable
+private fun AttachInfoDialog(
+    name: String,
+    meta: String,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    Dialog(onDismissRequest = onCancel) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(18.dp)
+        ) {
+            Txt("下载附件", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FileTypeIcon(name, 30.dp)
+                Spacer(Modifier.width(10.dp))
+                Txt(
+                    name.ifBlank { "附件" },
+                    size = 14.sp,
+                    weight = FontWeight.Medium,
+                    color = colors.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (meta.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Txt(meta, size = 12.sp, color = colors.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(8.dp))
+            Txt(
+                "这个附件有阅读权限或金币要求，确认后才会开始下载。已经购买过的话，本次不会再扣金币。",
+                size = 12.sp,
+                color = colors.onSurfaceVariant,
+                lineHeight = 1.5f
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.weight(1f)) { Pill("取消", onCancel, primary = false) }
+                Box(Modifier.weight(1f)) { Pill("确认下载", onConfirm, primary = true) }
+            }
+        }
     }
 }
 

@@ -111,6 +111,10 @@ class MainActivity : ComponentActivity() {
     private var fileTextOpen by mutableStateOf(false)
     private var fileTextTitle by mutableStateOf("")
     private var fileTextBody by mutableStateOf("")
+    /** 需要权限/金币的附件，先弹窗说明再下载 */
+    private var attachConfirm by mutableStateOf<AttachItem?>(null)
+    /** 购买页来源附件（HTTP 购买失败时退回应用内网页继续付） */
+    private var attachPayAt by mutableStateOf<AttachItem?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,6 +128,7 @@ class MainActivity : ComponentActivity() {
         currentAccountId = Accounts.currentId(this)
         history = HistoryStore.load(this)
         attachments = AttachmentStore.load(this)
+        Diag.log("history", "启动载入 " + history.size + " 条")
         // 覆盖升级/进程被杀后，CookieManager 里的登录 Cookie 可能丢，但账号表里有快照
         runCatching {
             val saved = accounts.firstOrNull { it.id == currentAccountId } ?: accounts.firstOrNull()
@@ -320,6 +325,14 @@ class MainActivity : ComponentActivity() {
                     attachPayBusy = attachPayBusy,
                     onConfirmAttachPay = { confirmAttachBuy() },
                     onCloseAttachPay = { closeAttachBuy() },
+                    attachConfirmOpen = attachConfirm != null,
+                    attachConfirmName = attachConfirm?.name.orEmpty(),
+                    attachConfirmMeta = attachConfirm?.let {
+                        listOfNotNull(it.meta.takeIf { m -> m.isNotEmpty() }, it.price)
+                            .joinToString("  ")
+                    }.orEmpty(),
+                    onConfirmAttachDownload = { confirmAttachDownload() },
+                    onCloseAttachConfirm = { attachConfirm = null },
                     threadTid = threadTid()?.toLongOrNull(),
                     attachments = attachments,
                     attachLoads = attachLoads,
@@ -469,6 +482,17 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         // 不主动暂停 WebView：切后台时保持当前加载继续跑
         fetcher.keepRunning()
+        // 退到后台再写一遍浏览记录：万一记录那一次落盘被打断，重启后还能找回来
+        runCatching { HistoryStore.persist(this, history) }
+        runCatching {
+            (nav as? Nav.Thread)?.let { t ->
+                threadPage?.let { tp ->
+                    tidOf(t.url)?.toLongOrNull()?.let { tid ->
+                        history = HistoryStore.record(this, tid, tp.subject, t.url)
+                    }
+                }
+            }
+        }
         super.onPause()
     }
 
@@ -2436,14 +2460,21 @@ class MainActivity : ComponentActivity() {
         val key = attachKey(tid, at.name)
         val st = attachLoads[key]
         if (st != null && !st.failed && st.progress < 1f) return
+        proceedAttach(at)
+    }
+
+    /** 真正去取购买页 / 下载。需要付费或权限的会先弹窗，免费的直接开始 */
+    private fun proceedAttach(at: AttachItem) {
+        val tid = threadTid()?.toLongOrNull() ?: 0L
         val threadTitle = threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() }
         val threadUrl = (nav as? Nav.Thread)?.url.orEmpty()
         if (!at.url.contains("action=attachpay")) {
-            // 免费附件 / 已经付过费：链接本身就是下载地址
+            // 免费附件 / 已经付过费：站点直接给下载地址，不需要确认
             downloadAttach(attachmentUrl(at.url), at.name, tid, threadTitle, threadUrl)
             return
         }
-        // 需要付费或权限：先把购买窗口取回来，再决定怎么付
+        // 需要付费或权限：先把购买窗口取回来，确认后才提交 / 下载
+        attachPayAt = at
         attachPayName = at.name
         toast("正在检查附件…")
         fetcher.fetch(at.url) { r ->
@@ -2451,9 +2482,8 @@ class MainActivity : ComponentActivity() {
                 r.onSuccess { html ->
                     val pay = Site.parseAttachPay(html, at.url)
                     if (pay == null) {
-                        // 取不到购买表单：多半是权限不足或已经买过，先按已购买试一次下载
-                        toast("没拿到购买信息，按已购买处理并尝试下载")
-                        downloadAttach(attachmentUrl(at.url), at.name, tid, threadTitle, threadUrl)
+                        // 只有权限要求、没有可购买的表单：先让用户确认，再按已满足权限试下载
+                        attachConfirm = at
                     } else {
                         attachPayInfo = pay.copy(fileName = pay.fileName.ifBlank { at.name })
                     }
@@ -2465,52 +2495,109 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 确认购买：POST attachpay 表单，成功后再下载 */
+    /** 权限/金币附件的信息确认：用户点确认后才真的去下载 */
+    private fun confirmAttachDownload() {
+        val at = attachConfirm ?: return
+        attachConfirm = null
+        val tid = threadTid()?.toLongOrNull() ?: 0L
+        val title = threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() }
+        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty()
+        downloadAttach(attachmentUrl(at.url), at.name, tid, title, threadUrl)
+    }
+
+    /** 确认购买：直接 POST attachpay 表单（不再走 file:// 表单页，那条路会一直超时） */
     private fun confirmAttachBuy() {
         val pay = attachPayInfo ?: return
         if (attachPayBusy) return
         attachPayBusy = true
-        val fields = listOf(
-            "formhash" to pay.formhash,
-            "referer" to pay.referer.ifBlank { SITE + "thread-" + pay.tid + "-1-1.html" },
-            "aid" to pay.aid,
-            "paysubmit" to "true"
-        )
-        fetcher.postForm(pay.action, fields) { r ->
+        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty().ifBlank { SITE }
+        val srcAt = attachPayAt
+        val tid = pay.tid.toLongOrNull() ?: threadTid()?.toLongOrNull() ?: 0L
+        val title = threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() }
+        val pageUrl = (nav as? Nav.Thread)?.url.orEmpty()
+        Thread {
+            var ok = false
+            var msg: String? = null
+            var detail = ""
+            runCatching {
+                val fields = listOf(
+                    "formhash" to pay.formhash,
+                    "referer" to pay.referer.ifBlank { threadUrl },
+                    "aid" to pay.aid,
+                    "paysubmit" to "true"
+                )
+                val body = fields.joinToString("&") { (k, v) ->
+                    java.net.URLEncoder.encode(k, "UTF-8") + "=" +
+                        java.net.URLEncoder.encode(v, "UTF-8")
+                }
+                val conn = (URL(pay.action).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    instanceFollowRedirects = false
+                    connectTimeout = 20000
+                    readTimeout = 30000
+                    setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+                    setRequestProperty("Referer", threadUrl)
+                    setRequestProperty("Origin", SITE.trimEnd('/'))
+                    setRequestProperty(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    )
+                    CookieManager.getInstance().getCookie(SITE)?.takeIf { it.isNotBlank() }
+                        ?.let { setRequestProperty("Cookie", it) }
+                }
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                val loc = conn.getHeaderField("Location")
+                if (code in 300..399) {
+                    detail = "HTTP $code -> " + loc.orEmpty()
+                    val abs = runCatching { URL(URL(pay.action), loc ?: "").toString() }.getOrDefault("")
+                    ok = abs.contains("mod=attachment") || abs.contains("attachpay")
+                    if (!ok) msg = "站点返回了意外的跳转"
+                } else {
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    val html = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    detail = "HTTP $code " + html.take(200).replace("\n", " ")
+                    val plain = html.replace(Regex("<[^>]*>"), " ")
+                    val challenge = plain.contains("Just a moment") || plain.contains("请稍候") ||
+                        plain.contains("challenges.cloudflare.com") || plain.contains("cf_chl")
+                    val bad = plain.contains("参数错误") || plain.contains("失败") ||
+                        plain.contains("抱歉") || plain.contains("不能") || plain.contains("无法") ||
+                        plain.contains("余额不足") || plain.contains("权限")
+                    ok = !challenge && !bad &&
+                        (plain.contains("成功") || plain.contains("下载"))
+                    if (!ok) {
+                        msg = Regex("alert_(?:error|right)[^>]*>\\s*<p[^>]*>([^<]{1,60})")
+                            .find(html)?.groupValues?.get(1)?.trim()
+                            ?: if (challenge) "站点验证未通过" else if (code !in 200..299) "HTTP $code" else null
+                    }
+                }
+            }.onFailure { msg = it.message ?: it.javaClass.simpleName }
+
             runOnUiThread {
                 attachPayBusy = false
-                r.onSuccess { html ->
-                    val plain = html.replace(Regex("<[^>]*>"), " ")
-                    val ok = !plain.contains("参数错误") &&
-                        !plain.contains("失败") && !plain.contains("余额不足") && !plain.contains("权限") &&
-                        (plain.contains("成功") || plain.contains("购买") || plain.contains("下载"))
-                    Diag.log("attach", "buy aid=" + pay.aid + " ok=" + ok + " " + plain.take(120).replace("\n", " "))
-                    if (ok) {
-                        val dlName = pay.fileName.ifBlank { attachPayName }
-                        val dlUrl = attachmentUrl("aid=" + pay.aid)
-                        val tid = pay.tid.toLongOrNull() ?: threadTid()?.toLongOrNull() ?: 0L
-                        val title = threadPage?.subject.orEmpty().ifBlank {
-                            (nav as? Nav.Thread)?.title.orEmpty()
-                        }
-                        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty()
-                        attachPayInfo = null
-                        attachPayName = ""
-                        toast("购买成功，开始下载")
-                        downloadAttach(dlUrl, dlName, tid, title, threadUrl)
-                    } else {
-                        val msg = Regex("alert_(?:error|right)[^>]*>\\s*<p[^>]*>([^<]{1,40})")
-                            .find(html)?.groupValues?.get(1)?.trim()
-                        toast("购买失败：" + (msg ?: "站点拒绝了这次购买"))
-                    }
-                }.onFailure {
-                    toast("购买请求超时，请稍后重试")
+                Diag.log("attach", "http buy aid=" + pay.aid + " ok=" + ok + " detail=" + detail)
+                if (ok) {
+                    val dlName = pay.fileName.ifBlank { attachPayName }
+                    val dlUrl = attachmentUrl("aid=" + pay.aid)
+                    attachPayInfo = null
+                    attachPayAt = null
+                    attachPayName = ""
+                    toast("购买成功，开始下载")
+                    downloadAttach(dlUrl, dlName, tid, title, pageUrl)
+                } else {
+                    toast("购买失败：" + (msg ?: "站点拒绝了这次购买"))
+                    // 自动支付没成：退回可见的购买页，用户自己点一次也能完成
+                    srcAt?.let { openAttachInWeb(it) }
                 }
             }
-        }
+        }.start()
     }
 
     private fun closeAttachBuy() {
         attachPayInfo = null
+        attachPayAt = null
         attachPayName = ""
     }
 
@@ -2701,7 +2788,13 @@ class MainActivity : ComponentActivity() {
             override fun shouldOverrideUrlLoading(v: WebView, r: android.webkit.WebResourceRequest): Boolean {
                 val u = r.url.toString()
                 if (u.contains("mod=attachment")) {
-                    startDownload(u, at.name)
+                    downloadAttach(
+                        u,
+                        at.name,
+                        threadTid()?.toLongOrNull() ?: 0L,
+                        threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() },
+                        (nav as? Nav.Thread)?.url.orEmpty()
+                    )
                     return true
                 }
                 return false
