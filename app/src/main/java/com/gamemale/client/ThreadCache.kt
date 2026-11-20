@@ -194,8 +194,10 @@ class ThreadCache(ctx: Context) {
         saveIndex()
     }
 
-    private fun enforceLimit() {
-        val limit = limitMb.toLong() * 1024L * 1024L
+    private fun enforceLimit() = trimTo(limitMb.toLong() * 1024L * 1024L)
+
+    /** 按字节上限裁剪帖子缓存（图片先删，再删最旧的帖子页），供清缓存策略调用 */
+    fun trimTo(limit: Long) {
         var total = totalBytes()
         if (total > limit) {
             // 图片超限时按修改时间从旧到新清理

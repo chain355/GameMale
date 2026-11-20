@@ -552,7 +552,7 @@ private fun SearchDialog(onCancel: () -> Unit, onSearch: (String) -> Unit) {
                 .background(colors.background)
                 .padding(18.dp)
         ) {
-            Txt("搜索帖子", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            DialogHead("搜索帖子", onCancel)
             Spacer(Modifier.height(10.dp))
             Box(
                 Modifier
@@ -573,8 +573,6 @@ private fun SearchDialog(onCancel: () -> Unit, onSearch: (String) -> Unit) {
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                Pill("取消", onCancel, primary = false)
-                Spacer(Modifier.width(10.dp))
                 Pill("搜索", {
                     if (text.isNotBlank()) onSearch(text.trim())
                 }, primary = true)
@@ -1050,12 +1048,30 @@ fun AppUi(
                 var heldOverlay by remember { mutableStateOf<Nav?>(null) }
                 SideEffect { if (overlayShown) heldOverlay = nav }
                 val overlayNav = if (overlayShown) nav else heldOverlay
+                /*
+                 * 页面级淡入：AnimatedVisibility 只在「底栏显隐」时触发，附件管理页和详情页之间
+                 * （两者都是 overlay）来回切时不会播动画，看起来就像硬切。这里按 nav 变化补一层淡入：
+                 * 进入附件管理、以及从附件管理点「查看原帖」进详情，都走 0→1 的透明度过渡。
+                 */
+                val pageFade = remember { androidx.compose.animation.core.Animatable(1f) }
+                var lastOverlayNav by remember { mutableStateOf<Nav?>(null) }
+                LaunchedEffect(overlayNav) {
+                    val n = overlayNav
+                    val fade = n is Nav.Attachments || (lastOverlayNav is Nav.Attachments && n is Nav.Thread)
+                    if (fade && n != lastOverlayNav) {
+                        pageFade.snapTo(0f)
+                        pageFade.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
+                    } else {
+                        pageFade.snapTo(1f)
+                    }
+                    lastOverlayNav = n
+                }
                 AnimatedVisibility(
                     visible = overlayShown,
                     modifier = Modifier.fillMaxSize(),
-                    enter = if (nav is Nav.Thread) fadeIn(tween(220))
+                    enter = if (nav is Nav.Thread || nav is Nav.Attachments) fadeIn(tween(220))
                     else slideInHorizontally(tween(280, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(160)),
-                    exit = if (heldOverlay is Nav.Thread) fadeOut(tween(180))
+                    exit = if (heldOverlay is Nav.Thread || heldOverlay is Nav.Attachments) fadeOut(tween(180))
                     else slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(140))
                 ) {
                     val cur = overlayNav ?: return@AnimatedVisibility
@@ -1064,13 +1080,15 @@ fun AppUi(
                             .fillMaxSize()
                             .graphicsLayer {
                                 translationX = backProgress * size.width * 0.35f
+                                var a = pageFade.value
                                 if (zoomRect != null && cur is Nav.Thread) {
-                                    alpha = if (zoomMode > 0) {
+                                    a *= if (zoomMode > 0) {
                                         ((zoomProg.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
                                     } else {
                                         ((1f - zoomProg.value) / 0.45f).coerceIn(0f, 1f)
                                     }
                                 }
+                                alpha = a
                             }
                             .drawWithContent {
                                 if (nav is Nav.Thread && cur is Nav.Thread) {
@@ -1973,6 +1991,31 @@ private fun CircleBtn(icon: ImageVector, onClick: () -> Unit) {
     }
 }
 
+/**
+ * 窗口统一标题栏：左上角返回箭头 + 标题。
+ * 规范：任何窗口的「返回 / 关闭」都放左上角，不再用右上角叉或底部「关闭」。
+ */
+@Composable
+private fun DialogHead(
+    title: String,
+    onBack: () -> Unit,
+    subtitle: String? = null,
+    modifier: Modifier = Modifier
+) {
+    val colors = CouiTheme.colorScheme
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        CircleBtn(CouiIcons.Filled.Back, onBack)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Txt(title, size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            if (!subtitle.isNullOrBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Txt(subtitle, size = 12.sp, color = colors.onSurfaceVariant)
+            }
+        }
+    }
+}
+
 @Composable
 private fun Pill(text: String, onClick: () -> Unit, primary: Boolean) {
     val colors = CouiTheme.colorScheme
@@ -2784,10 +2827,23 @@ private fun ThreadView(
             p.attachments.any { attachKey(threadTid, it.name) == key }
         } ?: -1
         if (idx >= 0) {
-            listState.animateScrollToItem(idx + 1)
-            delay(160)
-            val off = attachOffsets[key] ?: 0f
-            listState.scrollBy((off - focusTopPx).coerceAtLeast(0f))
+            // 购买成功/下载完成后不要再从顶部「动画滚过去」：那会先闪回整帖开头。
+            // 用已知的附件块偏移直接定位，保证一次到位、不经过顶部。
+            val off = attachOffsets[key]
+            if (off != null) {
+                listState.scrollToItem(idx + 1, (off - focusTopPx).toInt().coerceAtLeast(0))
+            } else {
+                // 首帧还没量到偏移（比如刚从附件管理跳进来）：先定位帖子，下一帧再补精确偏移
+                listState.scrollToItem(idx + 1)
+                delay(90)
+                val measured = attachOffsets[key]
+                if (measured != null) {
+                    listState.scrollToItem(
+                        idx + 1,
+                        (measured - focusTopPx).toInt().coerceAtLeast(0)
+                    )
+                }
+            }
         }
         onFocusConsumed()
     }
@@ -3030,7 +3086,7 @@ private fun ReplyDialog(submitting: Boolean, onCancel: () -> Unit, onSend: (Stri
                 .background(colors.background)
                 .padding(18.dp)
         ) {
-            Txt("回复", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            DialogHead("回复", onCancel)
             Spacer(Modifier.height(10.dp))
             Box(
                 Modifier
@@ -3064,8 +3120,6 @@ private fun ReplyDialog(submitting: Boolean, onCancel: () -> Unit, onSend: (Stri
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                Pill("取消", onCancel, primary = false)
-                Spacer(Modifier.width(10.dp))
                 Pill(if (submitting) "提交中…" else "发送", {
                     if (!submitting && text.isNotBlank()) onSend(text.trim())
                 }, primary = true)
@@ -3092,9 +3146,7 @@ private fun RateDialog(
                 .padding(18.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            Txt("评分", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
-            Spacer(Modifier.height(4.dp))
-            Txt("默认给最高档，需要细分请在网页端调整", size = 12.sp, color = colors.onSurfaceVariant)
+            DialogHead("评分", onCancel, subtitle = "默认给最高档，需要细分请在网页端调整")
             Spacer(Modifier.height(10.dp))
             // 每个维度展示：默认最高档
             fields.groupBy { it.first }.forEach { (name, opts) ->
@@ -3138,8 +3190,6 @@ private fun RateDialog(
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                Pill("取消", onCancel, primary = false)
-                Spacer(Modifier.width(10.dp))
                 Pill(if (submitting) "提交中…" else "提交评分", { if (!submitting) onSend(reason.trim()) }, primary = true)
             }
         }
@@ -3702,6 +3752,7 @@ private fun SettingsView(
         }
     }
 
+    var clearAsk by remember { mutableStateOf(false) }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp + LocalBarInset.current, bottom = 100.dp),
@@ -3834,20 +3885,28 @@ private fun SettingsView(
             section("帖子缓存") {
                 val mb = (cacheBytes / 1024.0 / 1024.0)
                 Txt(
-                    "已用 %.1f MB（含浏览记录）· %d 篇帖子".format(mb, cacheCount),
+                    "已用 %.1f MB（含浏览记录 / 附件）· %d 篇帖子".format(mb, cacheCount),
                     size = 13.sp,
                     color = colors.onSurface
                 )
+                if (attachmentCount > 0) {
+                    Spacer(Modifier.height(2.dp))
+                    Txt(
+                        "其中已下载附件 %d 个，附件也算在存储上限内".format(attachmentCount),
+                        size = 12.sp,
+                        color = colors.onSurfaceVariant
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 Txt("存储上限", size = 12.sp, color = colors.onSurfaceVariant)
                 Spacer(Modifier.height(6.dp))
                 val limits = listOf(100, 300, 500, 1000)
                 choices(limits.map { "$it MB" to (cacheMb == it) }) { i -> onSetCacheMb(limits[i]) }
                 Spacer(Modifier.height(10.dp))
-                Pill("清除全部缓存", onClearCache, primary = false)
+                Pill("清除全部缓存", { clearAsk = true }, primary = false)
                 Spacer(Modifier.height(4.dp))
                 Txt(
-                    "清空只删缓存，不会动浏览记录（浏览记录请在浏览记录页点「清空」）；帖子缓存、正文图片、预览图、列表快照、浏览记录都算在已用容量里。",
+                    "帖子缓存、正文图片、预览图、列表快照、浏览记录都算在已用容量里；附件同样计入。清理时会连已下载附件一起删除，点按钮后会再确认一次。浏览记录本身请在浏览记录页「清空」。",
                     size = 12.sp,
                     color = colors.onSurfaceVariant
                 )
@@ -3899,6 +3958,40 @@ private fun SettingsView(
             }
         }
     }
+
+    if (clearAsk) {
+        Dialog(onDismissRequest = { clearAsk = false }) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(colors.surface)
+                    .padding(18.dp)
+            ) {
+                DialogHead("清除全部缓存", { clearAsk = false })
+                Spacer(Modifier.height(10.dp))
+                Txt(
+                    "这次会同时删除已下载的 %d 个附件（含 txt 正文），删除后需要重新下载，且金币已扣不会退回。".format(attachmentCount),
+                    size = 13.sp,
+                    color = colors.onSurface,
+                    lineHeight = 1.55f
+                )
+                if (attachmentCount > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Txt(
+                        "缓存超限时系统会先清理帖子缓存，附件留到最后才会被清理。",
+                        size = 12.sp,
+                        color = colors.onSurfaceVariant,
+                        lineHeight = 1.5f
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Pill("仍然清除", { clearAsk = false; onClearCache() }, primary = true)
+                }
+            }
+        }
+    }
 }
 
 
@@ -3933,7 +4026,8 @@ private fun AttachActionRow(
 ) {
     val colors = CouiTheme.colorScheme
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SmallAction("打开文件", enabled = downloaded, onClick = onOpen)
+        // txt 已内联成正文：不再给「打开文件」，只留复制类按钮
+        if (txt == null) SmallAction("打开文件", enabled = downloaded, onClick = onOpen)
         if (txt != null && onCopy != null) SmallAction("复制全文", onClick = onCopy)
         if (txt != null && onFree != null) SmallAction("自由复制", onClick = onFree)
     }
@@ -3985,7 +4079,8 @@ private fun FileTypeIcon(name: String, size: Dp) {
     Box(
         Modifier
             .size(size)
-            .clip(RoundedCornerShape(size.value * 0.22f))
+            // 附件图标统一为「圆角正方形」，不再用接近圆形的圆角
+            .clip(RoundedCornerShape(size.value * 0.16f))
             .background(bg),
         contentAlignment = Alignment.Center
     ) {
@@ -4050,37 +4145,24 @@ private fun FileTextDialog(title: String, text: String, onOpen: (String) -> Unit
         Column(
             Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.8f)
                 .clip(RoundedCornerShape(22.dp))
                 .background(colors.surface)
-                .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 12.dp)
+                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Txt(
-                    title.ifBlank { "附件正文" },
-                    modifier = Modifier.weight(1f),
-                    size = 16.sp,
-                    weight = FontWeight.Bold,
-                    color = colors.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.width(8.dp))
-                CircleBtn(CouiIcons.Filled.Close, onClose)
-            }
-            Spacer(Modifier.height(10.dp))
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(end = 4.dp)
-                ) {
-                    SelectionContainer {
-                        SelectableLinkText(text, 14.sp, colors.onSurface, onOpen)
-                    }
-                    Spacer(Modifier.height(20.dp))
+            // 统一规范：窗口左上角返回箭头（不再用右上角叉）
+            DialogHead(title.ifBlank { "附件正文" }, onClose)
+            Spacer(Modifier.height(8.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(end = 4.dp)
+            ) {
+                SelectionContainer {
+                    SelectableLinkText(text, 14.sp, colors.onSurface, onOpen)
                 }
+                Spacer(Modifier.height(12.dp))
             }
             Spacer(Modifier.height(6.dp))
             Txt(
@@ -4272,7 +4354,7 @@ private fun AttachInfoDialog(
                 .background(colors.surface)
                 .padding(18.dp)
         ) {
-            Txt("下载附件", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            DialogHead("下载附件", onCancel)
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FileTypeIcon(name, 30.dp)
@@ -4298,9 +4380,8 @@ private fun AttachInfoDialog(
                 lineHeight = 1.5f
             )
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.weight(1f)) { Pill("取消", onCancel, primary = false) }
-                Box(Modifier.weight(1f)) { Pill("确认下载", onConfirm, primary = true) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Pill("确认下载", onConfirm, primary = true)
             }
         }
     }
@@ -4325,7 +4406,7 @@ private fun AttachBuyDialog(
                 .background(colors.surface)
                 .padding(18.dp)
         ) {
-            Txt("购买附件", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            DialogHead("购买附件", { if (!busy) onCancel() })
             Spacer(Modifier.height(10.dp))
             Txt(
                 name.ifBlank { "附件" },
@@ -4369,8 +4450,6 @@ private fun AttachBuyDialog(
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                Pill("取消", { if (!busy) onCancel() }, primary = false)
-                Spacer(Modifier.width(10.dp))
                 Pill(if (busy) "购买中…" else "购买并下载", { if (!busy) onConfirm() }, primary = true)
             }
         }
@@ -4396,12 +4475,10 @@ private fun AccountDialog(
                 .background(colors.surface)
                 .padding(vertical = 14.dp)
         ) {
-            Txt(
+            DialogHead(
                 "账号管理",
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-                size = 17.sp,
-                weight = FontWeight.Bold,
-                color = colors.onSurface
+                onClose,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
             )
             if (accounts.isEmpty()) {
                 Txt(
@@ -4459,13 +4536,6 @@ private fun AccountDialog(
                 Spacer(Modifier.width(12.dp))
                 Txt("新增账号", size = 14.sp, color = colors.accent)
             }
-            Spacer(Modifier.height(6.dp))
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Pill("关闭", onClose, primary = false)
-            }
         }
     }
 }
@@ -4496,19 +4566,11 @@ private fun ContentPrefDialog(
                 .background(colors.surface)
                 .padding(vertical = 14.dp)
         ) {
-            Txt(
+            DialogHead(
                 title,
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-                size = 17.sp,
-                weight = FontWeight.Bold,
-                color = colors.onSurface
-            )
-            Txt(
-                tip,
-                modifier = Modifier.padding(horizontal = 18.dp),
-                size = 11.sp,
-                color = colors.onSurfaceVariant,
-                lineHeight = 1.5f
+                onClose,
+                subtitle = tip,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
             )
             Spacer(Modifier.height(10.dp))
 
@@ -4612,13 +4674,6 @@ private fun ContentPrefDialog(
                 }
             }
 
-            Spacer(Modifier.height(6.dp))
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Pill("关闭", onClose, primary = false)
-            }
         }
     }
 }
@@ -4635,12 +4690,10 @@ private fun ChangelogDialog(releases: List<Changelog.Release>, onClose: () -> Un
                 .background(colors.surface)
                 .padding(vertical = 14.dp)
         ) {
-            Txt(
+            DialogHead(
                 "更新日志",
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-                size = 17.sp,
-                weight = FontWeight.Bold,
-                color = colors.onSurface
+                onClose,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
             )
             Column(
                 Modifier
@@ -4649,13 +4702,7 @@ private fun ChangelogDialog(releases: List<Changelog.Release>, onClose: () -> Un
             ) {
                 ReleaseList(releases)
             }
-            Spacer(Modifier.height(8.dp))
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Pill("关闭", onClose, primary = false)
-            }
+
         }
     }
 }
@@ -4672,18 +4719,11 @@ private fun UpgradeLogDialog(releases: List<Changelog.Release>, onDismiss: () ->
                 .background(colors.surface)
                 .padding(vertical = 14.dp)
         ) {
-            Txt(
+            DialogHead(
                 "已更新到 " + releases.first().version,
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
-                size = 17.sp,
-                weight = FontWeight.Bold,
-                color = colors.onSurface
-            )
-            Txt(
-                "以下是这次更新带来的变化",
-                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp),
-                size = 11.sp,
-                color = colors.onSurfaceVariant
+                onDismiss,
+                subtitle = "以下是这次更新带来的变化",
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
             )
             Spacer(Modifier.height(6.dp))
             Column(

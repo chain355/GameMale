@@ -247,8 +247,14 @@ class MainActivity : ComponentActivity() {
                         forumCache.clear()
                         SnapshotStore.clear()
                         ThumbStore.clear()
+                        // 附件也是缓存的一部分：一并删掉，用户已在确认弹窗里二次确认
+                        AttachmentStore.clear(this)
+                        attachments = emptyList()
+                        attachTexts = emptyMap()
+                        attachLoads = emptyMap()
+                        fileTextOpen = false
                         refreshCacheStats()
-                        toast("缓存已清除")
+                        toast("缓存与已下载附件已清除")
                     },
                     canGoBack = backStack.isNotEmpty() || nav is Nav.Thread ||
                         nav is Nav.Settings || nav is Nav.Search || nav is Nav.Attachments,
@@ -1448,7 +1454,35 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshCacheStats() {
         if (!::cache.isInitialized) return
-        cacheBytes = cache.totalBytes() + HistoryStore.bytes(this)
+        // 附件也算内部缓存，一起展示、一起受上限约束
+        cacheBytes = cache.totalBytes() + HistoryStore.bytes(this) + AttachmentStore.bytes(this)
+        cacheCount = cache.count()
+        if (cacheBytes > cacheMb.toLong() * 1024L * 1024L) enforceCacheBudget()
+    }
+
+    /**
+     * 缓存超限时先清帖子缓存（正文图、最旧的帖子页），附件留到最后：
+     * 帖子缓存压到「上限 − 附件占用」后如果仍然超标，才按最旧优先删附件。
+     */
+    private fun enforceCacheBudget() {
+        if (!::cache.isInitialized) return
+        val limit = cacheMb.toLong() * 1024L * 1024L
+        val attachBytes = AttachmentStore.bytes(this)
+        if (cacheBytes <= limit) return
+        cache.trimTo((limit - attachBytes).coerceAtLeast(0))
+        val over = cache.totalBytes() + HistoryStore.bytes(this) + AttachmentStore.bytes(this) - limit
+        if (over > 0) {
+            val left = AttachmentStore.trim(this, over)
+            val keys = attachments.filterNot { e -> left.any { it.id == e.id } }
+                .map { attachKey(it.tid, it.name) }.toSet()
+            if (left.size != attachments.size) {
+                attachments = left
+                attachTexts = attachTexts.filterKeys { it !in keys }
+                attachLoads = attachLoads.filterKeys { it !in keys }
+                Diag.log("cache", "trim attachments removed=" + (keys.size) + " over=" + over)
+            }
+        }
+        cacheBytes = cache.totalBytes() + HistoryStore.bytes(this) + AttachmentStore.bytes(this)
         cacheCount = cache.count()
     }
 
@@ -2477,14 +2511,31 @@ class MainActivity : ComponentActivity() {
         attachPayAt = at
         attachPayName = at.name
         toast("正在检查附件…")
-        fetcher.fetch(at.url) { r ->
+        // 用 HttpURLConnection 直接 GET 购买页：不再排隐藏 WebView 的队，避免整页重载/超时
+        Thread {
+            val r = runCatching { httpGet(at.url) }
             runOnUiThread {
                 r.onSuccess { html ->
                     val pay = Site.parseAttachPay(html, at.url)
                     if (pay == null) {
+                        // 取不到表单：多半是权限不足 / 金币不足 / 已购买但站点直接拒绝，先看站点怎么说
+                        val notice = Site.attachPayNotice(html)
+                        if (notice != null) {
+                            toast("无法下载：" + notice)
+                            Diag.log("attach", "pay notice tid=" + tid + " name=" + at.name + " msg=" + notice)
+                            return@runOnUiThread
+                        }
                         // 只有权限要求、没有可购买的表单：先让用户确认，再按已满足权限试下载
                         attachConfirm = at
                     } else {
+                        // 购买前先比一下余额，不足就直接说清楚，不要等提交后超时
+                        val price = pay.price.filter { it.isDigit() }.toLongOrNull()
+                        val balance = pay.balance.filter { it.isDigit() }.toLongOrNull()
+                        if (price != null && balance != null && balance < price) {
+                            toast("金币不足：需要 " + price + "，当前余额 " + balance)
+                            Diag.log("attach", "pay short tid=" + tid + " price=" + price + " balance=" + balance)
+                            return@runOnUiThread
+                        }
                         attachPayInfo = pay.copy(fileName = pay.fileName.ifBlank { at.name })
                     }
                 }.onFailure {
@@ -2492,7 +2543,32 @@ class MainActivity : ComponentActivity() {
                     openExternal(at.url)
                 }
             }
+        }.start()
+    }
+
+    /** 带登录 Cookie 的 GET，专供购买页这类不该占用隐藏 WebView 的请求 */
+    private fun httpGet(url: String): String {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            instanceFollowRedirects = true
+            connectTimeout = 20000
+            readTimeout = 25000
+            setRequestProperty(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            )
+            setRequestProperty("Referer", SITE)
+            CookieManager.getInstance().getCookie(SITE)?.takeIf { it.isNotBlank() }
+                ?.let { setRequestProperty("Cookie", it) }
         }
+        val code = conn.responseCode
+        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+        val html = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        Diag.log("attach", "http get pay code=" + code + " len=" + html.length + " url=" + url)
+        if (code !in 200..299) throw java.io.IOException("HTTP " + code)
+        if (html.isBlank()) throw java.io.IOException("空页面")
+        return html
     }
 
     /** 权限/金币附件的信息确认：用户点确认后才真的去下载 */
@@ -2568,12 +2644,17 @@ class MainActivity : ComponentActivity() {
                     ok = !challenge && !bad &&
                         (plain.contains("成功") || plain.contains("下载"))
                     if (!ok) {
-                        msg = Regex("alert_(?:error|right)[^>]*>\\s*<p[^>]*>([^<]{1,60})")
-                            .find(html)?.groupValues?.get(1)?.trim()
+                        msg = Site.attachPayNotice(html)
                             ?: if (challenge) "站点验证未通过" else if (code !in 200..299) "HTTP $code" else null
                     }
                 }
-            }.onFailure { msg = it.message ?: it.javaClass.simpleName }
+            }.onFailure {
+                msg = when (it) {
+                    is java.net.SocketTimeoutException -> "站点响应超时，请稍后重试"
+                    is java.net.UnknownHostException -> "网络不可用"
+                    else -> it.message ?: it.javaClass.simpleName
+                }
+            }
 
             runOnUiThread {
                 attachPayBusy = false

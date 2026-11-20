@@ -121,6 +121,40 @@ object AttachmentStore {
 
     fun remove(ctx: Context, id: Long): List<Entry> = removeMany(ctx, listOf(id))
 
+    fun bytes(ctx: Context): Long = load(ctx).sumOf { it.size }
+
+    fun count(ctx: Context): Int = load(ctx).size
+
+    fun clear(ctx: Context): List<Entry> {
+        load(ctx).forEach { e -> runCatching { e.file.delete() } }
+        runCatching { File(ctx.filesDir, "attachments").deleteRecursively() }
+        runCatching { indexFile(ctx).delete() }
+        return emptyList()
+    }
+
+    /** 缓存超限时的最后手段：从最旧的附件开始删，直到释放够 [excess] 字节 */
+    fun trim(ctx: Context, excess: Long): List<Entry> {
+        if (excess <= 0) return load(ctx)
+        val all = load(ctx)
+        var freed = 0L
+        val keep = ArrayList<Entry>(all.size)
+        for (e in all.sortedBy { it.ts }) {
+            if (freed >= excess) {
+                keep.add(e)
+            } else {
+                freed += e.size
+                runCatching { e.file.delete() }
+            }
+        }
+        val left = keep.sortedByDescending { it.ts }
+        runCatching {
+            indexFile(ctx).writeText("[]")
+        }
+        // 复用 save 的序列化，避免手写 JSON
+        save(ctx, left)
+        return left
+    }
+
     /** 按扩展名判断走哪套打开方式 */
     fun kindOf(name: String): String {
         val n = name.lowercase()

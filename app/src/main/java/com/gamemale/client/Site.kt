@@ -128,6 +128,29 @@ object Site {
         AttachPay(action, aid, tid, formhash, referer, fileName, price, balance)
     }.getOrNull()
 
+    /**
+     * 购买页/购买返回页上站点给的提示语（权限不足、金币不足、不能购买自己附件等）。
+     * 取第一个 alert_error / alert_info 或含关键词的短句，给用户看人话，而不是「请求超时」。
+     */
+    fun attachPayNotice(html: String): String? = runCatching {
+        val doc = Jsoup.parse(html)
+        val boxes = doc.select(".alert_error, .alert_info, #messagetext, .boxmessage")
+        for (b in boxes) {
+            val t = b.text().trim()
+            if (t.length in 2..80) return@runCatching t
+        }
+        val plain = doc.text()
+        val keys = listOf("权限不足", "没有权限", "金币不足", "余额不足", "积分不足", "不能购买", "无法购买", "已购买")
+        for (k in keys) {
+            val i = plain.indexOf(k)
+            if (i >= 0) {
+                val head = plain.substring(maxOf(0, i - 12), minOf(plain.length, i + 28)).trim()
+                return@runCatching head
+            }
+        }
+        null
+    }.getOrNull()
+
     /** Discuz 的 ajax 弹窗内容常被包在 <root><![CDATA[...]]></root> 里，先剥出来再当 HTML 解析 */
     fun unwrapCdata(raw: String): String {
         val i = raw.indexOf("<![CDATA[")
