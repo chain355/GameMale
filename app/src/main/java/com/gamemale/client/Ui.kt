@@ -976,8 +976,8 @@ fun AppUi(
                 selectionMode = inHistorySelection,
                 onExitSelection = { historyExitSignal++ },
                 onSelectAll = {
-                    // 已全选再点就是取消全选，否则一律补成全选
-                    if (selectionAllSelected) clearSelectionSignal++ else selectAllSignal++
+                    // 统一发一个「切换」信号，由当前选择页按自己的全选状态决定全选还是取消
+                    selectAllSignal++
                 },
                 selectionAllSelected = selectionAllSelected,
                 backdrop = backdrop,
@@ -2486,7 +2486,11 @@ private fun HistoryView(
     LaunchedEffect(selectAllSignal) {
         if (selectAllSignal != seenSelectAll) {
             seenSelectAll = selectAllSignal
-            if (selecting) selected = shown.map { it.tid }.toSet()
+            if (selecting) {
+                val all = shown.map { it.tid }.toSet()
+                // 全选按钮是切换：已经全选就取消，否则补成全选
+                selected = if (all.isNotEmpty() && selected.size >= all.size) emptySet() else all
+            }
         }
     }
     var seenClearSelection by remember { androidx.compose.runtime.mutableIntStateOf(clearSelectionSignal) }
@@ -4473,7 +4477,10 @@ private fun AttachManagerPage(
     LaunchedEffect(selectAllSignal) {
         if (selectAllSignal != seenSelectAll) {
             seenSelectAll = selectAllSignal
-            if (selecting) selected = entries.map { it.id }.toSet()
+            if (selecting) {
+                val all = entries.map { it.id }.toSet()
+                selected = if (all.isNotEmpty() && selected.size >= all.size) emptySet() else all
+            }
         }
     }
     var seenClearSelection by remember { androidx.compose.runtime.mutableIntStateOf(clearSelectionSignal) }

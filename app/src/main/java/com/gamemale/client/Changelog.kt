@@ -15,6 +15,15 @@ object Changelog {
     /** 新版本在上 */
     val all: List<Release> = listOf(
         Release(
+            "4.7.2",
+            features = listOf(
+                "全选按钮改为由当前列表自己判断切换：未全选时点一下全选，已全选时再点取消，第三次再全选，不再受顶栏计数更新时序影响"
+            ),
+            fixes = listOf(
+                "修选择模式下第二次点击全选没有取消全选的问题"
+            )
+        ),
+        Release(
             "4.7.1",
             features = listOf(
                 "已读态进一步压暗：图片和文字一起降低亮度，保留彩色，不再只是轻微变暗",
