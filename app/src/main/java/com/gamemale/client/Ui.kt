@@ -497,6 +497,28 @@ private fun NavButtonSlot(
     }
 }
 
+/** 五角星：稍后再看用（COUI 图标集里没有星形） */
+@Composable
+private fun IconStar(size: Dp = 20.dp, color: Color = CouiTheme.colorScheme.onSurface) {
+    Canvas(Modifier.size(size)) {
+        val cx = this.size.width / 2f
+        val cy = this.size.height / 2f
+        val rOut = this.size.minDimension * 0.46f
+        val rIn = rOut * 0.42f
+        val p = androidx.compose.ui.graphics.Path()
+        for (i in 0 until 10) {
+            val r = if (i % 2 == 0) rOut else rIn
+            // 从正上方开始，每 36° 一个顶点
+            val ang = (-90.0 + i * 36.0) * Math.PI / 180.0
+            val x = cx + (r * kotlin.math.cos(ang)).toFloat()
+            val y = cy + (r * kotlin.math.sin(ang)).toFloat()
+            if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+        }
+        p.close()
+        drawPath(p, color = color)
+    }
+}
+
 /** 浏览记录图标：带指针的时钟（COUI 图标集里没有时钟/历史） */
 @Composable
 private fun IconHistory(c: Color) {
@@ -700,7 +722,24 @@ fun AppUi(
     onCloseChangelog: () -> Unit = {},
     upgradeReleases: List<Changelog.Release> = emptyList(),
     onDismissUpgradeLog: () -> Unit = {},
-    appVersion: String = ""
+    appVersion: String = "",
+    watchLater: List<WatchStore.Entry> = emptyList(),
+    watchSelecting: Boolean = false,
+    watchSelectionCount: Int = 0,
+    onWatchSelectionCount: (Int) -> Unit = {},
+    onWatchSelecting: (Boolean) -> Unit = {},
+    onOpenWatch: (String, String) -> Unit = { _, _ -> },
+    onClearWatch: () -> Unit = {},
+    onDeleteWatch: (List<Long>) -> Unit = {},
+    watchTidSaved: Boolean = false,
+    onToggleWatch: () -> Unit = {},
+    attachPayOpen: Boolean = false,
+    attachPayName: String = "",
+    attachPayPrice: String = "",
+    attachPayBalance: String = "",
+    attachPayBusy: Boolean = false,
+    onConfirmAttachPay: () -> Unit = {},
+    onCloseAttachPay: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
     val baseDensity = LocalDensity.current
@@ -713,10 +752,11 @@ fun AppUi(
     }
     // 首页三个 tab 各自记住滚动位置，盖上详情/搜索时也不会被拆掉
     val historyListState = rememberLazyListState()
+    val watchListState = rememberLazyListState()
     val overlayHistoryState = rememberLazyListState()
     val animeListState = rememberLazyListState()
     val gameListState = rememberLazyListState()
-    val rootPager = rememberPagerState(initialPage = 0) { 3 }
+    val rootPager = rememberPagerState(initialPage = 0) { 4 }
     val scope = rememberCoroutineScope()
     var seenAnimeUrl by remember { mutableStateOf<String?>(null) }
     var seenGameUrl by remember { mutableStateOf<String?>(null) }
@@ -806,7 +846,8 @@ fun AppUi(
             }
         }
     }
-    val inHistorySelection = nav is Nav.History && historySelecting
+    val inHistorySelection = (nav is Nav.History && historySelecting) ||
+        (nav is Nav.Watch && watchSelecting)
     if (inHistorySelection) {
         androidx.activity.compose.BackHandler(enabled = true) { historyExitSignal++ }
     }
@@ -817,6 +858,9 @@ fun AppUi(
         if (nav is Nav.Thread) add(Triple("复制链接", 5) { onCopyLink() })
         if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
         if (nav is Nav.Thread) add(Triple("刷新", 2) { onRefreshThread() })
+        if (nav is Nav.Thread) add(
+            Triple(if (watchTidSaved) "取消稍后再看" else "稍后再看", 8) { onToggleWatch() }
+        )
         add(Triple("设置", 3) { onSettings() })
         // 今日自动签到/抽卡有失败时，给出手动入口
         if (dailyFailed) {
@@ -858,12 +902,14 @@ fun AppUi(
                     when (rootPager.currentPage) {
                         0 -> "和谐动漫"
                         1 -> "和谐游戏"
+                        2 -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "稍后再看"
                         else -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
                     }
                 } else when (nav) {
                     is Nav.Home -> "GameMale"
                     Nav.Settings -> "设置"
                     Nav.Search -> "搜索"
+                    Nav.Watch -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "稍后再看"
                     Nav.History -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
                     is Nav.Forum -> nav.title.ifEmpty { "版块" }
                     is Nav.Thread -> nav.title.ifEmpty { "帖子" }
@@ -936,6 +982,20 @@ fun AppUi(
                             watch = watchWords,
                             readTids = readTids
                         )
+                        2 -> HistoryView(
+                            watchLater.map { HistoryStore.Entry(it.tid, it.title, it.url, it.ts) },
+                            watchListState, onOpenWatch, onClearWatch,
+                            blocked = blockedWords,
+                            watch = watchWords,
+                            exitSignal = historyExitSignal,
+                            onSelectionCount = onWatchSelectionCount,
+                            onSelectionMode = onWatchSelecting,
+                            onDeleteSelected = onDeleteWatch,
+                            backdrop = backdrop,
+                            blur = blurBg,
+                            emptyText = "还没有稍后再看",
+                            deleteText = "移除"
+                        )
                         else -> HistoryView(
                             history, historyListState, onOpenHistory, onClearHistory,
                             blocked = blockedWords,
@@ -998,6 +1058,20 @@ fun AppUi(
                             error != null && (cur is Nav.Forum || cur is Nav.Thread) ->
                                 ErrorView(error, onRetry, onDump, onLogin)
                             cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
+                            cur is Nav.Watch -> HistoryView(
+                                watchLater.map { HistoryStore.Entry(it.tid, it.title, it.url, it.ts) },
+                                overlayHistoryState, onOpenWatch, onClearWatch,
+                                blocked = blockedWords,
+                                watch = watchWords,
+                                exitSignal = historyExitSignal,
+                                onSelectionCount = onWatchSelectionCount,
+                                onSelectionMode = onWatchSelecting,
+                                onDeleteSelected = onDeleteWatch,
+                                backdrop = backdrop,
+                                blur = blurBg,
+                                emptyText = "还没有稍后再看",
+                                deleteText = "移除"
+                            )
                             cur is Nav.History -> HistoryView(
                                 history, overlayHistoryState, onOpenHistory, onClearHistory,
                                 blocked = blockedWords,
@@ -1247,11 +1321,17 @@ fun AppUi(
             scope.launch { rootPager.animateScrollToPage(idx) }
         }
         if (showBottomBar && !inHistorySelection) {
+            // 导航栏 + 搜索 FAB 作为一整组，底部居中；两者之间留 15dp
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(bottom = 10.dp)
+                    .height(56.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             Box(
                 Modifier
-                    .align(Alignment.BottomStart)
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(start = 14.dp, bottom = 10.dp)
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
                     .then(
@@ -1271,7 +1351,7 @@ fun AppUi(
                     )
             ) {
                 var navRowOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-                val tabPosition = (rootPager.currentPage + rootPager.currentPageOffsetFraction).coerceIn(0f, 2f)
+                val tabPosition = (rootPager.currentPage + rootPager.currentPageOffsetFraction).coerceIn(0f, 3f)
                 val navHover = navDrag.bounds[navDrag.hover]
                 val navHL by androidx.compose.animation.core.animateFloatAsState(
                     targetValue = navHover?.let { it.left - navRowOrigin.x } ?: 0f,
@@ -1289,19 +1369,17 @@ fun AppUi(
                         .padding(horizontal = 4.dp)
                         .onGloballyPositioned { navRowOrigin = it.positionInRoot() }
                         .drawBehind {
-                            val w0 = 66.dp.toPx()
-                            val w1 = 66.dp.toPx()
-                            val w2 = 72.dp.toPx()
-                            val widths = floatArrayOf(w0, w1, w2)
-                            val pos = tabPosition.coerceIn(0f, 2f)
-                            val i = pos.toInt().coerceAtMost(2)
+                            val widths = floatArrayOf(
+                                62.dp.toPx(), 62.dp.toPx(), 68.dp.toPx(), 68.dp.toPx()
+                            )
+                            val pos = tabPosition.coerceIn(0f, 3f)
+                            val i = pos.toInt().coerceAtMost(3)
                             val t = pos - i
-                            val left = if (i >= 2) w0 + w1 else {
-                                var x = 0f
-                                for (k in 0 until i) x += widths[k]
-                                x + widths[i] * t
-                            }
-                            val width = if (i >= 2) w2 else widths[i] * (1f - t) + widths[(i + 1).coerceAtMost(2)] * t
+                            var left = 0f
+                            for (k in 0 until i) left += widths[k]
+                            left += if (i == 3) 0f else widths[i] * t
+                            val width = if (i == 3) widths[3]
+                            else widths[i] * (1f - t) + widths[(i + 1).coerceAtMost(3)] * t
                             val inset = 4.dp.toPx()
                             drawRoundRect(
                                 color = colors.accent.copy(alpha = 0.16f),
@@ -1325,7 +1403,7 @@ fun AppUi(
                     icon = CouiIcons.Outlined.Album,
                     label = "和谐动漫",
                     active = tab == 0,
-                    modifier = Modifier.width(66.dp),
+                    modifier = Modifier.width(62.dp),
                     dragState = navDrag,
                     dragIndex = 0,
                     showActiveBg = false
@@ -1334,30 +1412,38 @@ fun AppUi(
                     icon = CouiIcons.Filled.Gamepad,
                     label = "和谐游戏",
                     active = tab == 1,
-                    modifier = Modifier.width(66.dp),
+                    modifier = Modifier.width(62.dp),
                     dragState = navDrag,
                     dragIndex = 1,
                     showActiveBg = false
                 ) { scope.launch { rootPager.animateScrollToPage(1) } }
                 NavButtonSlot(
-                    label = "浏览记录",
+                    label = "稍后再看",
                     active = tab == 2,
-                    modifier = Modifier.width(72.dp),
+                    modifier = Modifier.width(68.dp),
                     dragState = navDrag,
                     dragIndex = 2,
                     showActiveBg = false,
-                    icon = { IconHistory(if (tab == 2) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
+                    icon = { IconStar(20.dp, if (tab == 2) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
                     onClick = { scope.launch { rootPager.animateScrollToPage(2) } }
+                )
+                NavButtonSlot(
+                    label = "浏览记录",
+                    active = tab == 3,
+                    modifier = Modifier.width(68.dp),
+                    dragState = navDrag,
+                    dragIndex = 3,
+                    showActiveBg = false,
+                    icon = { IconHistory(if (tab == 3) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
+                    onClick = { scope.launch { rootPager.animateScrollToPage(3) } }
                 )
                 }
             }
 
-            // 搜索 FAB 独立漂浮在导航栏右侧，不放在胶囊里
-            if (!inHistorySelection) Box(
+            Spacer(Modifier.width(15.dp))
+            // 搜索 FAB 与导航栏并排，同属底部那一组
+            Box(
                 Modifier
-                    .align(Alignment.BottomEnd)
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(end = 16.dp, bottom = 10.dp)
                     .size(56.dp)
                     .clip(CircleShape)
                     .then(
@@ -1379,6 +1465,7 @@ fun AppUi(
                 contentAlignment = Alignment.Center
             ) {
                 IconImg(CouiIcons.Outlined.Search, 24.dp, colors.onAccent)
+            }
             }
         }
 
@@ -1407,6 +1494,14 @@ fun AppUi(
             onAdd = onAddContentPref,
             onDelete = onDeleteContentPref,
             onClose = onCloseContentPref
+        )
+        if (attachPayOpen) AttachBuyDialog(
+            name = attachPayName,
+            price = attachPayPrice,
+            balance = attachPayBalance,
+            busy = attachPayBusy,
+            onConfirm = onConfirmAttachPay,
+            onCancel = onCloseAttachPay
         )
         if (changelogOpen) ChangelogDialog(Changelog.all, onCloseChangelog)
         if (upgradeReleases.isNotEmpty()) UpgradeLogDialog(upgradeReleases, onDismissUpgradeLog)
@@ -1646,6 +1741,7 @@ private fun AvatarMenu(
                             4 -> MenuIcon(AppIcon.Login)
                             5 -> MenuIcon(AppIcon.Copy)
                             6, 7 -> MenuIcon(AppIcon.Browser)
+                            8 -> MenuIcon(AppIcon.Star)
                             else -> MenuIcon(AppIcon.Setting)
                         }
                         Spacer(Modifier.width(12.dp))
@@ -1657,7 +1753,7 @@ private fun AvatarMenu(
     }
 }
 
-private enum class AppIcon { Share, Browser, Refresh, Setting, Login, Copy }
+private enum class AppIcon { Share, Browser, Refresh, Setting, Login, Copy, Star }
 
 @Composable
 private fun MenuIcon(kind: AppIcon) {
@@ -1668,6 +1764,7 @@ private fun MenuIcon(kind: AppIcon) {
         AppIcon.Refresh -> IconRefresh()
         AppIcon.Login -> IconImg(CouiIcons.Filled.UserCircle, 20.dp, CouiTheme.colorScheme.onSurface)
         AppIcon.Copy -> IconCopy()
+        AppIcon.Star -> IconStar()
     }
 }
 
@@ -2073,7 +2170,9 @@ private fun HistoryView(
     backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
     blur: Boolean = false,
     blocked: List<String> = emptyList(),
-    watch: List<String> = emptyList()
+    watch: List<String> = emptyList(),
+    emptyText: String = "还没有浏览记录",
+    deleteText: String = "删除"
 ) {
     val colors = CouiTheme.colorScheme
     val shown = history.filter { e -> !ContentPrefs.hit(e.title, blocked) }
@@ -2093,7 +2192,7 @@ private fun HistoryView(
     if (shown.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Txt(
-                if (history.isEmpty()) "还没有浏览记录" else "屏蔽词把浏览记录里的帖子全隐藏了",
+                if (history.isEmpty()) emptyText else "屏蔽词把这里的帖子全隐藏了",
                 size = 14.sp, color = colors.onSurfaceVariant
             )
         }
@@ -2203,7 +2302,7 @@ private fun HistoryView(
             ) {
                 IconTrash(tint = colors.onAccent)
                 Spacer(Modifier.height(2.dp))
-                Txt("删除", size = 12.sp, color = colors.onAccent)
+                Txt(deleteText, size = 12.sp, color = colors.onAccent)
             }
         }
     }
@@ -3591,6 +3690,77 @@ private fun SettingsView(
     }
 }
 
+
+/** 购买附件：展示售价与购买后余额，确认后走 attachpay POST */
+@Composable
+private fun AttachBuyDialog(
+    name: String,
+    price: String,
+    balance: String,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    androidx.compose.ui.window.Dialog(onDismissRequest = { if (!busy) onCancel() }) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(18.dp)
+        ) {
+            Txt("购买附件", size = 17.sp, weight = FontWeight.Bold, color = colors.onSurface)
+            Spacer(Modifier.height(10.dp))
+            Txt(
+                name.ifBlank { "附件" },
+                size = 14.sp,
+                color = colors.onSurface,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(10.dp))
+            if (price.isNotBlank()) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Txt("售价", size = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    Txt(price, size = 13.sp, weight = FontWeight.Medium, color = colors.accent)
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+            if (balance.isNotBlank()) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Txt("购买后余额", size = 12.sp, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    Txt(balance, size = 13.sp, color = colors.onSurface)
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+            Txt(
+                "金币由站点结算，购买后再次下载不再扣费；如需确认明细可到原站「购买记录」查看。",
+                size = 11.sp,
+                color = colors.onSurfaceVariant,
+                lineHeight = 1.5f
+            )
+            if (busy) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MiniSpinner()
+                    Spacer(Modifier.width(10.dp))
+                    Txt("正在购买…", size = 12.sp, color = colors.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                Pill("取消", { if (!busy) onCancel() }, primary = false)
+                Spacer(Modifier.width(10.dp))
+                Pill(if (busy) "购买中…" else "购买并下载", { if (!busy) onConfirm() }, primary = true)
+            }
+        }
+    }
+}
 
 /** 账号管理：列表 + 右侧删除 + 末行新增 */
 @Composable

@@ -35,6 +35,21 @@ data class ForumPage(
 
 data class AttachItem(val name: String, val url: String, val meta: String, val price: String?)
 
+/**
+ * 购买附件窗口（forum.php?mod=misc&action=attachpay&aid=..&tid=..）解析出来的信息。
+ * 表单字段：formhash / referer / aid / paysubmit，提交目标带 tid。
+ */
+data class AttachPay(
+    val action: String,
+    val aid: String,
+    val tid: String,
+    val formhash: String,
+    val referer: String,
+    val fileName: String,
+    val price: String,
+    val balance: String
+)
+
 data class RatingSummary(val people: Int, val parts: List<String>)
 
 sealed interface Block {
@@ -83,6 +98,35 @@ data class FormDef(var action: String, val fields: MutableList<Pair<String, Stri
 }
 
 object Site {
+
+    /** 解析购买附件窗口；页面不是购买窗口时返回 null */
+    fun parseAttachPay(html: String, baseUrl: String = SITE): AttachPay? = runCatching {
+        val doc = Jsoup.parse(html, baseUrl)
+        val form = doc.selectFirst("#attachpayform")
+            ?: doc.selectFirst("form[action*=attachpay]")
+            ?: return null
+        val action = form.absUrl("action").ifBlank { SITE + form.attr("action") }
+        val formhash = form.selectFirst("input[name=formhash]")?.attr("value").orEmpty()
+        val aid = form.selectFirst("input[name=aid]")?.attr("value").orEmpty()
+        val referer = form.selectFirst("input[name=referer]")?.attr("value").orEmpty()
+        val tid = Regex("tid=(\\d+)").find(action)?.groupValues?.get(1).orEmpty()
+        if (action.isBlank() || aid.isBlank() || formhash.isBlank()) return null
+        var fileName = ""
+        var price = ""
+        var balance = ""
+        for (tr in form.select("tr")) {
+            val cells = tr.select("td")
+            if (cells.size < 2) continue
+            val k = cells[0].text().trim()
+            val v = cells[1].text().trim()
+            when {
+                k.contains("附件") -> fileName = v
+                k.contains("售价") -> price = v
+                k.contains("余额") -> balance = v
+            }
+        }
+        AttachPay(action, aid, tid, formhash, referer, fileName, price, balance)
+    }.getOrNull()
 
     /** Discuz 的 ajax 弹窗内容常被包在 <root><![CDATA[...]]></root> 里，先剥出来再当 HTML 解析 */
     fun unwrapCdata(raw: String): String {

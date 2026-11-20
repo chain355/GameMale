@@ -40,6 +40,7 @@ sealed interface Nav {
     data object Settings : Nav
     data object Search : Nav
     data object History : Nav
+    data object Watch : Nav
 }
 
 class MainActivity : ComponentActivity() {
@@ -132,6 +133,7 @@ class MainActivity : ComponentActivity() {
         appVersionName = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrNull().orEmpty()
+        watchLater = WatchStore.load(this)
         blockedWords = ContentPrefs.loadBlocked(this)
         watchWords = ContentPrefs.loadWatch(this)
         readTids = ReadStore.load(this)
@@ -273,6 +275,30 @@ class MainActivity : ComponentActivity() {
                     onOpenHistoryTab = { openHistory() },
                     history = history,
                     onOpenHistory = { url, title -> openFromHistory(url, title) },
+                    watchLater = watchLater,
+                    watchSelecting = watchSelecting,
+                    watchSelectionCount = watchSelectionCount,
+                    onWatchSelectionCount = { watchSelectionCount = it },
+                    onWatchSelecting = { watchSelecting = it },
+                    onOpenWatch = { url, title -> openFromHistory(url, title) },
+                    onClearWatch = {
+                        watchLater = WatchStore.clear(this)
+                        toast("稍后再看已清空")
+                    },
+                    onDeleteWatch = { tids ->
+                        watchLater = WatchStore.removeMany(this, tids)
+                        toast("已移出稍后再看 " + tids.size + " 条")
+                    },
+                    watchTidSaved = ((nav as? Nav.Thread)?.url?.let { tidOf(it) }?.toLongOrNull())
+                        ?.let { t -> watchLater.any { it.tid == t } } == true,
+                    onToggleWatch = { toggleWatchLater() },
+                    attachPayOpen = attachPayInfo != null,
+                    attachPayName = attachPayInfo?.fileName?.ifBlank { attachPayName } ?: attachPayName,
+                    attachPayPrice = attachPayInfo?.price.orEmpty(),
+                    attachPayBalance = attachPayInfo?.balance.orEmpty(),
+                    attachPayBusy = attachPayBusy,
+                    onConfirmAttachPay = { confirmAttachBuy() },
+                    onCloseAttachPay = { closeAttachBuy() },
                     onClearHistory = { history = HistoryStore.clear(this) },
                     historySelectionCount = historySelectionCount,
                     onHistorySelectionCount = { historySelectionCount = it },
@@ -291,7 +317,8 @@ class MainActivity : ComponentActivity() {
                     onSearch = { q -> doSearch(q) },
                     onExternal = { openExternal(it) },
                     currentUrl = navUrl(),
-                    showBottomBar = backStack.isEmpty() && (nav is Nav.Forum || nav is Nav.History),
+                    showBottomBar = backStack.isEmpty() &&
+                        (nav is Nav.Forum || nav is Nav.History || nav is Nav.Watch),
                     loginName = loginName,
                     avatarUrl = avatarUrl,
                     loggedIn = loggedIn,
@@ -586,6 +613,10 @@ class MainActivity : ComponentActivity() {
             1 -> {
                 if ((nav as? Nav.Forum)?.url?.contains("fid=152") == true) return
                 openQuick(gameUrl, "和谐游戏")
+            }
+            2 -> {
+                if (nav is Nav.Watch) return
+                openWatch()
             }
             else -> {
                 if (nav is Nav.History) return
@@ -899,7 +930,7 @@ class MainActivity : ComponentActivity() {
 
     private fun reload() {
         when (val n = nav) {
-            Nav.Settings, Nav.Search, Nav.History -> {}
+            Nav.Settings, Nav.Search, Nav.History, Nav.Watch -> {}
             is Nav.Home -> loadHome()
             is Nav.Forum -> load(n.url)
             is Nav.Thread -> {
@@ -956,6 +987,29 @@ class MainActivity : ComponentActivity() {
         threadPage = null
         error = null
         loading = false
+    }
+
+    private fun openWatch() {
+        watchLater = WatchStore.load(this)
+        val isTopLevel = backStack.isEmpty()
+        if (!isTopLevel) backStack.add(nav)
+        nav = Nav.Watch
+        threadPage = null
+        error = null
+        loading = false
+    }
+
+    /** 详情页右上角菜单：收藏 / 取消收藏当前帖子 */
+    private fun toggleWatchLater() {
+        val tid = (nav as? Nav.Thread)?.url?.let { tidOf(it) }?.toLongOrNull() ?: return
+        val title = (nav as? Nav.Thread)?.title.orEmpty().ifBlank {
+            threadPage?.subject.orEmpty()
+        }
+        val url = (nav as? Nav.Thread)?.url.orEmpty()
+        val saved = watchLater.any { it.tid == tid } || WatchStore.has(this, tid)
+        watchLater = if (saved) WatchStore.remove(this, tid)
+        else WatchStore.add(this, tid, title, url)
+        toast(if (saved) "已取消稍后再看" else "已加入稍后再看")
     }
 
     private fun openQuick(url: String, title: String) {
@@ -1391,7 +1445,7 @@ class MainActivity : ComponentActivity() {
             when (val n = nav) {
                 Nav.Search -> {}
                 Nav.Settings -> {}
-                Nav.History -> {}
+                Nav.History, Nav.Watch -> {}
                 is Nav.Home -> loadHome()
                 is Nav.Forum -> {
                     // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
@@ -1630,6 +1684,14 @@ class MainActivity : ComponentActivity() {
     /** 浏览记录选择模式下已选中的条数（显示在顶栏标题） */
     private var historySelectionCount by mutableStateOf(0)
     private var historySelecting by mutableStateOf(false)
+    /** 稍后再看 */
+    private var watchLater by mutableStateOf<List<WatchStore.Entry>>(emptyList())
+    private var watchSelectionCount by mutableStateOf(0)
+    private var watchSelecting by mutableStateOf(false)
+    /** 附件购买窗口 */
+    private var attachPayInfo by mutableStateOf<AttachPay?>(null)
+    private var attachPayName by mutableStateOf("")
+    private var attachPayBusy by mutableStateOf(false)
     private var openThreadTid by mutableStateOf<String?>(null)
     private var blurBg by mutableStateOf(true)
     private var currentAccountId: String? = null
@@ -1999,7 +2061,7 @@ class MainActivity : ComponentActivity() {
         is Nav.Thread -> n.url
         is Nav.Search -> SITE + "search.php?mod=forum"
         Nav.Home -> SITE + "forum.php"
-        Nav.Settings, Nav.History -> ""
+        Nav.Settings, Nav.History, Nav.Watch -> ""
     }
 
     /** 回复：用页面里的 #fastpostform 字段，补上 message 后 POST（带 inajax=1 拿纯文本结果） */
@@ -2316,13 +2378,79 @@ class MainActivity : ComponentActivity() {
 
     /** 附件：付费的先走购买表单，免费的直接下载 */
     private fun openAttach(at: AttachItem) {
-        // 走系统浏览器：那边有它自己的登录态，站点原生的购买/下载流程最稳
-        val url = when {
-            at.url.contains("action=attachpay") -> at.url
-            else -> attachmentUrl(at.url)
+        if (!loggedIn) {
+            toast("未登录不能下载附件，请先登录")
+            return
         }
-        toast("用浏览器打开：" + at.name)
-        openExternal(url)
+        if (!at.url.contains("action=attachpay")) {
+            // 免费附件 / 已经付过费：链接本身就是下载地址
+            startDownload(attachmentUrl(at.url), at.name)
+            return
+        }
+        // 需要付费或权限：先把购买窗口取回来，再决定怎么付
+        attachPayName = at.name
+        toast("正在检查附件…")
+        fetcher.fetch(at.url) { r ->
+            runOnUiThread {
+                r.onSuccess { html ->
+                    val pay = Site.parseAttachPay(html, at.url)
+                    if (pay == null) {
+                        // 取不到购买表单：多半是权限不足或已经买过，先按已购买试一次下载
+                        toast("没拿到购买信息，按已购买处理并尝试下载")
+                        startDownload(attachmentUrl(at.url), at.name)
+                    } else {
+                        attachPayInfo = pay.copy(fileName = pay.fileName.ifBlank { at.name })
+                    }
+                }.onFailure {
+                    toast("购买页加载失败，改用浏览器打开")
+                    openExternal(at.url)
+                }
+            }
+        }
+    }
+
+    /** 确认购买：POST attachpay 表单，成功后再下载 */
+    private fun confirmAttachBuy() {
+        val pay = attachPayInfo ?: return
+        if (attachPayBusy) return
+        attachPayBusy = true
+        val fields = listOf(
+            "formhash" to pay.formhash,
+            "referer" to pay.referer.ifBlank { SITE + "thread-" + pay.tid + "-1-1.html" },
+            "aid" to pay.aid,
+            "paysubmit" to "true"
+        )
+        fetcher.postForm(pay.action, fields) { r ->
+            runOnUiThread {
+                attachPayBusy = false
+                r.onSuccess { html ->
+                    val plain = html.replace(Regex("<[^>]*>"), " ")
+                    val ok = !plain.contains("参数错误") &&
+                        !plain.contains("失败") && !plain.contains("余额不足") && !plain.contains("权限") &&
+                        (plain.contains("成功") || plain.contains("购买") || plain.contains("下载"))
+                    Diag.log("attach", "buy aid=" + pay.aid + " ok=" + ok + " " + plain.take(120).replace("\n", " "))
+                    if (ok) {
+                        val dlName = pay.fileName.ifBlank { attachPayName }
+                        val dlUrl = attachmentUrl("aid=" + pay.aid)
+                        attachPayInfo = null
+                        attachPayName = ""
+                        toast("购买成功，开始下载")
+                        startDownload(dlUrl, dlName)
+                    } else {
+                        val msg = Regex("alert_(?:error|right)[^>]*>\\s*<p[^>]*>([^<]{1,40})")
+                            .find(html)?.groupValues?.get(1)?.trim()
+                        toast("购买失败：" + (msg ?: "站点拒绝了这次购买"))
+                    }
+                }.onFailure {
+                    toast("购买请求超时，请稍后重试")
+                }
+            }
+        }
+    }
+
+    private fun closeAttachBuy() {
+        attachPayInfo = null
+        attachPayName = ""
     }
 
     /** 附件卡链接里带 aid，拼出真正下载地址 */
