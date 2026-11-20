@@ -4098,7 +4098,7 @@ private fun SettingsView(
                 }
                 Spacer(Modifier.height(6.dp))
                 Txt(
-                    "屏蔽词命中的帖子会从首页列表里消失；特别关注命中的帖子标题前会加 ✨。两者只作用于首页的和谐动漫、和谐游戏和浏览记录，搜索结果与外部分享进来的帖子不受影响。",
+                    "关键词不区分大小写，按正则表达式匹配标题：普通文字可直接输入，含 . + ( ) 等符号时请按正则写法转义。屏蔽词命中的帖子会从列表中消失；特别关注命中的帖子标题前会加 ✨。作用于板块列表、搜索结果、浏览记录和收藏，已打开的帖子正文不受影响。",
                     size = 11.sp,
                     color = colors.onSurfaceVariant,
                     lineHeight = 1.5f
@@ -4943,9 +4943,9 @@ private fun ContentPrefDialog(
     val colors = CouiTheme.colorScheme
     val title = if (kind == 0) "屏蔽词" else "特别关注"
     val tip = if (kind == 0) {
-        "命中的帖子会从首页列表里直接消失（和谐动漫 / 和谐游戏 / 浏览记录）"
+        "命中标题的帖子会从列表中隐藏；不区分大小写，支持正则"
     } else {
-        "命中的帖子标题前会加 ✨（和谐动漫 / 和谐游戏 / 浏览记录）"
+        "命中标题的帖子标题前会加 ✨；不区分大小写，支持正则"
     }
     var adding by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
@@ -4977,7 +4977,7 @@ private fun ContentPrefDialog(
                 ) {
                     if (text.isEmpty()) {
                         Txt(
-                            "支持换行批量输入，一行一个关键词",
+                            "支持换行批量输入，一行一个关键词或正则",
                             size = 13.sp,
                             color = colors.onSurfaceVariant
                         )
@@ -4991,7 +4991,7 @@ private fun ContentPrefDialog(
                 }
                 Spacer(Modifier.height(4.dp))
                 Txt(
-                    "换行、逗号、分号都能分隔；重复的会自动去掉。",
+                    "每一行整体作为一条规则，不区分大小写；普通文字可直接输入，含 . + ( ) 等正则符号时请按正则写法转义，无法编译的规则按普通文字匹配。",
                     modifier = Modifier.padding(horizontal = 18.dp),
                     size = 11.sp,
                     color = colors.onSurfaceVariant
@@ -5018,7 +5018,7 @@ private fun ContentPrefDialog(
             } else {
                 if (items.isEmpty()) {
                     Txt(
-                        "还没有关键词",
+                        "还没有关键词或正则",
                         modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
                         size = 13.sp,
                         color = colors.onSurfaceVariant
@@ -5061,7 +5061,7 @@ private fun ContentPrefDialog(
                 ) {
                     IconImg(CouiIcons.Filled.Add, 20.dp, colors.accent)
                     Spacer(Modifier.width(12.dp))
-                    Txt("新增关键词", size = 14.sp, color = colors.accent)
+                    Txt("新增关键词 / 正则", size = 14.sp, color = colors.accent)
                 }
             }
 
