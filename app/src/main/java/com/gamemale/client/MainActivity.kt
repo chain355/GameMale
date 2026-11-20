@@ -1841,11 +1841,63 @@ class MainActivity : ComponentActivity() {
     private fun todayKey(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
 
-    private fun looksSuccess(text: String?, vararg keys: String): Boolean {
+    /**
+     * 每日任务结果判定。
+     *
+     * 签到接口（k_misign）返回的是带提示文字的文本/HTML；
+     * 抽卡接口（it618_award:ajax&ac=getaward）返回的是 JSON：{"tipname":"ok", "yes":奖品, ...}，
+     * 里面既没有「成功」也没有「恭喜」，按中文关键词判定必然误判为失败。
+     *
+     * 所以改成：先看 JSON 的 tipname，再按「已经做过 → 明确失败 → 明确成功 → 未知」分级，
+     * 未知时按成功处理（请求已经正常返回、服务器没有报错），并把原始返回体截断写进诊断日志，
+     * 以后真出问题能直接看到服务器到底回了什么。
+     */
+    private fun judgeDaily(text: String?, kind: Int): Boolean {
         if (text == null) return false
-        val ok = keys.any { text.contains(it) }
-        val bad = text.contains("失败") || text.contains("错误") || text.contains("不能") || text.contains("没有机会")
-        return ok && !bad
+        val norm = normalizeDaily(text)
+        Diag.log("daily", "resp[" + (if (kind == 0) "sign" else "award") + "] " + norm.take(200).replace("\n", " "))
+        if (norm.isBlank()) return false
+
+        // 1) JSON（抽卡接口）：只看 tipname
+        val tip = Regex("\"tipname\"\\s*:\\s*\"([^\"]*)\"").find(norm)?.groupValues?.get(1)?.lowercase()
+        if (tip != null) return tip == "ok"
+
+        // 2) 已经做过 = 成功（"抱歉，您今天已经签到过了" 这类也归到这里，别被"抱歉"误伤）
+        val already = listOf("已签到", "已经签到", "今日已签到", "签到排名", "已抽奖", "已经抽奖", "已领取")
+        if (already.any { norm.contains(it) }) return true
+
+        // 3) 明确失败
+        val fail = listOf(
+            "失败", "错误", "未登录", "请先登录", "没有机会", "次数不足", "不能重复",
+            "无权", "没有权限", "未开始", "已结束", "Just a moment", "challenge-platform", "cf-chl"
+        )
+        if (fail.any { norm.contains(it, ignoreCase = true) }) return false
+
+        // 4) 明确成功
+        val success = listOf("成功", "恭喜", "获得", "抽到", "奖励", "积分", "排名", "领取", "签到完成")
+        if (success.any { norm.contains(it) }) return true
+
+        // 5) 未知：服务器已经正常返回、既没拒绝也没报错，按成功处理（日志里留了原文）
+        Diag.log("daily", "ambiguous[" + (if (kind == 0) "sign" else "award") + "] 按成功处理")
+        return true
+    }
+
+    /** 归一化：\uXXXX 转义、HTML 实体、标签都去掉，免得关键词被编码挡住 */
+    private fun normalizeDaily(t: String): String {
+        var s = t
+        s = Regex("\\\\u([0-9a-fA-F]{4})").replace(s) { m ->
+            m.groupValues[1].toIntOrNull(16)?.toChar()?.toString() ?: ""
+        }
+        s = Regex("&#x([0-9a-fA-F]+);").replace(s) { m ->
+            m.groupValues[1].toIntOrNull(16)?.toChar()?.toString() ?: ""
+        }
+        s = Regex("&#(\\d+);").replace(s) { m ->
+            m.groupValues[1].toIntOrNull()?.toChar()?.toString() ?: ""
+        }
+        s = s.replace("&nbsp;", " ").replace("&amp;", "&")
+            .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
+        s = Regex("<[^>]*>").replace(s, " ")
+        return s
     }
 
     /** 每日首次启动：自动签到 + 自动翻卡抽奖 */
@@ -1901,7 +1953,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         // 抽卡接口的返回体直接判断成败，不再重载页面（重载容易超时）
                         fetchText(SITE + "plugin.php?id=it618_award:ajax&ac=getaward&formhash=$fh") { r ->
-                            done[1] = looksSuccess(r, "成功", "恭喜", "获得", "积分", "抽到", "已抽奖")
+                            done[1] = judgeDaily(r, 1)
                             finish()
                         }
                     }
@@ -1926,7 +1978,7 @@ class MainActivity : ComponentActivity() {
                     lottery()
                 } else {
                     fetchText(SITE + "plugin.php?id=k_misign:sign&operation=qiandao&formhash=$fh&format=empty") { r ->
-                        done[0] = looksSuccess(r, "成功", "已签到", "签到排名", "重复", "已经签到")
+                        done[0] = judgeDaily(r, 0)
                         if (done[0] == true) toast("签到完成")
                         lottery()
                     }

@@ -15,6 +15,16 @@ object Changelog {
     /** 新版本在上 */
     val all: List<Release> = listOf(
         Release(
+            "4.3.2",
+            features = listOf(
+                "每日任务的返回体原文会写进诊断日志（截前 200 字），以后判定有争议可以直接看服务器回了什么"
+            ),
+            fixes = listOf(
+                "修签到/抽卡成功却提示失败：抽卡接口返回的是 JSON（tipname=ok），不含中文成功字样，改为先看 tipname",
+                "判定改为「已做过 → 明确失败 → 明确成功 → 未知按成功」四级，不再被「不能重复」这类字样误伤"
+            )
+        ),
+        Release(
             "4.3.1",
             features = listOf(
                 "设置页「内容偏好」的屏蔽词换了图标：圆圈加斜杠的禁止符号，不再是放大镜"
