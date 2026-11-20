@@ -94,6 +94,8 @@ class MainActivity : ComponentActivity() {
     private var changelogOpen by mutableStateOf(false)
     /** 升级后首次启动要展示的版本区间，非空时弹窗 */
     private var upgradeReleases by mutableStateOf<List<Changelog.Release>>(emptyList())
+    /** 真正的新装：首次启动展示「个人学习研究作品」提示 */
+    private var firstRunNotice by mutableStateOf(false)
     private var appVersionName: String = ""
     private var rateFormDef: FormDef? = null
     private var rateReasonName: String? = null
@@ -187,6 +189,7 @@ class MainActivity : ComponentActivity() {
         refreshCacheStats()
         // 版本比对放后台线程，不挡首页首屏
         checkUpgradeLog(prefs)
+        checkFirstRunNotice(prefs)
         applyStatusBar()
 
         browserHost = FrameLayout(this)
@@ -447,6 +450,8 @@ class MainActivity : ComponentActivity() {
                     onCloseChangelog = { changelogOpen = false },
                     upgradeReleases = upgradeReleases,
                     onDismissUpgradeLog = { markUpgradeLogShown() },
+                    firstRunNotice = firstRunNotice,
+                    onDismissFirstRunNotice = { dismissFirstRunNotice() },
                     appVersion = appVersionName
                 )
             }
@@ -1608,6 +1613,22 @@ class MainActivity : ComponentActivity() {
             }.getOrDefault(target)
             runOnUiThread { upgradeReleases = sorted }
         }.start()
+    }
+
+    /**
+     * 新装，以及从旧版本升级到本版，都提示一次使用声明；确认后写入标记，
+     * 从此以后继续升级不再提示。标记只在用户确认后落盘，中途被杀下次启动还会再提示。
+     */
+    private fun checkFirstRunNotice(prefs: android.content.SharedPreferences) {
+        if (prefs.getBoolean("firstRunNoticeShown", false)) return
+        firstRunNotice = true
+    }
+
+    private fun dismissFirstRunNotice() {
+        firstRunNotice = false
+        getSharedPreferences("gm", MODE_PRIVATE).edit()
+            .putBoolean("firstRunNoticeShown", true)
+            .apply()
     }
 
     /** 用户在弹窗上点「知道了」后调用：这时才记下「已看过哪个版本」 */

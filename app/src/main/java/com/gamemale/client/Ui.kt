@@ -636,7 +636,8 @@ fun Txt(
     maxLines: Int = Int.MAX_VALUE,
     align: TextAlign? = null,
     lineHeight: Float = 1.45f,
-    overflow: TextOverflow = TextOverflow.Clip
+    overflow: TextOverflow = TextOverflow.Clip,
+    decoration: TextDecoration? = null
 ) {
     BasicText(
         text = text,
@@ -646,7 +647,8 @@ fun Txt(
             fontSize = size,
             fontWeight = weight,
             textAlign = align ?: TextAlign.Start,
-            lineHeight = (size.value * lineHeight).sp
+            lineHeight = (size.value * lineHeight).sp,
+            textDecoration = decoration
         ),
         maxLines = maxLines,
         overflow = overflow
@@ -771,6 +773,8 @@ fun AppUi(
     onCloseChangelog: () -> Unit = {},
     upgradeReleases: List<Changelog.Release> = emptyList(),
     onDismissUpgradeLog: () -> Unit = {},
+    firstRunNotice: Boolean = false,
+    onDismissFirstRunNotice: () -> Unit = {},
     appVersion: String = "",
     watchLater: List<WatchStore.Entry> = emptyList(),
     watchSelecting: Boolean = false,
@@ -1699,7 +1703,9 @@ fun AppUi(
             onCancel = onCloseAttachPay
         )
         if (changelogOpen) ChangelogDialog(Changelog.all, onCloseChangelog)
-        if (upgradeReleases.isNotEmpty()) UpgradeLogDialog(upgradeReleases, onDismissUpgradeLog)
+        // 使用声明优先级最高：确认之后才展示更新日志
+        if (upgradeReleases.isNotEmpty() && !firstRunNotice) UpgradeLogDialog(upgradeReleases, onDismissUpgradeLog)
+        if (firstRunNotice) FirstRunNoticeDialog(onDismissFirstRunNotice)
         if (replyOpen) ReplyDialog(busy, onCancelReply, onSendReply)
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) {
@@ -4186,6 +4192,27 @@ private fun SettingsView(
                     lineHeight = 1.55f
                 )
                 Spacer(Modifier.height(10.dp))
+                Txt("开发人员", size = 13.sp, weight = FontWeight.SemiBold, color = colors.onSurface)
+                Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Txt("项目发起人", modifier = Modifier.weight(1f), size = 12.sp, color = colors.onSurfaceVariant)
+                    Txt("chain355", size = 12.sp, color = colors.onSurface)
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Txt("功能代码编写", modifier = Modifier.weight(1f), size = 12.sp, color = colors.onSurfaceVariant)
+                    Txt("豆包", size = 12.sp, color = colors.onSurface)
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Txt("UI 界面细节优化", modifier = Modifier.weight(1f), size = 12.sp, color = colors.onSurfaceVariant)
+                    Txt(
+                        "orz12",
+                        size = 12.sp,
+                        color = colors.accent,
+                        decoration = TextDecoration.Underline,
+                        modifier = Modifier.clickable { onExternal("https://github.com/orz12") }
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
                 Pill("访问站点", { onExternal("https://www.gamemale.com/") }, primary = false)
                 Spacer(Modifier.height(8.dp))
                 Pill("开源地址 · chain355/GameMale",
@@ -5004,7 +5031,7 @@ private fun ContentPrefDialog(
     }
 }
 
-/** 更新日志：历代版本，新增功能带 ✨，修复点排在后面 */
+/** 更新日志：只有以「新增」开头的功能条目前面加 ✨；调整、优化与修复都不加 */
 @Composable
 private fun ChangelogDialog(releases: List<Changelog.Release>, onClose: () -> Unit) {
     val colors = CouiTheme.colorScheme
@@ -5030,6 +5057,52 @@ private fun ChangelogDialog(releases: List<Changelog.Release>, onClose: () -> Un
             }
 
         }
+    }
+}
+
+/** 首次安装的告知弹窗：个人学习研究作品，不得用于商业用途 */
+@Composable
+private fun FirstRunNoticeDialog(onDismiss: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(vertical = 14.dp)
+        ) {
+            DialogHead(
+                "欢迎使用 GameMale 客户端",
+                onDismiss,
+                subtitle = "开始前，请先了解这几件事",
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Column(Modifier.padding(horizontal = 18.dp)) {
+                NoticeLine("本应用为个人学习研究作品，非 GameMale 官方客户端，不得用于任何商业用途，也不提供任何付费服务。")
+                NoticeLine("应用内展示的帖子、图片与附件均来自原站点，版权归站点及原作者所有；请遵守站点规则和当地法律法规。")
+                NoticeLine("登录状态、浏览记录、稍后再看与已下载附件只保存在本机，不会上传到第三方服务器；卸载应用会一并清除。")
+                NoticeLine("继续使用即表示你已阅读并理解上述说明。")
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Pill("我已了解", onDismiss, primary = true)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoticeLine(text: String) {
+    val colors = CouiTheme.colorScheme
+    Row(Modifier.padding(vertical = 4.dp)) {
+        Txt("·", size = 12.sp, color = colors.onSurfaceVariant)
+        Spacer(Modifier.width(6.dp))
+        Txt(text, size = 12.sp, color = colors.onSurface, lineHeight = 1.65f)
     }
 }
 
@@ -5092,8 +5165,20 @@ private fun ReleaseList(releases: List<Changelog.Release>, compact: Boolean = fa
             )
         }
         r.features.forEach { f ->
+            val isNew = f.trimStart().startsWith("新增")
             Row(Modifier.padding(horizontal = 18.dp, vertical = 3.dp)) {
-                Txt("✨", size = 12.sp, color = colors.accent)
+                Txt(
+                    if (isNew) "✨" else "·",
+                    size = 12.sp,
+                    color = if (isNew) colors.accent else colors.onSurfaceVariant
+                )
+                Spacer(Modifier.width(6.dp))
+                Txt(f, size = 12.sp, color = colors.onSurface, lineHeight = 1.55f)
+            }
+        }
+        r.changes.forEach { f ->
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 3.dp)) {
+                Txt("·", size = 12.sp, color = colors.onSurfaceVariant)
                 Spacer(Modifier.width(6.dp))
                 Txt(f, size = 12.sp, color = colors.onSurface, lineHeight = 1.55f)
             }
