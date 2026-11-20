@@ -158,6 +158,18 @@ import com.itos.coui.icons.CouiIcons
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
 import com.itos.coui.theme.CouiTheme
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.spring
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.unit.Velocity
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.yield
+import kotlin.math.roundToInt
 
 private const val ANIME_URL =
     "https://www.gamemale.com/forum.php?mod=forumdisplay&fid=150&filter=dateline&orderby=dateline&typeid=831"
@@ -2185,153 +2197,116 @@ private fun ForumView(
     refreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onThumbNeeded: (ThreadItem) -> Unit = {},
-    searchUpdating: Boolean = false,
-    onSwipeBoard: ((Boolean) -> Unit)? = null
+    searchUpdating: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
-    var pull by remember { mutableStateOf(0f) }
-    var dragging by remember { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val thresholdPx = with(density) { 64.dp.toPx() }
+    val restPx = with(density) { 48.dp.toPx() }
+    val maxPullPx = with(density) { 128.dp.toPx() }
+    val indicatorPx = with(density) { 32.dp.toPx() }
+    val pullState = remember { mutableFloatStateOf(0f) }
+    val fingerDown = remember { mutableStateOf(false) }
+    val pullGen = remember { mutableIntStateOf(0) }
+    val settleJob = remember { mutableStateOf<Job?>(null) }
+    val thresholdNow = rememberUpdatedState(thresholdPx)
+    val restNow = rememberUpdatedState(restPx)
+    val maxNow = rememberUpdatedState(maxPullPx)
     val refreshingNow = rememberUpdatedState(refreshing)
     val updatingNow = rememberUpdatedState(searchUpdating)
-    val scrollConn = remember {
-        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
-            override fun onPreScroll(
-                available: androidx.compose.ui.geometry.Offset,
-                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource
-            ): androidx.compose.ui.geometry.Offset {
-                if (available.y < 0 && pull > 0f) {
-                    val d = available.y.coerceAtLeast(-pull)
-                    pull += d
-                    return androidx.compose.ui.geometry.Offset(0f, d)
+    val onRefreshNow = rememberUpdatedState(onRefresh)
+    val scope = rememberCoroutineScope()
+    fun settleTo(target: Float) {
+        val gen = pullGen.intValue + 1
+        pullGen.intValue = gen
+        settleJob.value?.cancel()
+        val from = pullState.floatValue
+        if (kotlin.math.abs(from - target) < 0.5f) {
+            pullState.floatValue = target
+            return
+        }
+        settleJob.value = scope.launch {
+            animate(
+                initialValue = from,
+                targetValue = target,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium
+                )
+            ) { v, _ ->
+                if (pullGen.intValue == gen) pullState.floatValue = v
+            }
+        }
+    }
+    val connection = remember(listState) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source != NestedScrollSource.UserInput) return Offset.Zero
+                if (refreshingNow.value || updatingNow.value) return Offset.Zero
+                if (available.y < 0f && pullState.floatValue > 0f) {
+                    pullGen.intValue += 1
+                    settleJob.value?.cancel()
+                    fingerDown.value = true
+                    val next = (pullState.floatValue + available.y).coerceAtLeast(0f)
+                    val consumed = next - pullState.floatValue
+                    pullState.floatValue = next
+                    return Offset(0f, consumed)
                 }
-                return androidx.compose.ui.geometry.Offset.Zero
+                return Offset.Zero
             }
 
             override fun onPostScroll(
-                consumed: androidx.compose.ui.geometry.Offset,
-                available: androidx.compose.ui.geometry.Offset,
-                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource
-            ): androidx.compose.ui.geometry.Offset {
-                if (available.y > 0 && !listState.canScrollBackward && !refreshingNow.value && dragging) {
-                    pull += available.y * 0.6f
-                    if (pull > 900f) pull = 900f
-                    return androidx.compose.ui.geometry.Offset(0f, available.y)
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                if (source != NestedScrollSource.UserInput) return Offset.Zero
+                if (refreshingNow.value || updatingNow.value) return Offset.Zero
+                if (available.y > 0f && !listState.canScrollBackward) {
+                    pullGen.intValue += 1
+                    settleJob.value?.cancel()
+                    fingerDown.value = true
+                    pullState.floatValue = rubberPull(pullState.floatValue, available.y, maxNow.value)
+                    return Offset(0f, available.y)
                 }
-                return androidx.compose.ui.geometry.Offset.Zero
+                return Offset.Zero
             }
 
-            override suspend fun onPostFling(
-                consumed: androidx.compose.ui.unit.Velocity,
-                available: androidx.compose.ui.unit.Velocity
-            ): androidx.compose.ui.unit.Velocity {
-                // 惯性滑动（尤其从列表底部快速甩回顶部）不算下拉，顺手复位残留位移
-                if (!dragging && !refreshingNow.value) pull = 0f
-                return androidx.compose.ui.unit.Velocity.Zero
-            }
-        }
-    }
-    val scope = rememberCoroutineScope()
-    var spin by remember { mutableStateOf(0f) }
-    var spinSpeed by remember { mutableStateOf(0f) }
-    var lastPull by remember { mutableStateOf(0f) }
-    val autoOffset = remember { androidx.compose.animation.core.Animatable(0f) }
-    val autoPx = with(LocalDensity.current) { (LocalBarInset.current + 87.dp).toPx() }
-    LaunchedEffect(refreshing, searchUpdating) {
-        if (refreshing || searchUpdating) autoOffset.animateTo(autoPx, tween(300))
-        else autoOffset.animateTo(0f, tween(380, easing = FastOutSlowInEasing))
-    }
-    fun settleTo(target: Float) = scope.launch {
-        androidx.compose.animation.core.animate(
-            initialValue = pull, targetValue = target,
-            animationSpec = tween(380, easing = FastOutSlowInEasing)
-        ) { v, _ -> pull = v }
-    }
-    // 刷新完成后，列表再慢慢回顶把动画盖住
-    LaunchedEffect(refreshing) { if (!refreshing && pull > 0f) settleTo(0f) }
-    // 转圈速度跟随手指位移：拉动时转，停手后慢慢停，刷新中匀速
-    LaunchedEffect(Unit) {
-        while (true) {
-            androidx.compose.runtime.withFrameNanos { _ ->
-                val d = pull - lastPull
-                lastPull = pull
-                spinSpeed = if (refreshingNow.value || updatingNow.value) 5.5f
-                else (spinSpeed * 0.86f + d * 0.8f).coerceIn(-45f, 45f)
-                spin = (spin + spinSpeed) % 360f
-            }
-        }
-    }
-    Box(Modifier.fillMaxSize()) {
-        // 刷新动画固定藏在列表下面，列表下拉时才露出来
-        Row(
-            Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = LocalBarInset.current + 28.dp)
-                .zIndex(-1f),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Canvas(Modifier.size(18.dp)) {
-                drawArc(
-                    color = colors.onSurfaceVariant,
-                    startAngle = spin,
-                    sweepAngle = 250f,
-                    useCenter = false,
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(
-                        width = 2.dp.toPx(),
-                        cap = androidx.compose.ui.graphics.StrokeCap.Round
-                    )
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            Txt(
-                if (refreshing || searchUpdating) "刷新中…" else if (pull > 90f) "松开刷新" else "下拉刷新",
-                size = 12.sp,
-                color = colors.onSurfaceVariant
-            )
-        }
-        LazyColumn(
-            Modifier
-                .fillMaxSize()
-                .offset {
-                    androidx.compose.ui.unit.IntOffset(0, maxOf(pull, autoOffset.value).toInt())
-                }
-                .background(colors.background)
-
-                .nestedScroll(scrollConn)
-                .pointerInput(refreshing) {
-                    awaitPointerEventScope {
-                        var accX = 0f
-                        var accY = 0f
-                        while (true) {
-                            val e = awaitPointerEvent()
-                            var moved = false
-                            for (c in e.changes) {
-                                val d = c.position - c.previousPosition
-                                if (d != androidx.compose.ui.geometry.Offset.Zero) {
-                                    accX += d.x; accY += d.y; moved = true
-                                }
-                            }
-                            if (e.changes.any { it.pressed }) dragging = true
-                            if (e.changes.isNotEmpty() && e.changes.all { !it.pressed }) {
-                                dragging = false
-                                val th = 110.dp.toPx()
-                                if (onSwipeBoard != null && kotlin.math.abs(accX) > th &&
-                                    kotlin.math.abs(accX) > kotlin.math.abs(accY) * 2f && !refreshing
-                                ) {
-                                    onSwipeBoard(accX > 0f)
-                                    accX = 0f; accY = 0f
-                                    continue
-                                }
-                                accX = 0f; accY = 0f
-                                if (pull > 90f && !refreshing && !listState.canScrollBackward) {
-                                    // 保持当前偏移，等刷新结束再回顶
-                                    onRefresh()
-                                } else if (!refreshing) {
-                                    settleTo(0f)
-                                }
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                val pulling = fingerDown.value
+                fingerDown.value = false
+                if (!pulling) return Velocity.Zero
+                val pull = pullState.floatValue
+                val busy = refreshingNow.value || updatingNow.value
+                when {
+                    busy -> if (pull > 0f) settleTo(restNow.value)
+                    pull >= thresholdNow.value -> {
+                        onRefreshNow.value()
+                        scope.launch {
+                            yield()
+                            if (!refreshingNow.value && !updatingNow.value && !fingerDown.value) {
+                                settleTo(0f)
                             }
                         }
                     }
-                },
+                    pull > 0f -> settleTo(0f)
+                }
+                return if (pull > 0f) Velocity(0f, available.y) else Velocity.Zero
+            }
+        }
+    }
+    LaunchedEffect(refreshing, searchUpdating) {
+        if (fingerDown.value) return@LaunchedEffect
+        settleTo(if (refreshing || searchUpdating) restPx else 0f)
+    }
+    val pull = pullState.floatValue
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            Modifier
+                .fillMaxSize()
+                .offset { androidx.compose.ui.unit.IntOffset(0, pull.roundToInt()) }
+                .background(colors.background)
+                .nestedScroll(connection),
             state = listState,
             contentPadding = PaddingValues(start = 12.dp, top = 12.dp + LocalBarInset.current, end = 12.dp, bottom = 110.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -2388,6 +2363,59 @@ private fun ForumView(
                     PagerRow(page.pageNo, page.pageCount, page.pages, onLoad)
                 }
             }
+        }
+        ListPullIndicator(
+            pullPx = pull,
+            thresholdPx = thresholdPx,
+            indicatorPx = indicatorPx,
+            refreshing = refreshing || searchUpdating,
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
+    }
+}
+
+/** 下拉距离来自列表位移，圆圈只是跟着这段位移走。 */
+private fun rubberPull(current: Float, delta: Float, max: Float): Float {
+    val t = (current / max).coerceIn(0f, 1f)
+    val resistance = (0.65f * (1f - t * t)).coerceAtLeast(0.16f)
+    return (current + delta * resistance).coerceIn(0f, max)
+}
+
+@Composable
+private fun ListPullIndicator(
+    pullPx: Float,
+    thresholdPx: Float,
+    indicatorPx: Float,
+    refreshing: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val colors = CouiTheme.colorScheme
+    val fraction = (pullPx / thresholdPx).coerceIn(0f, 1f)
+    val spinTransition = rememberInfiniteTransition()
+    val spin by spinTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(700, easing = LinearEasing))
+    )
+    val alpha = if (refreshing) 1f else (pullPx / (thresholdPx * 0.35f)).coerceIn(0f, 1f)
+    if (alpha <= 0f) return
+    Box(
+        modifier
+            .padding(top = LocalBarInset.current)
+            .offset { androidx.compose.ui.unit.IntOffset(0, (pullPx - indicatorPx).roundToInt()) }
+            .graphicsLayer { this.alpha = alpha }
+            .size(32.dp)
+            .background(colors.surface, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.size(16.dp)) {
+            drawArc(
+                color = if (refreshing || fraction >= 1f) colors.accent else colors.onSurfaceVariant,
+                startAngle = if (refreshing) spin else -90f,
+                sweepAngle = if (refreshing) 270f else 32f + 250f * fraction,
+                useCenter = false,
+                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+            )
         }
     }
 }
