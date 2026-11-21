@@ -3722,8 +3722,10 @@ private fun collectImageUrls(blocks: List<Block>): List<String> = blocks.flatMap
 
 @Composable
 private fun ImageDialog(images: List<String>, startUrl: String, onClose: () -> Unit) {
-    val list = images.ifEmpty { listOf(startUrl) }
-    val startIndex = list.indexOf(startUrl).let { if (it >= 0) it else 0 }
+    // 传入的图集来自当前帖子。从帖子返回列表后再点别的预览图时，地址不在这套图里，
+    // 不能退回第 0 张（那会打开刚看过的帖子的第一张图），只展示点中的这一张。
+    val list = if (startUrl in images) images else listOf(startUrl)
+    val startIndex = list.indexOf(startUrl).coerceAtLeast(0)
     val pagerState = androidx.compose.foundation.pager.rememberPagerState(initialPage = startIndex) { list.size }
     val scope = rememberCoroutineScope()
     // 每张图各自记住缩放/位移，来回切图能“从哪来回哪去”
