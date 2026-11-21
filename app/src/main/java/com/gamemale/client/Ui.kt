@@ -1,6 +1,7 @@
 package com.gamemale.client
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
@@ -16,6 +17,7 @@ import androidx.navigation3.scene.SinglePaneSceneStrategy
 import androidx.navigation3.ui.LocalNavAnimatedContentScope
 import androidx.navigation3.ui.NavDisplay
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -596,6 +598,13 @@ private fun IconHistory(c: Color) {
 private fun SearchDialog(onCancel: () -> Unit, onSearch: (String) -> Unit) {
     val colors = CouiTheme.colorScheme
     var text by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        delay(80)
+        runCatching { focus.requestFocus() }
+        keyboard?.show()
+    }
     Dialog(onDismissRequest = onCancel) {
         Column(
             Modifier
@@ -620,7 +629,8 @@ private fun SearchDialog(onCancel: () -> Unit, onSearch: (String) -> Unit) {
                     onValueChange = { text = it },
                     singleLine = true,
                     textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
-                    modifier = Modifier.fillMaxWidth()
+                    cursorBrush = SolidColor(colors.accent),
+                    modifier = Modifier.fillMaxWidth().focusRequester(focus)
                 )
             }
             Spacer(Modifier.height(14.dp))
@@ -820,6 +830,10 @@ fun AppUi(
     fontScale: Float = 1f,
     blurBg: Boolean = true,
     onSetBlurBg: (Boolean) -> Unit = {},
+    autoSignEnabled: Boolean = false,
+    autoAwardEnabled: Boolean = false,
+    onSetAutoSign: (Boolean) -> Unit = {},
+    onSetAutoAward: (Boolean) -> Unit = {},
     themeMode: Int = 0,
     cacheMb: Int = 300,
     cacheBytes: Long = 0L,
@@ -1534,6 +1548,10 @@ fun AppUi(
                                     onSetFontScale = onSetFontScale,
                                     blurBg = blurBg,
                                     onSetBlurBg = onSetBlurBg,
+                                    autoSignEnabled = autoSignEnabled,
+                                    autoAwardEnabled = autoAwardEnabled,
+                                    onSetAutoSign = onSetAutoSign,
+                                    onSetAutoAward = onSetAutoAward,
                                     onSetCacheMb = onSetCacheMb,
                                     onClearCache = onClearCache,
                                     onExportLogs = onExportLogs,
@@ -3243,6 +3261,7 @@ private fun ReplyDialog(submitting: Boolean, onCancel: () -> Unit, onSend: (Stri
                     value = text,
                     onValueChange = { text = it },
                     textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
+                    cursorBrush = SolidColor(colors.accent),
                     modifier = Modifier.fillMaxSize().focusRequester(focus)
                 )
             }
@@ -3277,6 +3296,13 @@ private fun RateDialog(
 ) {
     val colors = CouiTheme.colorScheme
     var reason by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        delay(80)
+        runCatching { focus.requestFocus() }
+        keyboard?.show()
+    }
     Dialog(onDismissRequest = onCancel) {
         Column(
             Modifier
@@ -3312,7 +3338,8 @@ private fun RateDialog(
                     value = reason,
                     onValueChange = { reason = it },
                     textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
-                    modifier = Modifier.fillMaxSize()
+                    cursorBrush = SolidColor(colors.accent),
+                    modifier = Modifier.fillMaxSize().focusRequester(focus)
                 )
             }
             Spacer(Modifier.height(14.dp))
@@ -3883,6 +3910,10 @@ private fun SettingsView(
     themeMode: Int,
     blurBg: Boolean = true,
     onSetBlurBg: (Boolean) -> Unit = {},
+    autoSignEnabled: Boolean = false,
+    autoAwardEnabled: Boolean = false,
+    onSetAutoSign: (Boolean) -> Unit = {},
+    onSetAutoAward: (Boolean) -> Unit = {},
     cacheMb: Int,
     cacheBytes: Long,
     cacheCount: Int,
@@ -3992,6 +4023,30 @@ private fun SettingsView(
                 Spacer(Modifier.height(6.dp))
                 Txt(
                     "关键词不区分大小写，按正则表达式匹配标题：普通文字可直接输入，含 . + ( ) 等符号时请按正则写法转义。屏蔽词命中的帖子会从列表中消失；特别关注命中的帖子标题前会加 ✨。作用于板块列表、搜索结果、浏览记录和收藏，已打开的帖子正文不受影响。",
+                    size = 11.sp,
+                    color = colors.onSurfaceVariant,
+                    lineHeight = 1.5f
+                )
+            }
+        }
+        item {
+            section("自动任务") {
+                AutoTaskRow(
+                    title = "自动签到",
+                    desc = "每日首次启动时自动完成签到",
+                    checked = autoSignEnabled,
+                    onCheckedChange = onSetAutoSign
+                )
+                Spacer(Modifier.height(4.dp))
+                AutoTaskRow(
+                    title = "自动抽卡",
+                    desc = "每日首次启动时自动翻卡抽奖",
+                    checked = autoAwardEnabled,
+                    onCheckedChange = onSetAutoAward
+                )
+                Spacer(Modifier.height(6.dp))
+                Txt(
+                    "仅在已登录时执行；关闭后不会在启动时自动操作，仍可在头像菜单或网页端手动完成。",
                     size = 11.sp,
                     color = colors.onSurfaceVariant,
                     lineHeight = 1.5f
@@ -4194,6 +4249,62 @@ private fun SettingsView(
                 }
             }
         }
+    }
+}
+
+/** COUI 风格开关：胶囊轨道 + 白色滑块，切换时滑块滑动、轨道颜色渐变。 */
+@Composable
+private fun CouiSwitch(checked: Boolean) {
+    val colors = CouiTheme.colorScheme
+    val knobX by animateDpAsState(
+        targetValue = if (checked) 23.dp else 3.dp,
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "switchKnob"
+    )
+    val trackColor by animateColorAsState(
+        targetValue = if (checked) colors.accent else colors.onSurfaceVariant.copy(alpha = 0.22f),
+        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        label = "switchTrack"
+    )
+    Box(
+        Modifier
+            .size(width = 46.dp, height = 26.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .background(trackColor)
+    ) {
+        Box(
+            Modifier
+                .offset(x = knobX, y = 3.dp)
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+        )
+    }
+}
+
+@Composable
+private fun AutoTaskRow(
+    title: String,
+    desc: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 2.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Txt(title, size = 14.sp, color = colors.onSurface)
+            Spacer(Modifier.height(2.dp))
+            Txt(desc, size = 11.sp, color = colors.onSurfaceVariant)
+        }
+        Spacer(Modifier.width(12.dp))
+        CouiSwitch(checked)
     }
 }
 
@@ -4844,6 +4955,15 @@ private fun ContentPrefDialog(
     }
     var adding by remember { mutableStateOf(false) }
     var text by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(adding) {
+        if (adding) {
+            delay(120)
+            runCatching { focus.requestFocus() }
+            keyboard?.show()
+        }
+    }
     androidx.compose.ui.window.Dialog(onDismissRequest = onClose) {
         Column(
             Modifier
@@ -4881,7 +5001,8 @@ private fun ContentPrefDialog(
                         value = text,
                         onValueChange = { text = it },
                         textStyle = TextStyle(color = colors.onSurface, fontSize = 15.sp),
-                        modifier = Modifier.fillMaxSize()
+                        cursorBrush = SolidColor(colors.accent),
+                        modifier = Modifier.fillMaxSize().focusRequester(focus)
                     )
                 }
                 Spacer(Modifier.height(4.dp))

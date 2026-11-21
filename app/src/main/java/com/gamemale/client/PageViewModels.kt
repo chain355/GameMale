@@ -110,6 +110,9 @@ class SettingsViewModel : ViewModel() {
     var themeMode by mutableStateOf(0)
     var fontScale by mutableStateOf(1f)
     var blurBg by mutableStateOf(true)
+    /** 每日首次启动自动签到 / 自动抽卡，由设置页开关控制。 */
+    var autoSignEnabled by mutableStateOf(false)
+    var autoAwardEnabled by mutableStateOf(false)
     var cacheMb by mutableStateOf(300)
     var cacheBytes by mutableStateOf(0L)
     var cacheCount by mutableStateOf(0)

@@ -166,6 +166,12 @@ class MainActivity : ComponentActivity() {
     private var fontScale: Float
         get() = settingsVm.fontScale
         set(value) { settingsVm.fontScale = value }
+    private var autoSignEnabled: Boolean
+        get() = settingsVm.autoSignEnabled
+        set(value) { settingsVm.autoSignEnabled = value }
+    private var autoAwardEnabled: Boolean
+        get() = settingsVm.autoAwardEnabled
+        set(value) { settingsVm.autoAwardEnabled = value }
     private var cacheMb: Int
         get() = settingsVm.cacheMb
         set(value) { settingsVm.cacheMb = value }
@@ -301,6 +307,7 @@ class MainActivity : ComponentActivity() {
         appVersionName = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrNull().orEmpty()
+        loadAutoTaskPrefs(prefs)
         watchLater = WatchStore.load(this)
         blockedWords = ContentPrefs.loadBlocked(this)
         watchWords = ContentPrefs.loadWatch(this)
@@ -514,6 +521,16 @@ class MainActivity : ComponentActivity() {
                     onSetBlurBg = {
                         blurBg = it
                         prefs.edit().putBoolean("blurBg", it).commit()
+                    },
+                    autoSignEnabled = autoSignEnabled,
+                    autoAwardEnabled = autoAwardEnabled,
+                    onSetAutoSign = { on ->
+                        autoSignEnabled = on
+                        prefs.edit().putBoolean("autoSignEnabled", on).apply()
+                    },
+                    onSetAutoAward = { on ->
+                        autoAwardEnabled = on
+                        prefs.edit().putBoolean("autoAwardEnabled", on).apply()
                     },
                     historySelecting = historySelecting,
                     onHistorySelecting = { historySelecting = it },
@@ -1663,6 +1680,27 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 自动任务开关只在首次进入这个版本时决定一次：
+     * 全新安装默认关闭；从旧版本升上来则保留开启。
+     * 初始化结果立即落盘，之后升级不会再改用户的选择。
+     */
+    private fun loadAutoTaskPrefs(prefs: android.content.SharedPreferences) {
+        if (!prefs.contains("autoTaskPrefsInitialized")) {
+            val usedBefore = prefs.contains("lastSeenVersion") ||
+                prefs.contains("firstRunNoticeShown") ||
+                prefs.contains("themeMode") || prefs.contains("blurBg") ||
+                prefs.contains("fontScale") || java.io.File(filesDir, "history.json").exists()
+            prefs.edit()
+                .putBoolean("autoSignEnabled", usedBefore)
+                .putBoolean("autoAwardEnabled", usedBefore)
+                .putBoolean("autoTaskPrefsInitialized", true)
+                .commit()
+        }
+        autoSignEnabled = prefs.getBoolean("autoSignEnabled", false)
+        autoAwardEnabled = prefs.getBoolean("autoAwardEnabled", false)
+    }
+
+    /**
      * 升级后首次启动：后台算出跨过的版本区间，再弹窗；不阻塞首页刷新。
      *
      * 旧版本可能压根没写过 lastSeenVersion（这个功能是 4.3.0 才加的），
@@ -2361,7 +2399,7 @@ class MainActivity : ComponentActivity() {
         return s
     }
 
-    /** 每日首次启动：自动签到 + 自动翻卡抽奖 */
+    /** 每日首次启动：按设置页开关决定执行自动签到 / 自动翻卡抽奖 */
     private fun runDailyTasks() {
         if (!loggedIn || dailyRunning) return
         val sp = getSharedPreferences("gm", MODE_PRIVATE)
@@ -2369,15 +2407,26 @@ class MainActivity : ComponentActivity() {
             dailyFailed = sp.getBoolean("dailyTaskFailed", false)
             return
         }
+        val doSign = autoSignEnabled
+        val doAward = autoAwardEnabled
+        if (!doSign && !doAward) {
+            dailyFailed = false
+            sp.edit()
+                .putString("dailyTaskDay", todayKey())
+                .putBoolean("dailyTaskFailed", false)
+                .apply()
+            return
+        }
         dailyRunning = true
-        toast("正在自动签到…")
+        toast(if (doSign) "正在自动签到…" else "正在自动翻卡抽奖…")
+        val enabled = booleanArrayOf(doSign, doAward)
         val done = arrayOfNulls<Boolean>(2)
         fun finish() {
-            if (done.any { it == null }) return
+            if (enabled.indices.any { enabled[it] && done[it] == null }) return
             val msgs = ArrayList<String>()
-            msgs.add(if (done[0] == true) "已自动签到" else "签到失败")
-            msgs.add(if (done[1] == true) "已自动翻卡抽奖" else "翻卡抽奖失败")
-            val failed = done.any { it == false }
+            if (doSign) msgs.add(if (done[0] == true) "已自动签到" else "签到失败")
+            if (doAward) msgs.add(if (done[1] == true) "已自动翻卡抽奖" else "翻卡抽奖失败")
+            val failed = enabled.indices.any { enabled[it] && done[it] == false }
             dailyFailed = failed
             toast(msgs.joinToString("，"))
             sp.edit()
@@ -2398,6 +2447,10 @@ class MainActivity : ComponentActivity() {
         val awardUrl = SITE + "plugin.php?id=it618_award"
 
         fun lottery() {
+            if (!doAward) {
+                finish()
+                return
+            }
             fetchText(awardUrl) { html ->
                 if (html == null) {
                     done[1] = false; finish(); return@fetchText
@@ -2422,6 +2475,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        if (!doSign) {
+            lottery()
+            return
+        }
+
         fetchText(signUrl) { html ->
             if (html == null) {
                 done[0] = false
@@ -2430,7 +2488,7 @@ class MainActivity : ComponentActivity() {
             }
             if (!html.contains("您今天还没有签到")) {
                 done[0] = true
-                toast("今日已签到，正在检查翻卡…")
+                toast(if (doAward) "今日已签到，正在检查翻卡…" else "今日已签到")
                 lottery()
             } else {
                 val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
