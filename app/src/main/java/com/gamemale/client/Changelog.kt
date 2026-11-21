@@ -19,6 +19,16 @@ object Changelog {
     /** 新版本在上 */
     val all: List<Release> = listOf(
         Release(
+            "5.1.1",
+            changes = listOf(
+                "首页手机版列表的分页改为读取底部的页码下拉框，提前抓取时等分页进入 DOM 再收页面（协作者 orz12）",
+                "搜索与帖子详情翻页改为原地换页：不再播放打开新页的展开动画，帖子换页后回到顶部（协作者 orz12）"
+            ),
+            fixes = listOf(
+                "修复首页列表翻页按钮整条不显示的问题（协作者 orz12）"
+            )
+        ),
+        Release(
             "5.1.0",
             features = listOf(
                 "新增首页帖子卡片发帖人头像：列表改用手机版页面取头像，头像与作者、时间排成一行（协作者 orz12）",
