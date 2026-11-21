@@ -7,6 +7,12 @@ import org.jsoup.nodes.TextNode
 
 const val SITE = "https://www.gamemale.com/"
 
+/** 底部导航直达版块：按发布时间倒序（不是最后回复） */
+const val ANIME_URL =
+    SITE + "forum.php?mod=forumdisplay&fid=150&filter=dateline&orderby=dateline&typeid=831"
+const val GAME_URL =
+    SITE + "forum.php?mod=forumdisplay&fid=152&filter=dateline&orderby=dateline&typeid=737"
+
 data class ForumItem(val name: String, val url: String, val icon: String?, val desc: String)
 
 data class ThreadItem(

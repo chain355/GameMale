@@ -2,30 +2,37 @@ package com.gamemale.client
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.togetherWith
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
+import androidx.navigation3.runtime.entryProvider
+import androidx.navigation3.scene.SinglePaneSceneStrategy
+import androidx.navigation3.ui.LocalNavAnimatedContentScope
+import androidx.navigation3.ui.NavDisplay
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.util.lerp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.focus.FocusRequester
@@ -45,6 +52,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -81,6 +89,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
@@ -139,7 +148,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.boundsInWindow
@@ -147,7 +155,6 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.alpha
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.draw.drawWithContent
@@ -182,11 +189,6 @@ import androidx.compose.ui.unit.Velocity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.yield
 import kotlin.math.roundToInt
-
-private const val ANIME_URL =
-    "https://www.gamemale.com/forum.php?mod=forumdisplay&fid=150&filter=dateline&orderby=dateline&typeid=831"
-private const val GAME_URL =
-    "https://www.gamemale.com/forum.php?mod=forumdisplay&fid=152&filter=dateline&orderby=dateline&typeid=737"
 
 /** 列表的“回复气泡”图标（COUI 图标集没有评论类图标，这里自绘一个） */
 private val ReplyVector: ImageVector by lazy {
@@ -660,10 +662,112 @@ fun Txt(
     )
 }
 
+/** 这次导航是返回。推入新页时为 false，这样被盖住的页面不会跟着缩回去。 */
+private object NavMotion {
+    var popping = false
+    /** 这次推入还没把新页从点击区域展开。过渡开始前新页不能先铺满屏幕。 */
+    var enterHeld by mutableStateOf(false)
+}
+
+private val openSpots = mutableStateMapOf<String, Rect>()
+
+private fun threadBoundsKey(url: String): String {
+    val tid = Regex("thread-(\\d+)").find(url)?.groupValues?.get(1)
+        ?: Regex("tid=(\\d+)").find(url)?.groupValues?.get(1)
+    return "thread:" + (tid ?: url)
+}
+
+private fun pageBoundsKey(page: AppRoute): String? = when (page) {
+    is AppRoute.Thread -> threadBoundsKey(page.url)
+    is AppRoute.Forum -> if (page.url.contains("search.php")) "search-result" else null
+    AppRoute.Search -> "search"
+    AppRoute.Settings -> "settings"
+    AppRoute.Attachments -> "attachments"
+    else -> null
+}
+
+/** 跟 motionFrom 的 progress 同一条曲线，避免外层淡入和页面缩放各走各的。 */
+private val pageMotionEasing = Easing { fraction ->
+    val t = FastOutSlowInEasing.transform(fraction.coerceIn(0f, 1f))
+    t * t * t
+}
+
+/**
+ * 容器本身几乎不淡。透明度从 1 收到 0.999，只为了让这场过渡真正跑满 420ms：
+ * 起止都是 1 时动画会立刻结束，上一页被拆掉，露出的窗口底比页面底色更亮。
+ * 推入时新页压在上面；返回时新页（其实是被揭开的那页）沉到底下。
+ */
+private fun pageBoundsTransform(incomingOnTop: Boolean) = ContentTransform(
+    targetContentEnter = fadeIn(tween(420, easing = pageMotionEasing), initialAlpha = 0.999f),
+    initialContentExit = fadeOut(tween(420, easing = pageMotionEasing), targetAlpha = 0.999f),
+    targetContentZIndex = if (incomingOnTop) 1f else -1f,
+    sizeTransform = null,
+)
+
+/** 记下点击区域在屏幕上的位置，供目标页展开和返回时使用。 */
+@Composable
+private fun Modifier.markSpot(key: String?): Modifier {
+    if (key == null) return this
+    return onGloballyPositioned { coords ->
+        val b = coords.boundsInRoot()
+        if (openSpots[key] != b) openSpots[key] = b
+    }
+}
+
+/**
+ * 整页从点击区域展开。宽、高分别插值，长宽比从点击区域过渡到目标页。
+ * 过渡开始前新页不画。透明度不能走默认的离屏层：那张层第一帧是白的，
+ * 比页面底色更亮，会整屏闪一下。
+ */
+@Composable
+private fun Modifier.motionFrom(key: String?): Modifier {
+    if (key == null) return this
+    val spot = openSpots[key] ?: return this
+    val transition = LocalNavAnimatedContentScope.current.transition
+    val popping = NavMotion.popping
+    val leaving = popping && transition.targetState == EnterExitState.PostExit
+    val arriving = !popping && transition.targetState == EnterExitState.Visible
+    val running = transition.currentState != transition.targetState
+    val progress by transition.animateFloat(
+        transitionSpec = { tween(420, easing = pageMotionEasing) },
+        label = "page-motion",
+    ) { state ->
+        if (state == EnterExitState.Visible) 1f else 0f
+    }
+    val t = progress.coerceIn(0f, 1f)
+    // 只有正在进入的这一页能解除隐藏。离开的页面进度也会小于 1，不能提前放行。
+    if (arriving && NavMotion.enterHeld && running && t < 1f) NavMotion.enterHeld = false
+    // 过渡还停在终点时，新页会先被画成整屏。这段时间不画，底下仍是上一页。
+    // 不用 graphicsLayer(alpha=0)：那会建一张离屏层，第一帧清成白色。
+    if (arriving && NavMotion.enterHeld) {
+        return drawWithContent { }
+    }
+    if (!running || (!leaving && !arriving)) return this
+    return graphicsLayer {
+        // 按像素乘透明度，不建离屏缓冲，避免缓冲被清成比底色更亮的白屏。
+        compositingStrategy = CompositingStrategy.ModulateAlpha
+        val w = size.width
+        val h = size.height
+        if (!w.isFinite() || !h.isFinite() || w <= 1f || h <= 1f ||
+            spot.width <= 1f || spot.height <= 1f
+        ) {
+            alpha = 0f
+            return@graphicsLayer
+        }
+        scaleX = lerp(lerp(spot.width / w, 1f, t), 1f, t)
+        scaleY = lerp(lerp(spot.height / h, 1f, t), 1f, t)
+        transformOrigin = TransformOrigin.Center
+        val cx = lerp(spot.left + spot.width / 2f, w / 2f, t)
+        val cy = lerp(spot.top + spot.height / 2f, h / 2f, t)
+        translationX = cx - w / 2f
+        translationY = cy - h / 2f
+        alpha = t * t
+    }
+}
+
 @Composable
 fun AppUi(
-    nav: Nav,
-    forums: List<ForumItem>,
+    nav: AppNavigation,
     forumPage: ForumPage?,
     threadPage: ThreadPage?,
     loading: Boolean,
@@ -733,7 +837,6 @@ fun AppUi(
     onRefresh: () -> Unit = {},
     onOpenSearch: () -> Unit = {},
     searchHistory: List<String> = emptyList(),
-    backProgress: Float = 0f,
     onThumbNeeded: (ThreadItem) -> Unit = {},
     needUpgrade: Boolean = false,
     onOpenSite: () -> Unit = {},
@@ -763,6 +866,8 @@ fun AppUi(
     animeUrl: String = ANIME_URL,
     gameUrl: String = GAME_URL,
     onRootTab: (Int) -> Unit = {},
+    homeJump: Int = -1,
+    homeJumpGen: Int = 0,
     blockedWords: List<String> = emptyList(),
     watchWords: List<String> = emptyList(),
     readTids: Set<Long> = emptySet(),
@@ -804,7 +909,6 @@ fun AppUi(
     onConfirmAttachDownload: () -> Unit = {},
     onCloseAttachConfirm: () -> Unit = {},
     threadTid: Long? = null,
-    threadListState: LazyListState = rememberLazyListState(),
     attachments: List<AttachmentStore.Entry> = emptyList(),
     attachLoads: Map<String, AttachLoad> = emptyMap(),
     attachTexts: Map<String, String> = emptyMap(),
@@ -827,23 +931,29 @@ fun AppUi(
     onCloseFileText: () -> Unit = {}
 ) {
     val colors = CouiTheme.colorScheme
+    val route = nav.top
     val baseDensity = LocalDensity.current
     CompositionLocalProvider(
         LocalDensity provides Density(baseDensity.density, fontScale)
     ) {
     val forumListState = rememberLazyListState()
-    LaunchedEffect(nav) {
-        if (nav is Nav.Search) runCatching { forumListState.scrollToItem(0) }
-    }
-    // 首页三个 tab 各自记住滚动位置，盖上详情/搜索时也不会被拆掉
     val historyListState = rememberLazyListState()
     val watchListState = rememberLazyListState()
-    val overlayHistoryState = rememberLazyListState()
     val attachListState = rememberLazyListState()
     val animeListState = rememberLazyListState()
     val gameListState = rememberLazyListState()
+    val threadListState = rememberLazyListState()
     val rootPager = rememberPagerState(initialPage = 0) { 4 }
     val scope = rememberCoroutineScope()
+    // 滑到某一页并停稳后才对上那一页的数据；滑动过程中四页都还在
+    LaunchedEffect(rootPager.settledPage, showBottomBar) {
+        if (showBottomBar) onRootTab(rootPager.settledPage)
+    }
+    LaunchedEffect(homeJumpGen) {
+        if (homeJump in 0..3 && rootPager.currentPage != homeJump) {
+            rootPager.animateScrollToPage(homeJump)
+        }
+    }
     var seenAnimeUrl by remember { mutableStateOf<String?>(null) }
     var seenGameUrl by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(animeUrl) {
@@ -856,15 +966,11 @@ fun AppUi(
         seenGameUrl = gameUrl
         if (prev != null && prev != gameUrl) runCatching { gameListState.scrollToItem(0) }
     }
-    // 滑到某一页并停稳后，才去对上那一页的数据；滑的过程中首页三页都还在
-    LaunchedEffect(rootPager.settledPage, showBottomBar) {
-        if (showBottomBar) onRootTab(rootPager.settledPage)
-    }
-    // 搜索结果等盖层列表：只在盖层里记住位置，不要跟着首页 tab 一起滚
+    // 搜索结果等二级列表：记住滚动位置，翻页时再滚回去
     val forumPositions = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
     var lastForumUrl by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(currentUrl, showBottomBar) {
-        if (showBottomBar) {
+    LaunchedEffect(currentUrl, route) {
+        if (route !is AppRoute.Forum) {
             lastForumUrl = currentUrl
             return@LaunchedEffect
         }
@@ -886,69 +992,23 @@ fun AppUi(
     var clearSelectionSignal by remember { androidx.compose.runtime.mutableIntStateOf(0) }
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
-    val backdrop = rememberCouiBackdrop()
-    // 卡片→全屏：几何用矩形插值，内容用截图交叉淡化
-    val zoomProg = remember { Animatable(1f) }
-    var zoomRect by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
-    var zoomBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    var zoomLayer by remember { mutableStateOf<androidx.compose.ui.graphics.layer.GraphicsLayer?>(null) }
-    var zoomSrc by remember { mutableStateOf(androidx.compose.ui.geometry.Size.Zero) }
-    val screenWpx = with(LocalDensity.current) {
-        androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx()
-    }
-    val screenHpx = with(LocalDensity.current) {
-        androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx()
-    }
-    var zoomMode by remember { mutableStateOf(1) }
-    var threadOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
-    var prevNavZoom by remember { mutableStateOf<Nav>(nav) }
-    val pageGl = rememberGraphicsLayer()
-    LaunchedEffect(nav) {
-        val from = prevNavZoom
-        prevNavZoom = nav
-        if (nav is Nav.Thread && (from is Nav.Forum || from is Nav.History || from == Nav.Home)) {
-            val r = CardZoom.origin
-            if (r != null && r.width > 1f && r.height > 1f) {
-                threadOrigin = r
-                zoomRect = r
-                zoomBitmap = CardZoom.bitmap
-                zoomLayer = CardZoom.layer
-                zoomSrc = androidx.compose.ui.geometry.Size(r.width, r.height)
-                zoomMode = 1
-                zoomProg.snapTo(0f)
-                zoomProg.animateTo(1f, tween(500, easing = FastOutSlowInEasing))
-                zoomRect = null
-                zoomBitmap = null
-            }
-        } else if (from is Nav.Thread && (nav is Nav.Forum || nav is Nav.History || nav == Nav.Home)) {
-            val r = threadOrigin
-            if (r != null) {
-                zoomRect = r
-                zoomBitmap = runCatching { pageGl.toImageBitmap() }.getOrNull()
-                zoomLayer = pageGl
-                zoomSrc = androidx.compose.ui.geometry.Size(screenWpx, screenHpx)
-                zoomMode = -1
-                zoomProg.snapTo(1f)
-                zoomProg.animateTo(0f, tween(500, easing = FastOutSlowInEasing))
-                zoomRect = null
-                zoomBitmap = null
-            }
-        }
-    }
-    val inHistorySelection = (nav is Nav.History && historySelecting) ||
-        (nav is Nav.Watch && watchSelecting) ||
-        (nav is Nav.Attachments && attachSelecting)
+    // 菜单盖在导航外面，采样当前页自己的模糊源
+    var menuBackdrop by remember { mutableStateOf<com.itos.coui.backdrop.CouiBackdrop?>(null) }
+    val homePage = rootPager.settledPage
+    val inHistorySelection = (route == AppRoute.Home && homePage == 3 && historySelecting) ||
+        (route == AppRoute.Home && homePage == 2 && watchSelecting) ||
+        (route == AppRoute.Attachments && attachSelecting)
     // 全选按钮的「已全选」态：按当前页可见条目（屏蔽词过滤后）算
     val selectionAllSelected = when {
-        nav is Nav.Watch && watchSelecting ->
+        route == AppRoute.Home && homePage == 2 && watchSelecting ->
             watchSelectionCount > 0 && watchSelectionCount >= watchLater.count {
                 !ContentPrefs.hit(it.title, blockedWords)
             }
-        nav is Nav.History && historySelecting ->
+        route == AppRoute.Home && homePage == 3 && historySelecting ->
             historySelectionCount > 0 && historySelectionCount >= history.count {
                 !ContentPrefs.hit(it.title, blockedWords)
             }
-        nav is Nav.Attachments && attachSelecting ->
+        route == AppRoute.Attachments && attachSelecting ->
             attachSelectionCount > 0 && attachSelectionCount >= attachments.size
         else -> false
     }
@@ -958,15 +1018,15 @@ fun AppUi(
     // 菜单项：未登录先给「登录」；分享/浏览器/刷新只在帖子页；设置始终有
     val topMenuItems = buildList {
         if (avatarUrl.isNullOrBlank()) add(Triple("登录", 4) { onLogin() })
-        if (nav is Nav.Thread) add(Triple("分享", 0) { onShare() })
-        if (nav is Nav.Thread) add(Triple("复制链接", 5) { onCopyLink() })
-        if (nav is Nav.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
-        if (nav is Nav.Thread) add(Triple("刷新", 2) { onRefreshThread() })
-        if (nav is Nav.Thread) add(
+        if (route is AppRoute.Thread) add(Triple("分享", 0) { onShare() })
+        if (route is AppRoute.Thread) add(Triple("复制链接", 5) { onCopyLink() })
+        if (route is AppRoute.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
+        if (route is AppRoute.Thread) add(Triple("刷新", 2) { onRefreshThread() })
+        if (route is AppRoute.Thread) add(
             Triple(if (watchTidSaved) "取消收藏" else "收藏", 8) { onToggleWatch() }
         )
         // 已经在设置页/附件管理页时不再给「设置」，否则点头像会把自己再打开一次
-        if (nav !is Nav.Settings && nav !is Nav.Attachments) add(Triple("设置", 3) { onSettings() })
+        if (route !is AppRoute.Settings && route != AppRoute.Attachments) add(Triple("设置", 3) { onSettings() })
         // 今日自动签到/抽卡有失败时，给出手动入口
         if (dailyFailed) {
             add(Triple("手动签到", 6) { onOpenSign() })
@@ -974,353 +1034,540 @@ fun AppUi(
         }
     }
     // 切换页面/弹窗时自动收起菜单
-    LaunchedEffect(nav, loginPage, verifyPage, accountsOpen) { topMenuOpen = false }
+    LaunchedEffect(route, loginPage, verifyPage, accountsOpen) { topMenuOpen = false }
     Box(Modifier.fillMaxSize().background(colors.background)) {
         val barH = WindowInsets.systemBars.asPaddingValues().calculateTopPadding() + 56.dp
         // 列表页让内容从顶栏下方穿过，顶栏才能采到模糊源
-        val overlayBar = true
         CompositionLocalProvider(LocalBarInset provides barH) {
         Box(Modifier.fillMaxSize()) {
-            TopBar(
-                selectionMode = inHistorySelection,
-                onExitSelection = { historyExitSignal++ },
-                onSelectAll = {
-                    // 统一发一个「切换」信号，由当前选择页按自己的全选状态决定全选还是取消
-                    selectAllSignal++
-                },
-                selectionAllSelected = selectionAllSelected,
-                backdrop = backdrop,
-                blur = overlayBar && blurBg,
-                menuOpen = topMenuOpen,
-                onToggleMenu = {
-                    // 设置页/附件管理页：头像纯展示，点了不展开菜单也不打开设置
-                    if (nav is Nav.Settings || nav is Nav.Attachments) return@TopBar
-                    // 只有一项时没必要展开菜单，直接执行；一项都没有就什么都不做
-                    if (topMenuItems.isEmpty()) {
-                        // 设置页/附件管理页已经没别的动作，点头像不再打开设置
-                    } else if (topMenuItems.size == 1 && topMenuOpen.not()) {
-                        topMenuItems.first().third()
-                    } else {
-                        topMenuOpen = !topMenuOpen
+            @Composable
+            fun BoxScope.HomeChrome(backdrop: com.itos.coui.backdrop.CouiBackdrop) {
+        // 底部三个 tab，跟首页 pager 同一页；按住可以滑到旁边的项
+        val navDrag = remember { PressDragState() }
+        // 「和谐动漫 / 和谐游戏」：单击在顶部时刷新，否则回顶；300ms 内双击刷新当前列表。
+        // 按压拖动（超过 touchSlop）只执行原来的切页，不触发回顶或刷新。
+        var navTapIndex by remember { mutableIntStateOf(-1) }
+        var navTapAt by remember { mutableLongStateOf(0L) }
+        val navListState: (Int) -> androidx.compose.foundation.lazy.LazyListState = { idx ->
+            if (idx == 0) animeListState else gameListState
+        }
+        val switchTab: (Int) -> Unit = { idx ->
+            scope.launch { rootPager.animateScrollToPage(idx) }
+        }
+        navDrag.onCommit = { idx ->
+            val wasDrag = navDrag.moved
+            if (wasDrag || rootPager.settledPage != idx) {
+                navTapIndex = -1
+                switchTab(idx)
+            } else if (idx <= 1) {
+                val now = android.os.SystemClock.uptimeMillis()
+                val st = navListState(idx)
+                val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
+                if (navTapIndex == idx && now - navTapAt <= 300L) {
+                    // 第二次点击落在 300ms 内：按双击处理，刷新当前列表
+                    navTapIndex = -1
+                    onRefresh()
+                } else {
+                    navTapIndex = idx
+                    navTapAt = now
+                    if (atTop) onRefresh() else scope.launch { st.animateScrollToItem(0) }
+                }
+            } else {
+                // 「收藏 / 浏览记录」：单击只回顶，列表已在顶部就什么都不做（不刷新）
+                navTapIndex = -1
+                val st = if (idx == 2) watchListState else historyListState
+                val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
+                if (!atTop) scope.launch { st.animateScrollToItem(0) }
+            }
+        }
+        if (!inHistorySelection) {
+            // 导航栏 + 搜索 FAB 作为一整组，底部居中；两者之间留 8dp
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(bottom = 10.dp)
+                    .height(56.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+            Box(
+                Modifier
+                    .height(56.dp)
+                    .clip(RoundedCornerShape(26.dp))
+                    .then(
+                        if (blurBg) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { RoundedCornerShape(26.dp) },
+                            effects = { blur(30f) },
+                            onDrawSurface = { drawRect(colors.container.copy(alpha = 0.66f)) }
+                        ) else Modifier.background(colors.container)
+                    )
+                    .border(
+                        1.dp,
+                        Brush.linearGradient(
+                            listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.03f))
+                        ),
+                        RoundedCornerShape(26.dp)
+                    )
+            ) {
+                var navRowOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                val tabPosition = (rootPager.currentPage + rootPager.currentPageOffsetFraction).coerceIn(0f, 3f)
+                val navHover = navDrag.bounds[navDrag.hover]
+                val navHL by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = navHover?.let { it.left - navRowOrigin.x } ?: 0f,
+                    animationSpec = tween(150, easing = LinearEasing),
+                    label = "navHl"
+                )
+                val navHW by androidx.compose.animation.core.animateFloatAsState(
+                    targetValue = navHover?.width ?: 0f,
+                    animationSpec = tween(150, easing = LinearEasing),
+                    label = "navHw"
+                )
+                Row(
+                    Modifier
+                        .fillMaxHeight()
+                        .padding(horizontal = 4.dp)
+                        .onGloballyPositioned { navRowOrigin = it.positionInRoot() }
+                        .drawBehind {
+                            val widths = floatArrayOf(
+                                62.dp.toPx(), 62.dp.toPx(), 68.dp.toPx(), 68.dp.toPx()
+                            )
+                            val pos = tabPosition.coerceIn(0f, 3f)
+                            val i = pos.toInt().coerceAtMost(3)
+                            val t = pos - i
+                            var left = 0f
+                            for (k in 0 until i) left += widths[k]
+                            left += if (i == 3) 0f else widths[i] * t
+                            val width = if (i == 3) widths[3]
+                            else widths[i] * (1f - t) + widths[(i + 1).coerceAtMost(3)] * t
+                            val inset = 4.dp.toPx()
+                            drawRoundRect(
+                                color = colors.accent.copy(alpha = 0.16f),
+                                topLeft = androidx.compose.ui.geometry.Offset(left, inset),
+                                size = androidx.compose.ui.geometry.Size(width, size.height - inset * 2),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
+                            )
+                            if (navDrag.hover >= 0 && navHW > 1f) {
+                                drawRoundRect(
+                                    color = colors.accent.copy(alpha = 0.16f),
+                                    topLeft = androidx.compose.ui.geometry.Offset(navHL, 0f),
+                                    size = androidx.compose.ui.geometry.Size(navHW, size.height),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
+                                )
+                            }
+                        },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                val tab = rootPager.currentPage
+                NavButton(
+                    icon = CouiIcons.Outlined.Album,
+                    label = "和谐动漫",
+                    active = tab == 0,
+                    modifier = Modifier.width(62.dp),
+                    dragState = navDrag,
+                    dragIndex = 0,
+                    showActiveBg = false
+                ) { switchTab(0) }
+                NavButton(
+                    icon = CouiIcons.Filled.Gamepad,
+                    label = "和谐游戏",
+                    active = tab == 1,
+                    modifier = Modifier.width(62.dp),
+                    dragState = navDrag,
+                    dragIndex = 1,
+                    showActiveBg = false
+                ) { switchTab(1) }
+                NavButtonSlot(
+                    label = "收藏",
+                    active = tab == 2,
+                    modifier = Modifier.width(68.dp),
+                    dragState = navDrag,
+                    dragIndex = 2,
+                    showActiveBg = false,
+                    icon = { IconStar(20.dp, if (tab == 2) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
+                    onClick = { switchTab(2) }
+                )
+                NavButtonSlot(
+                    label = "浏览记录",
+                    active = tab == 3,
+                    modifier = Modifier.width(68.dp),
+                    dragState = navDrag,
+                    dragIndex = 3,
+                    showActiveBg = false,
+                    icon = { IconHistory(if (tab == 3) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
+                    onClick = { switchTab(3) }
+                )
+                }
+            }
+
+            Spacer(Modifier.width(8.dp))
+            // 搜索 FAB 与导航栏并排，同属底部那一组
+            Box(
+                Modifier
+                    .size(56.dp)
+                    .markSpot("search")
+                    .clip(CircleShape)
+                    .then(
+                        if (blurBg) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { CircleShape },
+                            effects = { blur(28f) },
+                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
+                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
+                    )
+                    .border(
+                        1.dp,
+                        Brush.linearGradient(
+                            listOf(Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.05f))
+                        ),
+                        CircleShape
+                    )
+                    .lightPress { onOpenSearch() },
+                contentAlignment = Alignment.Center
+            ) {
+                IconImg(CouiIcons.Outlined.Search, 24.dp, colors.onAccent)
+            }
+            }
+        }
+            }
+
+            @Composable
+            fun BoxScope.ReplyChrome(backdrop: com.itos.coui.backdrop.CouiBackdrop) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(end = 16.dp, bottom = 10.dp)
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .then(
+                        if (blurBg) Modifier.drawCouiBackdrop(
+                            backdrop,
+                            shape = { CircleShape },
+                            effects = { blur(28f) },
+                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
+                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
+                    )
+                    .border(
+                        1.dp,
+                        Brush.linearGradient(
+                            listOf(Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.05f))
+                        ),
+                        CircleShape
+                    )
+                    .lightPress { onReply() },
+                contentAlignment = Alignment.Center
+            ) {
+                IconImg(ReplyVector, 24.dp, colors.onAccent)
+            }
+            }
+
+            @Composable
+            fun ScenePage(page: AppRoute, content: @Composable () -> Unit) {
+                val selecting = when (page) {
+                    AppRoute.Home -> watchSelecting || historySelecting
+                    AppRoute.Attachments -> attachSelecting
+                    else -> false
+                }
+                val pageMenu = buildList {
+                    if (avatarUrl.isNullOrBlank()) add(Triple("登录", 4) { onLogin() })
+                    if (page is AppRoute.Thread) add(Triple("分享", 0) { onShare() })
+                    if (page is AppRoute.Thread) add(Triple("复制链接", 5) { onCopyLink() })
+                    if (page is AppRoute.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
+                    if (page is AppRoute.Thread) add(Triple("刷新", 2) { onRefreshThread() })
+                    if (page is AppRoute.Thread) add(
+                        Triple(if (watchTidSaved) "取消收藏" else "收藏", 8) { onToggleWatch() }
+                    )
+                    if (page !is AppRoute.Settings && page != AppRoute.Attachments) add(Triple("设置", 3) { onSettings() })
+                    if (dailyFailed) {
+                        add(Triple("手动签到", 6) { onOpenSign() })
+                        add(Triple("手动抽卡", 7) { onOpenAward() })
                     }
-                },
-                loginName = loginName,
-                canShare = nav is Nav.Thread,
-                canRefresh = nav is Nav.Thread,
-                onRefresh = onRefreshThread,
-                onOpenBrowser = onOpenBrowser,
-                avatarUrl = avatarUrl,
-                avatarInert = nav is Nav.Settings || nav is Nav.Attachments,
-                onShare = onShare,
-                onDump = onDump,
-                title = if (showBottomBar) {
-                    when (rootPager.currentPage) {
+                }
+                val pageBackdrop = rememberCouiBackdrop()
+                if (page == nav.top) SideEffect { menuBackdrop = pageBackdrop }
+                val title = when (page) {
+                    AppRoute.Home -> when (rootPager.currentPage) {
                         0 -> "和谐动漫"
                         1 -> "和谐游戏"
                         2 -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "收藏"
                         else -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
                     }
-                } else when (nav) {
-                    is Nav.Home -> "GameMale"
-                    Nav.Settings -> "设置"
-                    Nav.Search -> "搜索"
-                    Nav.Watch -> if (watchSelecting) "已选择 " + watchSelectionCount + " 项" else "收藏"
-                    Nav.History -> if (historySelecting) "已选择 " + historySelectionCount + " 项" else "浏览记录"
-                    Nav.Attachments -> if (attachSelecting) "已选择 " + attachSelectionCount + " 项" else "附件管理"
-                    is Nav.Forum -> nav.title.ifEmpty { "版块" }
-                    is Nav.Thread -> nav.title.ifEmpty { "帖子" }
-                },
-                canBack = canGoBack,
-                dark = dark,
-                onSettings = onSettings,
-                showSettings = nav is Nav.Forum || nav is Nav.Thread,
-                onAvatar = onAvatar,
-                onBack = onBack,
-                onToggleDark = onToggleDark,
-                onLogin = onLogin
-            )
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(top = if (overlayBar) 0.dp else barH)
-                    .then(if (blurBg) Modifier.couiBackdrop(backdrop) else Modifier)
-            ) {
-                // 首页一直铺在最底下：三个 tab 左右滑，详情/搜索只是盖上来的一层
-                HorizontalPager(
-                    state = rootPager,
-                    modifier = Modifier.fillMaxSize(),
-                    beyondViewportPageCount = 1,
-                    userScrollEnabled = showBottomBar && !inHistorySelection
-                ) { page ->
-                    val settled = rootPager.settledPage == page && showBottomBar
-                    when (page) {
-                        0 -> HomeBoardPage(
-                            page = animePage,
-                            url = animeUrl,
-                            listState = animeListState,
-                            loading = loading && settled,
-                            refreshing = refreshing && settled,
-                            error = if (settled) error else null,
-                            needLogin = needLogin && settled,
-                            needUpgrade = needUpgrade && settled,
-                            onOpenThread = onOpenThread,
-                            onLoad = onLoad,
-                            onImage = onImage,
-                            onRefresh = onRefresh,
-                            onThumbNeeded = onThumbNeeded,
-                            onRetry = onRetry,
-                            onDump = onDump,
-                            onLogin = onLogin,
-                            onOpenSite = onOpenSite,
-                            blocked = blockedWords,
-                            watch = watchWords,
-                            readTids = readTids
-                        )
-                        1 -> HomeBoardPage(
-                            page = gamePage,
-                            url = gameUrl,
-                            listState = gameListState,
-                            loading = loading && settled,
-                            refreshing = refreshing && settled,
-                            error = if (settled) error else null,
-                            needLogin = needLogin && settled,
-                            needUpgrade = needUpgrade && settled,
-                            onOpenThread = onOpenThread,
-                            onLoad = onLoad,
-                            onImage = onImage,
-                            onRefresh = onRefresh,
-                            onThumbNeeded = onThumbNeeded,
-                            onRetry = onRetry,
-                            onDump = onDump,
-                            onLogin = onLogin,
-                            onOpenSite = onOpenSite,
-                            blocked = blockedWords,
-                            watch = watchWords,
-                            readTids = readTids
-                        )
-                        2 -> HistoryView(
-                            watchLater.map { HistoryStore.Entry(it.tid, it.title, it.url, it.ts) },
-                            watchListState, onOpenWatch, onClearWatch,
-                            blocked = blockedWords,
-                            watch = watchWords,
-                            exitSignal = historyExitSignal,
-                            selectAllSignal = selectAllSignal,
-                            clearSelectionSignal = clearSelectionSignal,
-                            onSelectionCount = onWatchSelectionCount,
-                            onSelectionMode = onWatchSelecting,
-                            onDeleteSelected = onDeleteWatch,
-                            backdrop = backdrop,
-                            blur = blurBg,
-                            emptyText = "还没有收藏",
-                            deleteText = "移除"
-                        )
-                        else -> HistoryView(
-                            history, historyListState, onOpenHistory, onClearHistory,
-                            blocked = blockedWords,
-                            watch = watchWords,
-                            exitSignal = historyExitSignal,
-                            selectAllSignal = selectAllSignal,
-                            clearSelectionSignal = clearSelectionSignal,
-                            onSelectionCount = onHistorySelectionCount,
-                            onSelectionMode = onHistorySelecting,
-                            onDeleteSelected = onDeleteHistory,
-                            backdrop = backdrop,
-                            blur = blurBg
-                        )
-                    }
+                    AppRoute.Settings -> "设置"
+                    AppRoute.Search -> "搜索"
+                    AppRoute.Attachments -> if (attachSelecting) "已选择 " + attachSelectionCount + " 项" else "附件管理"
+                    is AppRoute.Forum -> page.title.ifEmpty { "版块" }
+                    is AppRoute.Thread -> threadPage?.subject?.takeIf { it.isNotBlank() }
+                        ?: page.title.ifEmpty { "帖子" }
+                    AppRoute.Deep -> "帖子"
                 }
-
-                val overlayShown = !showBottomBar
-                var heldOverlay by remember { mutableStateOf<Nav?>(null) }
-                SideEffect { if (overlayShown) heldOverlay = nav }
-                val overlayNav = if (overlayShown) nav else heldOverlay
-                /*
-                 * 页面级淡入：AnimatedVisibility 只在「底栏显隐」时触发，附件管理页和详情页之间
-                 * （两者都是 overlay）来回切时不会播动画，看起来就像硬切。这里按 nav 变化补一层淡入：
-                 * 进入附件管理、以及从附件管理点「查看原帖」进详情，都走 0→1 的透明度过渡。
-                 */
-                val pageFade = remember { androidx.compose.animation.core.Animatable(1f) }
-                var lastOverlayNav by remember { mutableStateOf<Nav?>(null) }
-                LaunchedEffect(overlayNav) {
-                    val n = overlayNav
-                    val fade = n is Nav.Attachments || (lastOverlayNav is Nav.Attachments && n is Nav.Thread)
-                    if (fade && n != lastOverlayNav) {
-                        pageFade.snapTo(0f)
-                        pageFade.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
-                    } else {
-                        pageFade.snapTo(1f)
-                    }
-                    lastOverlayNav = n
-                }
-                AnimatedVisibility(
-                    visible = overlayShown,
-                    modifier = Modifier.fillMaxSize(),
-                    // 设置页统一走淡入淡出，别再按「从右侧滑入」硬切；以后新页面也复用这套
-                    enter = if (nav is Nav.Thread || nav is Nav.Attachments || nav is Nav.Settings)
-                        fadeIn(tween(220, easing = FastOutSlowInEasing))
-                    else slideInHorizontally(tween(280, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(160)),
-                    exit = if (heldOverlay is Nav.Thread || heldOverlay is Nav.Attachments ||
-                        heldOverlay is Nav.Settings
-                    ) fadeOut(tween(180, easing = FastOutSlowInEasing))
-                    else slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(140))
+                // 背景、顶栏、内容和本页按钮在同一层里，返回时才是整页一起动。
+                // 页面内容直接画。couiBackdrop 会把内容录进一张新的图形层再贴回去，
+                // 新页第一帧那张层是空的，整屏会先闪成空白。
+                CompositionLocalProvider(LocalPageBackdrop provides pageBackdrop) {
+                Box(
+                    Modifier
+                        .motionFrom(pageBoundsKey(page))
+                        .fillMaxSize()
+                        .background(colors.background)
                 ) {
-                    /*
-                     * 用 AnimatedContent 管 overlay 内部的页面切换：附件管理页 <-> 设置页/详情页
-                     * 都是 overlay，外层 AnimatedVisibility 的 visible 不变，必须在这里补淡入淡出。
-                     * 其它页面切换保持硬切，避免和卡片放大、外层的滑入动画叠在一起。
-                     */
-                    AnimatedContent(
-                        targetState = overlayNav,
-                        modifier = Modifier.fillMaxSize(),
-                        transitionSpec = {
-                            if (initialState is Nav.Attachments || targetState is Nav.Attachments ||
-                                initialState is Nav.Settings || targetState is Nav.Settings
-                            ) {
-                                fadeIn(tween(220, easing = FastOutSlowInEasing)) togetherWith
-                                    fadeOut(tween(190, easing = FastOutSlowInEasing))
-                            } else {
-                                EnterTransition.None togetherWith ExitTransition.None
-            }
+                    Box(Modifier.fillMaxSize()) {
+                        Box(Modifier.fillMaxSize().background(colors.background))
+                        content()
+                    }
+                    TopBar(
+                        selectionMode = selecting,
+                        onExitSelection = { historyExitSignal++ },
+                        onSelectAll = { selectAllSignal++ },
+                        selectionAllSelected = selectionAllSelected,
+                        backdrop = pageBackdrop,
+                        blur = blurBg,
+                        menuOpen = topMenuOpen && page == nav.top,
+                        onToggleMenu = {
+                            if (page is AppRoute.Settings || page == AppRoute.Attachments) return@TopBar
+                            if (pageMenu.size == 1 && !topMenuOpen) pageMenu.first().third()
+                            else if (pageMenu.isNotEmpty()) topMenuOpen = !topMenuOpen
                         },
-                        label = "overlayPage"
-                    ) { target ->
-                    val cur = target ?: return@AnimatedContent
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                translationX = backProgress * size.width * 0.35f
-                                var a = pageFade.value
-                                if (zoomRect != null && cur is Nav.Thread) {
-                                    a *= if (zoomMode > 0) {
-                                        ((zoomProg.value - 0.35f) / 0.5f).coerceIn(0f, 1f)
-                                    } else {
-                                        ((1f - zoomProg.value) / 0.45f).coerceIn(0f, 1f)
+                        loginName = loginName,
+                        canShare = page is AppRoute.Thread,
+                        canRefresh = page is AppRoute.Thread,
+                        onRefresh = onRefreshThread,
+                        onOpenBrowser = onOpenBrowser,
+                        avatarUrl = avatarUrl,
+                        avatarInert = page is AppRoute.Settings || page == AppRoute.Attachments,
+                        onShare = onShare,
+                        onDump = onDump,
+                        title = title,
+                        canBack = page != AppRoute.Home,
+                        dark = dark,
+                        onSettings = onSettings,
+                        showSettings = page is AppRoute.Forum || page is AppRoute.Thread || page == AppRoute.Home,
+                        onAvatar = onAvatar,
+                        onBack = onBack,
+                        onToggleDark = onToggleDark,
+                        onLogin = onLogin
+                    )
+                    when (page) {
+                        AppRoute.Home -> HomeChrome(pageBackdrop)
+                        is AppRoute.Thread -> if (!replyOpen) ReplyChrome(pageBackdrop)
+                        else -> Unit
+                    }
+                }
+                }
+            }
+
+                val entries = nav.decoratedEntries(
+                        entryProvider {
+                            entry<AppRoute.Home> {
+                                ScenePage(AppRoute.Home) {
+                                HorizontalPager(
+                                    state = rootPager,
+                                    modifier = Modifier.fillMaxSize(),
+                                    beyondViewportPageCount = 1,
+                                    userScrollEnabled = showBottomBar && !inHistorySelection
+                                ) { page ->
+                                    val settled = rootPager.settledPage == page && showBottomBar
+                                    when (page) {
+                                        0 -> HomeBoardPage(
+                                            markBounds = rootPager.currentPage == 0,
+                                            page = animePage,
+                                            url = animeUrl,
+                                            listState = animeListState,
+                                            loading = loading && settled,
+                                            refreshing = refreshing && settled,
+                                            error = if (settled) error else null,
+                                            needLogin = needLogin && settled,
+                                            needUpgrade = needUpgrade && settled,
+                                            onOpenThread = onOpenThread,
+                                            onLoad = onLoad,
+                                            onImage = onImage,
+                                            onRefresh = onRefresh,
+                                            onThumbNeeded = onThumbNeeded,
+                                            onRetry = onRetry,
+                                            onDump = onDump,
+                                            onLogin = onLogin,
+                                            onOpenSite = onOpenSite,
+                                            blocked = blockedWords,
+                                            watch = watchWords,
+                                            readTids = readTids
+                                        )
+                                        1 -> HomeBoardPage(
+                                            markBounds = rootPager.currentPage == 1,
+                                            page = gamePage,
+                                            url = gameUrl,
+                                            listState = gameListState,
+                                            loading = loading && settled,
+                                            refreshing = refreshing && settled,
+                                            error = if (settled) error else null,
+                                            needLogin = needLogin && settled,
+                                            needUpgrade = needUpgrade && settled,
+                                            onOpenThread = onOpenThread,
+                                            onLoad = onLoad,
+                                            onImage = onImage,
+                                            onRefresh = onRefresh,
+                                            onThumbNeeded = onThumbNeeded,
+                                            onRetry = onRetry,
+                                            onDump = onDump,
+                                            onLogin = onLogin,
+                                            onOpenSite = onOpenSite,
+                                            blocked = blockedWords,
+                                            watch = watchWords,
+                                            readTids = readTids
+                                        )
+                                        2 -> HistoryView(
+                                            watchLater.map { HistoryStore.Entry(it.tid, it.title, it.url, it.ts) },
+                                            watchListState, onOpenWatch, onClearWatch,
+                                            blocked = blockedWords,
+                                            watch = watchWords,
+                                            exitSignal = historyExitSignal,
+                                            selectAllSignal = selectAllSignal,
+                                            clearSelectionSignal = clearSelectionSignal,
+                                            onSelectionCount = onWatchSelectionCount,
+                                            onSelectionMode = onWatchSelecting,
+                                            onDeleteSelected = onDeleteWatch,
+                                            backdrop = LocalPageBackdrop.current,
+                                            blur = blurBg,
+                                            emptyText = "还没有收藏",
+                                            deleteText = "移除",
+                                            markBounds = rootPager.currentPage == 2
+                                        )
+                                        else -> HistoryView(
+                                            history, historyListState, onOpenHistory, onClearHistory,
+                                            blocked = blockedWords,
+                                            watch = watchWords,
+                                            exitSignal = historyExitSignal,
+                                            selectAllSignal = selectAllSignal,
+                                            clearSelectionSignal = clearSelectionSignal,
+                                            onSelectionCount = onHistorySelectionCount,
+                                            onSelectionMode = onHistorySelecting,
+                                            onDeleteSelected = onDeleteHistory,
+                                            backdrop = LocalPageBackdrop.current,
+                                            blur = blurBg,
+                                            markBounds = rootPager.currentPage == 3
+                                        )
                                     }
                                 }
-                                alpha = a
-                            }
-                            .drawWithContent {
-                                if (nav is Nav.Thread && cur is Nav.Thread) {
-                                    pageGl.record { this@drawWithContent.drawContent() }
-                                    drawLayer(pageGl)
-                                } else {
-                                    drawContent()
                                 }
                             }
-                    ) {
-                        Box(
-                            Modifier
-                                .matchParentSize()
-                                .background(colors.background)
-                                .clickable(
-                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                    indication = null
-                                ) {}
-                        )
-                        when {
-                            error != null && (cur is Nav.Forum || cur is Nav.Thread) ->
-                                ErrorView(error, onRetry, onDump, onLogin)
-                            cur == Nav.Home -> HomeList(forums, loading, onOpenForum)
-                            cur is Nav.Watch -> HistoryView(
-                                watchLater.map { HistoryStore.Entry(it.tid, it.title, it.url, it.ts) },
-                                overlayHistoryState, onOpenWatch, onClearWatch,
-                                blocked = blockedWords,
-                                watch = watchWords,
-                                exitSignal = historyExitSignal,
-                            selectAllSignal = selectAllSignal,
-                            clearSelectionSignal = clearSelectionSignal,
-                                onSelectionCount = onWatchSelectionCount,
-                                onSelectionMode = onWatchSelecting,
-                                onDeleteSelected = onDeleteWatch,
-                                backdrop = backdrop,
-                                blur = blurBg,
-                                emptyText = "还没有收藏",
-                                deleteText = "移除"
-                            )
-                            cur is Nav.History -> HistoryView(
-                                history, overlayHistoryState, onOpenHistory, onClearHistory,
-                                blocked = blockedWords,
-                                watch = watchWords,
-                                exitSignal = historyExitSignal,
-                            selectAllSignal = selectAllSignal,
-                            clearSelectionSignal = clearSelectionSignal,
-                                onSelectionCount = onHistorySelectionCount,
-                                onSelectionMode = onHistorySelecting,
-                                onDeleteSelected = onDeleteHistory,
-                                backdrop = backdrop,
-                                blur = blurBg
-                            )
-                            cur is Nav.Search -> SearchScreen(
-                                history = searchHistory,
-                                onCancel = onBack,
-                                onSubmit = onSearch
-                            )
-                            cur is Nav.Forum && needUpgrade && (forumPage?.threads?.isEmpty() != false) ->
-                                UpgradeView(loading, onOpenSite)
-                            cur is Nav.Forum && needLogin && (forumPage?.threads?.isEmpty() != false) ->
-                                LoginPromptView(onLogin)
-                            cur is Nav.Forum -> ForumView(
-                                forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
-                                refreshing, onRefresh, onThumbNeeded, searchUpdating,
-                                blocked = blockedWords, watch = watchWords, readTids = readTids
-                            )
-                            cur is Nav.Thread -> ThreadView(
-                                page = threadPage, loading = loading, onLoad = onLoad, onExternal = onExternal,
-                                onReply = onReply, onRate = onRate, onAttach = onAttach, onImage = onImage,
-                                listState = threadListState, threadTid = threadTid,
-                                attachments = attachments, attachLoads = attachLoads, attachTexts = attachTexts,
-                                attachFocus = attachFocus, onFocusConsumed = onFocusConsumed,
-                                onNeedAttachText = onNeedAttachText,
-                                onOpenAttachment = onOpenAttachment,
-                                onCopyText = onCopyText, onFreeCopyText = onFreeCopyText
-                            )
-                            cur is Nav.Attachments -> AttachManagerPage(
-                                entries = attachments,
-                                listState = attachListState,
-                                onOpenThread = { e -> onOpenHistory(e.url, e.title) },
-                                onView = onOpenAttachment,
-                                onSelectionCount = onAttachSelectionCount,
-                                onSelectionMode = onAttachSelecting,
-                                onDeleteSelected = onDeleteAttachments,
-                                exitSignal = historyExitSignal,
-                            selectAllSignal = selectAllSignal,
-                            clearSelectionSignal = clearSelectionSignal,
-                                backdrop = backdrop,
-                                blur = blurBg
-                            )
-                            cur is Nav.Settings -> SettingsView(
-                                onAccounts = onOpenAccounts,
-                                blockedWords = blockedWords,
-                                watchWords = watchWords,
-                                onOpenContentPref = onOpenContentPref,
-                                onOpenChangelog = onOpenChangelog,
-                                appVersion = appVersion,
-                                fontScale = fontScale,
-                                themeMode = themeMode,
-                                cacheMb = cacheMb,
-                                cacheBytes = cacheBytes,
-                                cacheCount = cacheCount,
-                                onSetThemeMode = onSetThemeMode,
-                                onSetFontScale = onSetFontScale,
-                                blurBg = blurBg,
-                                onSetBlurBg = onSetBlurBg,
-                                onSetCacheMb = onSetCacheMb,
-                                onClearCache = onClearCache,
-                                onExportLogs = onExportLogs,
-                                onExternal = onExternal,
-                                onOpenAttachManager = onOpenAttachManager,
-                                attachmentCount = attachmentCount
-                            )
+                            entry<AppRoute.Search> {
+                                ScenePage(AppRoute.Search) {
+                                SearchScreen(
+                                    history = searchHistory,
+                                    onCancel = onBack,
+                                    onSubmit = onSearch
+                                )
+                                }
+                            }
+                            entry<AppRoute.Forum> { forum ->
+                                ScenePage(forum) {
+                                when {
+                                    error != null -> ErrorView(error, onRetry, onDump, onLogin)
+                                    needUpgrade && (forumPage?.threads?.isEmpty() != false) ->
+                                        UpgradeView(loading, onOpenSite)
+                                    needLogin && (forumPage?.threads?.isEmpty() != false) ->
+                                        LoginPromptView(onLogin)
+                                    else -> Box(Modifier.fillMaxSize()) {
+                                        ForumView(
+                                            forumPage, loading, onOpenThread, onLoad, currentUrl, onImage, forumListState,
+                                            refreshing, onRefresh, onThumbNeeded, searchUpdating,
+                                            blocked = blockedWords, watch = watchWords, readTids = readTids
+                                        )
+                                        if (loading) LoadingLayer("正在加载…")
+                                    }
+                                }
+                                }
+                            }
+                            entry<AppRoute.Thread> { thread ->
+                                ScenePage(thread) {
+                                if (error != null) {
+                                    ErrorView(error, onRetry, onDump, onLogin)
+                                } else {
+                                    Box(Modifier.fillMaxSize()) {
+                                        ThreadView(
+                                            page = threadPage, loading = loading, onLoad = onLoad, onExternal = onExternal,
+                                            onReply = onReply, onRate = onRate, onAttach = onAttach, onImage = onImage,
+                                            listState = threadListState, threadTid = threadTid,
+                                            attachments = attachments, attachLoads = attachLoads, attachTexts = attachTexts,
+                                            attachFocus = attachFocus, onFocusConsumed = onFocusConsumed,
+                                            onNeedAttachText = onNeedAttachText,
+                                            onOpenAttachment = onOpenAttachment,
+                                            onCopyText = onCopyText, onFreeCopyText = onFreeCopyText
+                                        )
+                                        if (loading) LoadingLayer("正在加载…")
+                                    }
+                                }
+                                }
+                            }
+                            entry<AppRoute.Attachments> {
+                                ScenePage(AppRoute.Attachments) {
+                                AttachManagerPage(
+                                    entries = attachments,
+                                    listState = attachListState,
+                                    onOpenThread = { e -> onOpenHistory(e.url, e.title) },
+                                    onView = onOpenAttachment,
+                                    onSelectionCount = onAttachSelectionCount,
+                                    onSelectionMode = onAttachSelecting,
+                                    onDeleteSelected = onDeleteAttachments,
+                                    exitSignal = historyExitSignal,
+                                    selectAllSignal = selectAllSignal,
+                                    clearSelectionSignal = clearSelectionSignal,
+                                    backdrop = LocalPageBackdrop.current,
+                                    blur = blurBg
+                                )
+                                }
+                            }
+                            entry<AppRoute.Settings> {
+                                ScenePage(AppRoute.Settings) {
+                                SettingsView(
+                                    onAccounts = onOpenAccounts,
+                                    blockedWords = blockedWords,
+                                    watchWords = watchWords,
+                                    onOpenContentPref = onOpenContentPref,
+                                    onOpenChangelog = onOpenChangelog,
+                                    appVersion = appVersion,
+                                    fontScale = fontScale,
+                                    themeMode = themeMode,
+                                    cacheMb = cacheMb,
+                                    cacheBytes = cacheBytes,
+                                    cacheCount = cacheCount,
+                                    onSetThemeMode = onSetThemeMode,
+                                    onSetFontScale = onSetFontScale,
+                                    blurBg = blurBg,
+                                    onSetBlurBg = onSetBlurBg,
+                                    onSetCacheMb = onSetCacheMb,
+                                    onClearCache = onClearCache,
+                                    onExportLogs = onExportLogs,
+                                    onExternal = onExternal,
+                                    onOpenAttachManager = onOpenAttachManager,
+                                    attachmentCount = attachmentCount
+                                )
+                                }
+                            }
+                            entry<AppRoute.Deep> { ScenePage(AppRoute.Deep) { Box(Modifier.fillMaxSize()) } }
                         }
-                        if (loading && overlayShown && (cur is Nav.Forum || cur is Nav.Thread)) {
-                            LoadingLayer("正在加载…")
-                        }
-                    }
-                    }
-                }
-            }
-            }
+                    )
+            NavDisplay(
+                entries = entries,
+                modifier = Modifier.fillMaxSize(),
+                sceneStrategies = listOf(SinglePaneSceneStrategy()),
+                transitionSpec = {
+                    NavMotion.popping = false
+                    NavMotion.enterHeld = true
+                    pageBoundsTransform(incomingOnTop = true)
+                },
+                popTransitionSpec = {
+                    NavMotion.popping = true
+                    NavMotion.enterHeld = false
+                    pageBoundsTransform(incomingOnTop = false)
+                },
+                predictivePopTransitionSpec = { _ ->
+                    NavMotion.popping = true
+                    NavMotion.enterHeld = false
+                    pageBoundsTransform(incomingOnTop = false)
+                },
+                onBack = onBack,
+            )
+        }
 
         if (verifyPage && verifyWeb != null) {
             Box(Modifier.fillMaxSize().background(colors.background)) {
@@ -1417,282 +1664,10 @@ fun AppUi(
             }
         }
 
-        // 卡片/页面位图过渡层：几何在矩形与全屏之间插值，A 淡出 B 淡入
-        zoomRect?.let { r ->
-            val density = LocalDensity.current
-            val p = zoomProg.value
-            val screenW = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx() }
-            val screenH = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx() }
-            val left = r.left * (1f - p)
-            val top = r.top * (1f - p)
-            val w = r.width + (screenW - r.width) * p
-            val h = r.height + (screenH - r.height) * p
-            val corner = (1f - p) * 18f
-            val alpha = if (zoomMode > 0) {
-                // 进入：卡片位图前 55% 不透明，之后淡出
-                if (p <= 0.55f) 1f else ((1f - p) / 0.45f).coerceIn(0f, 1f)
-            } else {
-                // 退出：详情位图前 15% 保持不透明，15%~65% 淡出
-                when {
-                    p >= 0.85f -> 1f
-                    p > 0.35f -> ((p - 0.35f) / 0.50f).coerceIn(0f, 1f)
-                    else -> 0f
-                }
-            }
-            val shape = RoundedCornerShape(corner.dp)
-            val layer = zoomLayer
-            if (layer != null && zoomSrc.width > 1f && zoomSrc.height > 1f) {
-                // 直接绘制录好的图层，等比铺满目标矩形，不做非等比拉伸
-                Box(
-                    Modifier
-                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
-                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
-                        .clip(shape)
-                        .alpha(alpha)
-                ) {
-                    androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
-                        val k = maxOf(w / zoomSrc.width, h / zoomSrc.height)
-                        val dx = (w - zoomSrc.width * k) / 2f
-                        val dy = (h - zoomSrc.height * k) / 2f
-                        translate(dx, dy) {
-                            scale(k, k, pivot = androidx.compose.ui.geometry.Offset.Zero) {
-                                drawLayer(layer)
-                            }
-                        }
-                    }
-                }
-            } else {
-                Box(
-                    Modifier
-                        .offset { androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()) }
-                        .size(with(density) { w.toDp() }, with(density) { h.toDp() })
-                        .clip(shape)
-                        .background(colors.container)
-                        .alpha(alpha)
-                )
-            }
-        }
-
         // 隐藏的取数 WebView（1dp，不渲染任何可见内容）
         AndroidView(factory = { host }, modifier = Modifier.size(1.dp))
 
         if (busy && !rateOpen && !replyOpen) LoadingLayer("处理中…")
-
-        if (nav is Nav.Thread && !replyOpen) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(end = 16.dp, bottom = if (showBottomBar && !inHistorySelection) 92.dp else 10.dp)
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .then(
-                        if (blurBg) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { CircleShape },
-                            effects = { blur(28f) },
-                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
-                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
-                    )
-                    .border(
-                        1.dp,
-                        Brush.linearGradient(
-                            listOf(Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.05f))
-                        ),
-                        CircleShape
-                    )
-                    .lightPress { onReply() },
-                contentAlignment = Alignment.Center
-            ) {
-                IconImg(ReplyVector, 24.dp, colors.onAccent)
-            }
-        }
-        // 底部三个 tab，跟首页 pager 同一页；按住可以滑到旁边的项
-        val navDrag = remember { PressDragState() }
-        // 「和谐动漫 / 和谐游戏」：单击在顶部时刷新，否则回顶；300ms 内双击刷新当前列表。
-        // 按压拖动（超过 touchSlop）只执行原来的切页，不触发回顶或刷新。
-        var navTapIndex by remember { mutableIntStateOf(-1) }
-        var navTapAt by remember { mutableLongStateOf(0L) }
-        val navListState: (Int) -> androidx.compose.foundation.lazy.LazyListState = { idx ->
-            if (idx == 0) animeListState else gameListState
-        }
-        val switchTab: (Int) -> Unit = { idx ->
-            scope.launch { rootPager.animateScrollToPage(idx) }
-        }
-        navDrag.onCommit = { idx ->
-            val wasDrag = navDrag.moved
-            if (wasDrag || rootPager.settledPage != idx) {
-                navTapIndex = -1
-                switchTab(idx)
-            } else if (idx <= 1) {
-                val now = android.os.SystemClock.uptimeMillis()
-                val st = navListState(idx)
-                val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
-                if (navTapIndex == idx && now - navTapAt <= 300L) {
-                    // 第二次点击落在 300ms 内：按双击处理，刷新当前列表
-                    navTapIndex = -1
-                    onRefresh()
-                } else {
-                    navTapIndex = idx
-                    navTapAt = now
-                    if (atTop) onRefresh() else scope.launch { st.animateScrollToItem(0) }
-                }
-            } else {
-                // 「收藏 / 浏览记录」：单击只回顶，列表已在顶部就什么都不做（不刷新）
-                navTapIndex = -1
-                val st = if (idx == 2) watchListState else historyListState
-                val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
-                if (!atTop) scope.launch { st.animateScrollToItem(0) }
-            }
-        }
-        if (showBottomBar && !inHistorySelection) {
-            // 导航栏 + 搜索 FAB 作为一整组，底部居中；两者之间留 8dp
-            Row(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(bottom = 10.dp)
-                    .height(56.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-            Box(
-                Modifier
-                    .height(56.dp)
-                    .clip(RoundedCornerShape(26.dp))
-                    .then(
-                        if (blurBg) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { RoundedCornerShape(26.dp) },
-                            effects = { blur(30f) },
-                            onDrawSurface = { drawRect(colors.container.copy(alpha = 0.66f)) }
-                        ) else Modifier.background(colors.container)
-                    )
-                    .border(
-                        1.dp,
-                        Brush.linearGradient(
-                            listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.03f))
-                        ),
-                        RoundedCornerShape(26.dp)
-                    )
-            ) {
-                var navRowOrigin by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
-                val tabPosition = (rootPager.currentPage + rootPager.currentPageOffsetFraction).coerceIn(0f, 3f)
-                val navHover = navDrag.bounds[navDrag.hover]
-                val navHL by androidx.compose.animation.core.animateFloatAsState(
-                    targetValue = navHover?.let { it.left - navRowOrigin.x } ?: 0f,
-                    animationSpec = tween(150, easing = LinearEasing),
-                    label = "navHl"
-                )
-                val navHW by androidx.compose.animation.core.animateFloatAsState(
-                    targetValue = navHover?.width ?: 0f,
-                    animationSpec = tween(150, easing = LinearEasing),
-                    label = "navHw"
-                )
-                Row(
-                    Modifier
-                        .fillMaxHeight()
-                        .padding(horizontal = 4.dp)
-                        .onGloballyPositioned { navRowOrigin = it.positionInRoot() }
-                        .drawBehind {
-                            val widths = floatArrayOf(
-                                62.dp.toPx(), 62.dp.toPx(), 68.dp.toPx(), 68.dp.toPx()
-                            )
-                            val pos = tabPosition.coerceIn(0f, 3f)
-                            val i = pos.toInt().coerceAtMost(3)
-                            val t = pos - i
-                            var left = 0f
-                            for (k in 0 until i) left += widths[k]
-                            left += if (i == 3) 0f else widths[i] * t
-                            val width = if (i == 3) widths[3]
-                            else widths[i] * (1f - t) + widths[(i + 1).coerceAtMost(3)] * t
-                            val inset = 4.dp.toPx()
-                            drawRoundRect(
-                                color = colors.accent.copy(alpha = 0.16f),
-                                topLeft = androidx.compose.ui.geometry.Offset(left, inset),
-                                size = androidx.compose.ui.geometry.Size(width, size.height - inset * 2),
-                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
-                            )
-                            if (navDrag.hover >= 0 && navHW > 1f) {
-                                drawRoundRect(
-                                    color = colors.accent.copy(alpha = 0.16f),
-                                    topLeft = androidx.compose.ui.geometry.Offset(navHL, 0f),
-                                    size = androidx.compose.ui.geometry.Size(navHW, size.height),
-                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
-                                )
-                            }
-                        },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                val tab = rootPager.currentPage
-                NavButton(
-                    icon = CouiIcons.Outlined.Album,
-                    label = "和谐动漫",
-                    active = tab == 0,
-                    modifier = Modifier.width(62.dp),
-                    dragState = navDrag,
-                    dragIndex = 0,
-                    showActiveBg = false
-                ) { scope.launch { rootPager.animateScrollToPage(0) } }
-                NavButton(
-                    icon = CouiIcons.Filled.Gamepad,
-                    label = "和谐游戏",
-                    active = tab == 1,
-                    modifier = Modifier.width(62.dp),
-                    dragState = navDrag,
-                    dragIndex = 1,
-                    showActiveBg = false
-                ) { scope.launch { rootPager.animateScrollToPage(1) } }
-                NavButtonSlot(
-                    label = "收藏",
-                    active = tab == 2,
-                    modifier = Modifier.width(68.dp),
-                    dragState = navDrag,
-                    dragIndex = 2,
-                    showActiveBg = false,
-                    icon = { IconStar(20.dp, if (tab == 2) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
-                    onClick = { scope.launch { rootPager.animateScrollToPage(2) } }
-                )
-                NavButtonSlot(
-                    label = "浏览记录",
-                    active = tab == 3,
-                    modifier = Modifier.width(68.dp),
-                    dragState = navDrag,
-                    dragIndex = 3,
-                    showActiveBg = false,
-                    icon = { IconHistory(if (tab == 3) CouiTheme.colorScheme.accent else CouiTheme.colorScheme.onSurfaceVariant) },
-                    onClick = { scope.launch { rootPager.animateScrollToPage(3) } }
-                )
-                }
-            }
-
-            Spacer(Modifier.width(8.dp))
-            // 搜索 FAB 与导航栏并排，同属底部那一组
-            Box(
-                Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .then(
-                        if (blurBg) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { CircleShape },
-                            effects = { blur(28f) },
-                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
-                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
-                    )
-                    .border(
-                        1.dp,
-                        Brush.linearGradient(
-                            listOf(Color.White.copy(alpha = 0.35f), Color.White.copy(alpha = 0.05f))
-                        ),
-                        CircleShape
-                    )
-                    .lightPress { onOpenSearch() },
-                contentAlignment = Alignment.Center
-            ) {
-                IconImg(CouiIcons.Outlined.Search, 24.dp, colors.onAccent)
-            }
-            }
-        }
 
         if (searchOpen && !inHistorySelection) {
             SearchDialog(
@@ -1706,7 +1681,7 @@ fun AppUi(
         AvatarMenu(
             visible = topMenuOpen,
             items = topMenuItems,
-            backdrop = backdrop,
+            backdrop = menuBackdrop,
             blur = blurBg,
             onDismiss = { topMenuOpen = false }
         )
@@ -1874,6 +1849,7 @@ private fun TopBar(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
                         .size(40.dp)
+                        .markSpot(if (avatarInert) null else "settings")
                         .clip(CircleShape)
                         .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
                         .clickable(enabled = !avatarInert) { onToggleMenu() }
@@ -1883,6 +1859,7 @@ private fun TopBar(
                 Box(
                     Modifier
                         .size(40.dp)
+                        .markSpot(if (avatarInert) null else "settings")
                         .then(glassModifier(CircleShape))
                         .lightPress { if (!avatarInert) onToggleMenu() },
                     contentAlignment = Alignment.Center
@@ -2307,54 +2284,21 @@ private fun ErrorView(
     }
 }
 
-/** 卡片在窗口中的位置，用于帖子详情页的放大/缩小过渡 */
-object CardZoom {
-    var origin: androidx.compose.ui.geometry.Rect? = null
-    var bitmap: androidx.compose.ui.graphics.ImageBitmap? = null
-    var layer: androidx.compose.ui.graphics.layer.GraphicsLayer? = null
-}
-
-private data class ZoomScopes(
-    val shared: androidx.compose.animation.SharedTransitionScope,
-    val animated: androidx.compose.animation.AnimatedVisibilityScope
-)
-
-private val LocalZoomScopes = staticCompositionLocalOf<ZoomScopes?> { null }
-private val LocalZoomTid = staticCompositionLocalOf<String?> { null }
 internal val LocalBarInset = compositionLocalOf { 0.dp }
+
+/** 当前这一页自己的模糊源。页面之间不能共用，否则后打开的页会画出上一页。 */
+private val LocalPageBackdrop = staticCompositionLocalOf<com.itos.coui.backdrop.CouiBackdrop?> { null }
 
 internal object BarOverlay {
     var inset: androidx.compose.ui.unit.Dp by mutableStateOf(0.dp)
-}
-
-/** 卡片与帖子页共享同一 key，交给 Compose 的 sharedBounds 做卡片↔全屏容器变换 */
-@Composable
-private fun Modifier.threadZoom(key: String?): Modifier {
-    val z = LocalZoomScopes.current ?: return this
-    if (key.isNullOrBlank()) return this
-    // 只有当前正在做卡片<->详情过渡的那条帖子才挂共享元素
-    if (key != LocalZoomTid.current) return this
-    return with(z.shared) {
-        this@threadZoom.sharedBounds(
-            rememberSharedContentState("thread-$key"),
-            z.animated,
-            enter = fadeIn(tween(220)),
-            exit = fadeOut(tween(160)),
-            boundsTransform = { _, _ -> tween(500, easing = FastOutSlowInEasing) },
-            resizeMode = androidx.compose.animation.SharedTransitionScope.ResizeMode.scaleToBounds(
-                ContentScale.Crop,
-                Alignment.Center
-            )
-        )
-    }
 }
 
 @Composable
 private fun CardBox(
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
-    zoomKey: String? = null,
     read: Boolean = false,
+    boundsKey: String? = null,
     content: @Composable () -> Unit
 ) {
     val colors = CouiTheme.colorScheme
@@ -2363,21 +2307,15 @@ private fun CardBox(
     // 整卡等比缩放：背景和内容一起缩，不做横竖分别拉伸（那会把文字和图片拉变形）
     val scale by animateFloatAsState(if (pressed) 0.975f else 1f, tween(160))
     var touch by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Unspecified) }
-    var bounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
-    var rectRoot by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     val gl = rememberGraphicsLayer()
-    val cardScope = rememberCoroutineScope()
     val shape = RoundedCornerShape(18.dp)
     Box(
         Modifier
             .fillMaxWidth()
+            .markSpot(boundsKey)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
-            }
-            .onGloballyPositioned {
-                bounds = it.boundsInWindow()
-                rectRoot = it.boundsInRoot()
             }
             .drawWithContent {
                 if (pressed) {
@@ -2414,17 +2352,7 @@ private fun CardBox(
                 if (onClick != null || onLongClick != null) Modifier.combinedClickable(
                     interactionSource = interaction,
                     indication = null,
-                    onClick = {
-                        val act = onClick
-                        if (act != null) {
-                            CardZoom.origin = rectRoot
-                            CardZoom.layer = gl
-                            cardScope.launch {
-                                CardZoom.bitmap = runCatching { gl.toImageBitmap() }.getOrNull()
-                                act()
-                            }
-                        }
-                    },
+                    onClick = { onClick?.invoke() },
                     onLongClick = onLongClick
                 ) else Modifier
             )
@@ -2451,46 +2379,6 @@ private fun CardBox(
     }
 }
 
-// ---------------- 首页：版块 ----------------
-@Composable
-private fun HomeList(forums: List<ForumItem>, loading: Boolean, onOpen: (ForumItem) -> Unit) {
-    val colors = CouiTheme.colorScheme
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp + LocalBarInset.current, bottom = 100.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        item {
-            Txt("版块", size = 13.sp, color = colors.onSurfaceVariant, modifier = Modifier.padding(6.dp))
-        }
-        items(forums) { f ->
-            CardBox(onClick = { onOpen(f) }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (!f.icon.isNullOrEmpty()) {
-                        AsyncImage(
-                            model = f.icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
-                        )
-                        Spacer(Modifier.width(12.dp))
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Txt(f.name, size = 16.sp, weight = FontWeight.SemiBold, color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (f.desc.isNotEmpty()) {
-                            Spacer(Modifier.height(3.dp))
-                            Txt(f.desc, size = 12.sp, color = colors.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                    Txt("›", size = 18.sp, color = colors.onSurfaceVariant)
-                }
-            }
-        }
-        if (forums.isEmpty() && !loading) {
-            item { Txt("没有数据，点右上角登录后再试", size = 13.sp, color = colors.onSurfaceVariant) }
-        }
-    }
-}
-
 // ---------------- 版块页：分类 + 主题列表 ----------------
 @Composable
 private fun HistoryView(
@@ -2509,7 +2397,8 @@ private fun HistoryView(
     blocked: List<String> = emptyList(),
     watch: List<String> = emptyList(),
     emptyText: String = "还没有浏览记录",
-    deleteText: String = "删除"
+    deleteText: String = "删除",
+    markBounds: Boolean = true
 ) {
     val colors = CouiTheme.colorScheme
     val shown = history.filter { e -> !ContentPrefs.hit(e.title, blocked) }
@@ -2593,12 +2482,12 @@ private fun HistoryView(
                         )
                 ) {
                     CardBox(
+                        boundsKey = if (markBounds && !selecting) threadBoundsKey(e.url) else null,
                         onClick = {
                             if (selecting) {
                                 selected = if (picked) selected - e.tid else selected + e.tid
                             } else onOpen(e.url, e.title)
                         },
-                        zoomKey = if (selecting) null else e.tid.toString(),
                         onLongClick = {
                             selecting = true
                             selected = selected + e.tid
@@ -2698,7 +2587,8 @@ private fun HomeBoardPage(
     onOpenSite: () -> Unit,
     blocked: List<String> = emptyList(),
     watch: List<String> = emptyList(),
-    readTids: Set<Long> = emptySet()
+    readTids: Set<Long> = emptySet(),
+    markBounds: Boolean = true
 ) {
     when {
         error != null -> ErrorView(error, onRetry, onDump, onLogin)
@@ -2710,7 +2600,8 @@ private fun HomeBoardPage(
         else -> ForumView(
             page, loading, onOpenThread, onLoad, url, onImage, listState,
             refreshing, onRefresh, onThumbNeeded,
-            blocked = blocked, watch = watch, readTids = readTids
+            blocked = blocked, watch = watch, readTids = readTids,
+            markBounds = markBounds
         )
     }
 }
@@ -2730,7 +2621,8 @@ private fun ForumView(
     searchUpdating: Boolean = false,
     blocked: List<String> = emptyList(),
     watch: List<String> = emptyList(),
-    readTids: Set<Long> = emptySet()
+    readTids: Set<Long> = emptySet(),
+    markBounds: Boolean = true
 ) {
     val colors = CouiTheme.colorScheme
     val density = LocalDensity.current
@@ -2856,8 +2748,8 @@ private fun ForumView(
                 val isRead = t.tid.toLongOrNull()?.let { it in readTids } == true
                 CardBox(
                     onClick = { onThread(t) },
-                    zoomKey = t.tid,
-                    read = isRead
+                    read = isRead,
+                    boundsKey = if (markBounds) threadBoundsKey(t.url) else null
                 ) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3910,8 +3802,17 @@ private fun SearchScreen(
 ) {
     val colors = CouiTheme.colorScheme
     var q by remember { mutableStateOf("") }
+    var fieldRect by remember { mutableStateOf(Rect.Zero) }
+    var buttonRect by remember { mutableStateOf(Rect.Zero) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    fun submit(text: String, spot: Rect) {
+        val query = text.trim()
+        if (query.isBlank()) return
+        if (spot.width > 1f && spot.height > 1f) openSpots["search-result"] = spot
+        keyboard?.hide()
+        onSubmit(query)
+    }
     LaunchedEffect(Unit) {
         runCatching { focus.requestFocus() }
         keyboard?.show()
@@ -3921,6 +3822,7 @@ private fun SearchScreen(
             Box(
                 Modifier
                     .weight(1f)
+                    .onGloballyPositioned { fieldRect = it.boundsInRoot() }
                     .clip(RoundedCornerShape(20.dp))
                     .background(colors.container)
                     .padding(horizontal = 14.dp, vertical = 10.dp)
@@ -3935,22 +3837,14 @@ private fun SearchScreen(
                     textStyle = androidx.compose.ui.text.TextStyle(color = colors.onSurface, fontSize = 14.sp),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(colors.accent),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = {
-                        if (q.isNotBlank()) {
-                            keyboard?.hide()
-                            onSubmit(q.trim())
-                        }
-                    }),
+                    keyboardActions = KeyboardActions(onSearch = { submit(q, fieldRect) }),
                     modifier = Modifier.fillMaxWidth().focusRequester(focus)
                 )
             }
             Spacer(Modifier.width(10.dp))
-            Pill("搜索", {
-                if (q.isNotBlank()) {
-                    keyboard?.hide()
-                    onSubmit(q.trim())
-                }
-            }, primary = true)
+            Box(Modifier.onGloballyPositioned { buttonRect = it.boundsInRoot() }) {
+                Pill("搜索", { submit(q, buttonRect) }, primary = true)
+            }
         }
         if (history.isNotEmpty()) {
             Spacer(Modifier.height(18.dp))
@@ -3959,15 +3853,14 @@ private fun SearchScreen(
             history.chunked(2).forEach { row ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     row.forEach { h ->
+                        var chipRect by remember(h) { mutableStateOf(Rect.Zero) }
                         Box(
                             Modifier
                                 .weight(1f)
+                                .onGloballyPositioned { chipRect = it.boundsInRoot() }
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(colors.card)
-                                .clickable {
-                                    keyboard?.hide()
-                                    onSubmit(h)
-                                }
+                                .clickable { submit(h, chipRect) }
                                 .padding(horizontal = 12.dp, vertical = 10.dp)
                         ) {
                             Txt(h, size = 13.sp, color = colors.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -4140,6 +4033,7 @@ private fun SettingsView(
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        .markSpot("attachments")
                         .clip(RoundedCornerShape(12.dp))
                         .clickable { onOpenAttachManager() }
                         .padding(vertical = 6.dp),
@@ -4666,7 +4560,7 @@ private fun AttachManagerPage(
                             }
                             Spacer(Modifier.width(8.dp))
                             Column(horizontalAlignment = Alignment.End) {
-                                TinyAction("查看原帖") { onOpenThread(e) }
+                                TinyAction("查看原帖", threadBoundsKey(e.url)) { onOpenThread(e) }
                                 Spacer(Modifier.height(6.dp))
                                 TinyAction("查看文件") { onView(e) }
                             }
@@ -4713,11 +4607,12 @@ private fun AttachManagerPage(
 
 /** 列表右侧的小按钮，固定宽度避免被长文件名挤压 */
 @Composable
-private fun TinyAction(text: String, onClick: () -> Unit) {
+private fun TinyAction(text: String, boundsKey: String? = null, onClick: () -> Unit) {
     val colors = CouiTheme.colorScheme
     Box(
         Modifier
             .width(64.dp)
+            .markSpot(boundsKey)
             .clip(RoundedCornerShape(9.dp))
             .background(colors.accent.copy(alpha = 0.13f))
             .clickable(onClick = onClick)

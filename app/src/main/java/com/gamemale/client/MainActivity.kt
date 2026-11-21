@@ -23,101 +23,222 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.view.WindowCompat
 import com.itos.coui.theme.CouiTheme
 
-/** 底部导航直达版块：按发布时间倒序（不是最后回复） */
-private const val ANIME_URL =
-    SITE + "forum.php?mod=forumdisplay&fid=150&filter=dateline&orderby=dateline&typeid=831"
-private const val GAME_URL =
-    SITE + "forum.php?mod=forumdisplay&fid=152&filter=dateline&orderby=dateline&typeid=737"
-
-sealed interface Nav {
-    data object Home : Nav
-    data class Forum(val url: String, val title: String) : Nav
-    data class Thread(val url: String, val title: String) : Nav
-    data object Settings : Nav
-    data object Search : Nav
-    data object History : Nav
-    data object Watch : Nav
-    data object Attachments : Nav
-}
-
 class MainActivity : ComponentActivity() {
 
     private lateinit var fetcher: Fetcher
     private lateinit var browserHost: FrameLayout
 
-    private var nav by mutableStateOf<Nav>(Nav.Home)
-    private var backStack = mutableListOf<Nav>()
-    private var forums by mutableStateOf<List<ForumItem>>(emptyList())
-    private var forumPage by mutableStateOf<ForumPage?>(null)
-    /** 首页两个版块各自一份数据，搜索和详情不会写进来 */
-    private var animePage by mutableStateOf<ForumPage?>(null)
-    private var gamePage by mutableStateOf<ForumPage?>(null)
-    private var animeUrl by mutableStateOf(ANIME_URL)
-    private var gameUrl by mutableStateOf(GAME_URL)
-    /** 冷启动后还没手动进过「和谐游戏」：首次切过去要自动联网刷新一次，之后的切换不再刷新 */
-    private var gameFirstSwitchPending = true
-    private var threadPage by mutableStateOf<ThreadPage?>(null)
+    private lateinit var routes: AppNavigation
+
+    private val homeVm: HomeViewModel by viewModels()
+    private val forumVm: ForumViewModel by viewModels()
+    private val threadVm: ThreadViewModel by viewModels()
+    private val searchVm: SearchViewModel by viewModels()
+    private val settingsVm: SettingsViewModel by viewModels()
+    private val attachVm: AttachmentViewModel by viewModels()
+    private val accountVm: AccountViewModel by viewModels()
+
+    private var homeTab: Int
+        get() = homeVm.homeTab
+        set(value) { homeVm.homeTab = value }
+    private var homeJump: Int
+        get() = homeVm.homeJump
+        set(value) { homeVm.homeJump = value }
+    private var homeJumpGen: Int
+        get() = homeVm.homeJumpGen
+        set(value) { homeVm.homeJumpGen = value }
+
+    private fun onHomeBoard(): Boolean = routes.top == AppRoute.Home && homeTab <= 1
+
+    private fun requestHomeTab(index: Int) = homeVm.requestTab(index)
+
+    private fun forumSurface(): Boolean = onHomeBoard() || routes.top is AppRoute.Forum
+
+    private fun forumUrl(): String? = when (val r = routes.top) {
+        AppRoute.Home -> when (homeTab) {
+            0 -> animeUrl
+            1 -> gameUrl
+            else -> null
+        }
+        is AppRoute.Forum -> r.url
+        else -> null
+    }
+
+    private fun forumTitle(): String = when (val r = routes.top) {
+        AppRoute.Home -> when (homeTab) {
+            0 -> "和谐动漫"
+            1 -> "和谐游戏"
+            else -> ""
+        }
+        is AppRoute.Forum -> r.title
+        else -> ""
+    }
+
+    /** 首页两个版块只改自己的地址；已经压进来的版块替换栈顶，不再多一层。 */
+    private fun retargetForum(url: String, title: String) {
+        when (routes.top) {
+            AppRoute.Home -> when (homeTab) {
+                0 -> animeUrl = url
+                1 -> gameUrl = url
+                else -> routes.push(AppRoute.Forum(url, title))
+            }
+            is AppRoute.Forum -> routes.replaceTop(AppRoute.Forum(url, title))
+            else -> routes.push(AppRoute.Forum(url, title))
+        }
+    }
+
+    /** 根页面打开帖子是压栈；已经在版块或帖子上则替换栈顶。 */
+    private fun showAsThread(url: String, title: String) {
+        when (val top = routes.top) {
+            is AppRoute.Thread -> routes.replaceTop(AppRoute.Thread(url, title.ifBlank { top.title }))
+            is AppRoute.Forum -> routes.replaceTop(AppRoute.Thread(url, title))
+            else -> routes.push(AppRoute.Thread(url, title))
+        }
+    }
+    private var forums: List<ForumItem>
+        get() = forumVm.forums
+        set(value) { forumVm.forums = value }
+    private var forumPage: ForumPage?
+        get() = forumVm.forumPage
+        set(value) { forumVm.forumPage = value }
+    private var animePage: ForumPage?
+        get() = homeVm.animePage
+        set(value) { homeVm.animePage = value }
+    private var gamePage: ForumPage?
+        get() = homeVm.gamePage
+        set(value) { homeVm.gamePage = value }
+    private var animeUrl: String
+        get() = homeVm.animeUrl
+        set(value) { homeVm.animeUrl = value }
+    private var gameUrl: String
+        get() = homeVm.gameUrl
+        set(value) { homeVm.gameUrl = value }
+    private var gameFirstSwitchPending: Boolean
+        get() = homeVm.gameFirstSwitchPending
+        set(value) { homeVm.gameFirstSwitchPending = value }
+    private var threadPage: ThreadPage?
+        get() = threadVm.threadPage
+        set(value) { threadVm.threadPage = value }
+    /** 当前这次加载的状态，跟页面数据分开：响应回来时要写回发起请求的那一页。 */
     private var loading by mutableStateOf(false)
     private var error by mutableStateOf<String?>(null)
-    private var darkMode by mutableStateOf(false)
+    private var darkMode: Boolean
+        get() = settingsVm.darkMode
+        set(value) { settingsVm.darkMode = value }
     private var lastHtml: String = ""
     private var busy by mutableStateOf(false)
-    private var replyOpen by mutableStateOf(false)
-    private var rateOpen by mutableStateOf(false)
-    private var rateFields by mutableStateOf<List<Triple<String, String, String>>>(emptyList())
-    private var loginName by mutableStateOf<String?>(null)
-    private var loggedIn by mutableStateOf(false)
-    private var avatarUrl by mutableStateOf<String?>(null)
-    private var imageUrl by mutableStateOf<String?>(null)
+    private var replyOpen: Boolean
+        get() = threadVm.replyOpen
+        set(value) { threadVm.replyOpen = value }
+    private var rateOpen: Boolean
+        get() = threadVm.rateOpen
+        set(value) { threadVm.rateOpen = value }
+    private var rateFields: List<Triple<String, String, String>>
+        get() = threadVm.rateFields
+        set(value) { threadVm.rateFields = value }
+    private var loginName: String?
+        get() = accountVm.loginName
+        set(value) { accountVm.loginName = value }
+    private var loggedIn: Boolean
+        get() = accountVm.loggedIn
+        set(value) { accountVm.loggedIn = value }
+    private var avatarUrl: String?
+        get() = accountVm.avatarUrl
+        set(value) { accountVm.avatarUrl = value }
+    private var imageUrl: String?
+        get() = threadVm.imageUrl
+        set(value) { threadVm.imageUrl = value }
     private lateinit var cache: ThreadCache
-    /** 0 跟随系统 / 1 深色 / 2 浅色 */
-    private var themeMode by mutableStateOf(0)
-    private var fontScale by mutableStateOf(1f)
-    private var cacheMb by mutableStateOf(300)
-    private var cacheBytes by mutableStateOf(0L)
-    private var cacheCount by mutableStateOf(0)
-    /** 内容偏好：屏蔽词 / 特别关注，只作用于首页三个板块 */
-    private var blockedWords by mutableStateOf<List<String>>(emptyList())
-    private var watchWords by mutableStateOf<List<String>>(emptyList())
-    private var contentPrefOpen by mutableStateOf(false)
-    private var contentPrefKind by mutableStateOf(0)
-    /** 已读帖子 tid，独立于浏览记录 */
-    private var readTids by mutableStateOf<Set<Long>>(emptySet())
-    private var changelogOpen by mutableStateOf(false)
-    /** 升级后首次启动要展示的版本区间，非空时弹窗 */
-    private var upgradeReleases by mutableStateOf<List<Changelog.Release>>(emptyList())
-    /** 真正的新装：首次启动展示「个人学习研究作品」提示 */
-    private var firstRunNotice by mutableStateOf(false)
+    private var themeMode: Int
+        get() = settingsVm.themeMode
+        set(value) { settingsVm.themeMode = value }
+    private var fontScale: Float
+        get() = settingsVm.fontScale
+        set(value) { settingsVm.fontScale = value }
+    private var cacheMb: Int
+        get() = settingsVm.cacheMb
+        set(value) { settingsVm.cacheMb = value }
+    private var cacheBytes: Long
+        get() = settingsVm.cacheBytes
+        set(value) { settingsVm.cacheBytes = value }
+    private var cacheCount: Int
+        get() = settingsVm.cacheCount
+        set(value) { settingsVm.cacheCount = value }
+    private var blockedWords: List<String>
+        get() = settingsVm.blockedWords
+        set(value) { settingsVm.blockedWords = value }
+    private var watchWords: List<String>
+        get() = settingsVm.watchWords
+        set(value) { settingsVm.watchWords = value }
+    private var contentPrefOpen: Boolean
+        get() = settingsVm.contentPrefOpen
+        set(value) { settingsVm.contentPrefOpen = value }
+    private var contentPrefKind: Int
+        get() = settingsVm.contentPrefKind
+        set(value) { settingsVm.contentPrefKind = value }
+    private var readTids: Set<Long>
+        get() = homeVm.readTids
+        set(value) { homeVm.readTids = value }
+    private var changelogOpen: Boolean
+        get() = settingsVm.changelogOpen
+        set(value) { settingsVm.changelogOpen = value }
+    private var upgradeReleases: List<Changelog.Release>
+        get() = settingsVm.upgradeReleases
+        set(value) { settingsVm.upgradeReleases = value }
+    private var firstRunNotice: Boolean
+        get() = settingsVm.firstRunNotice
+        set(value) { settingsVm.firstRunNotice = value }
     private var appVersionName: String = ""
-    private var rateFormDef: FormDef? = null
-    private var rateReasonName: String? = null
-    /** 已下载附件（私有目录 + 原帖关联） */
-    private var attachments by mutableStateOf<List<AttachmentStore.Entry>>(emptyList())
-    private var attachSelecting by mutableStateOf(false)
-    private var attachSelectionCount by mutableStateOf(0)
-    /** 下载中的进度，键见 attachKey */
-    private var attachLoads by mutableStateOf<Map<String, AttachLoad>>(emptyMap())
-    /** txt 附件读出来的正文，下载完自动填 */
-    private var attachTexts by mutableStateOf<Map<String, String>>(emptyMap())
-    /** 下载完要把帖子滚到哪个附件 */
-    private var attachFocus by mutableStateOf<String?>(null)
-    /** 文本展示窗口（自由复制 / 查看 txt） */
-    private var fileTextOpen by mutableStateOf(false)
-    private var fileTextTitle by mutableStateOf("")
-    private var fileTextBody by mutableStateOf("")
-    /** 需要权限/金币的附件，先弹窗说明再下载 */
-    private var attachConfirm by mutableStateOf<AttachItem?>(null)
-    /** 购买页来源附件（HTTP 购买失败时退回应用内网页继续付） */
-    private var attachPayAt by mutableStateOf<AttachItem?>(null)
+    private var rateFormDef: FormDef?
+        get() = threadVm.rateFormDef
+        set(value) { threadVm.rateFormDef = value }
+    private var rateReasonName: String?
+        get() = threadVm.rateReasonName
+        set(value) { threadVm.rateReasonName = value }
+    private var attachments: List<AttachmentStore.Entry>
+        get() = attachVm.attachments
+        set(value) { attachVm.attachments = value }
+    private var attachSelecting: Boolean
+        get() = attachVm.attachSelecting
+        set(value) { attachVm.attachSelecting = value }
+    private var attachSelectionCount: Int
+        get() = attachVm.attachSelectionCount
+        set(value) { attachVm.attachSelectionCount = value }
+    private var attachLoads: Map<String, AttachLoad>
+        get() = attachVm.attachLoads
+        set(value) { attachVm.attachLoads = value }
+    private var attachTexts: Map<String, String>
+        get() = attachVm.attachTexts
+        set(value) { attachVm.attachTexts = value }
+    private var attachFocus: String?
+        get() = attachVm.attachFocus
+        set(value) { attachVm.attachFocus = value }
+    private var fileTextOpen: Boolean
+        get() = attachVm.fileTextOpen
+        set(value) { attachVm.fileTextOpen = value }
+    private var fileTextTitle: String
+        get() = attachVm.fileTextTitle
+        set(value) { attachVm.fileTextTitle = value }
+    private var fileTextBody: String
+        get() = attachVm.fileTextBody
+        set(value) { attachVm.fileTextBody = value }
+    private var attachConfirm: AttachItem?
+        get() = attachVm.attachConfirm
+        set(value) { attachVm.attachConfirm = value }
+    private var attachPayAt: AttachItem?
+        get() = attachVm.attachPayAt
+        set(value) { attachVm.attachPayAt = value }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -158,7 +279,6 @@ class MainActivity : ComponentActivity() {
         ThumbStore.init(this)
         SnapshotStore.init(this)
         Diag.init(this)
-        Diag.init(this)
         // 冷启动先沿用上次的登录态：头像/昵称直接显示，别再闪一下默认人头。
         // 注意不要在这里读 CookieManager：冷启动时 Cookie 还没初始化完，
         // 读到空值会把「上次明明是登录状态」误判成未登录。
@@ -197,21 +317,23 @@ class MainActivity : ComponentActivity() {
         fetcher = Fetcher(this)
 
         val root = ComposeView(this)
+        val deepAtLaunch = threadUrlFromIntent(intent)
         root.setContent {
-            CouiTheme(darkTheme = darkMode, colorScheme = rememberScheme(darkMode)) {
-                // 预测性返回：手指拖动时内容跟着右移，松手提交后退
-                PredictiveBackHandler(enabled = true) { progress ->
-                    // 手势被取消时 collect 会抛 CancellationException，不会走到 goBack
-                    try {
-                        progress.collect { e -> backProgress = e.progress }
-                    } finally {
-                        backProgress = 0f
-                    }
-                    goBack()
+            val navigation = key("home-pager") { rememberAppNavigation(deepAtLaunch) }
+            routes = navigation
+            LaunchedEffect(deepAtLaunch) {
+                if (deepAtLaunch != null) {
+                    // 外部分享/深链进来的帖子：先不写浏览记录，等正文解析成功后再写。
+                    load(deepAtLaunch)
+                } else {
+                    SnapshotStore.get(ANIME_URL)?.let { animePage = it.copy(title = "和谐动漫") }
+                    SnapshotStore.get(GAME_URL)?.let { gamePage = it.copy(title = "和谐游戏") }
+                    load(ANIME_URL)
                 }
+            }
+            CouiTheme(darkTheme = darkMode, colorScheme = rememberScheme(darkMode)) {
                 AppUi(
-                    nav = nav,
-                    forums = forums,
+                    nav = navigation,
                     forumPage = forumPage,
                     threadPage = threadPage,
                     loading = loading,
@@ -260,8 +382,8 @@ class MainActivity : ComponentActivity() {
                         refreshCacheStats()
                     },
                     onExportLogs = { Diag.export(this) },
-                    onRefreshThread = { (nav as? Nav.Thread)?.url?.let { reloadThread(it) } },
-                    onOpenBrowser = { (nav as? Nav.Thread)?.url?.let { openInBrowser(it) } },
+                    onRefreshThread = { (navigation.top as? AppRoute.Thread)?.url?.let { reloadThread(it) } },
+                    onOpenBrowser = { (navigation.top as? AppRoute.Thread)?.url?.let { openInBrowser(it) } },
                     onClearCache = {
                         prefetchToken++
                         fetcher.dropPending()
@@ -279,8 +401,7 @@ class MainActivity : ComponentActivity() {
                         refreshCacheStats()
                         toast("缓存与已下载附件已清除")
                     },
-                    canGoBack = backStack.isNotEmpty() || nav is Nav.Thread ||
-                        nav is Nav.Settings || nav is Nav.Search || nav is Nav.Attachments,
+                    canGoBack = navigation.canGoBack,
                     refreshing = refreshing,
                     searchUpdating = searchUpdating,
                     dailyFailed = dailyFailed,
@@ -289,7 +410,6 @@ class MainActivity : ComponentActivity() {
                     onRefresh = { refreshCurrentForum() },
                     onOpenSearch = { openSearch() },
                     searchHistory = searchHistory,
-                    backProgress = backProgress,
                     onThumbNeeded = { t -> ensureThumb(t) },
                     onLogin = { openLogin() },
                     needUpgrade = needUpgrade,
@@ -344,7 +464,7 @@ class MainActivity : ComponentActivity() {
                         watchLater = WatchStore.removeMany(this, tids)
                         toast("已移出收藏 " + tids.size + " 条")
                     },
-                    watchTidSaved = ((nav as? Nav.Thread)?.url?.let { tidOf(it) }?.toLongOrNull())
+                    watchTidSaved = ((navigation.top as? AppRoute.Thread)?.url?.let { tidOf(it) }?.toLongOrNull())
                         ?.let { t -> watchLater.any { it.tid == t } } == true,
                     onToggleWatch = { toggleWatchLater() },
                     attachPayOpen = attachPayInfo != null,
@@ -404,8 +524,7 @@ class MainActivity : ComponentActivity() {
                     onSearch = { q -> doSearch(q) },
                     onExternal = { openExternal(it) },
                     currentUrl = navUrl(),
-                    showBottomBar = backStack.isEmpty() &&
-                        (nav is Nav.Forum || nav is Nav.History || nav is Nav.Watch),
+                    showBottomBar = navigation.showBottomBar,
                     loginName = loginName,
                     avatarUrl = avatarUrl,
                     loggedIn = loggedIn,
@@ -416,6 +535,8 @@ class MainActivity : ComponentActivity() {
                     animeUrl = animeUrl,
                     gameUrl = gameUrl,
                     onRootTab = { selectRootTab(it) },
+                    homeJump = homeJump,
+                    homeJumpGen = homeJumpGen,
                     blockedWords = blockedWords,
                     watchWords = watchWords,
                     readTids = readTids,
@@ -459,20 +580,6 @@ class MainActivity : ComponentActivity() {
         }
         setContentView(root)
         fetcher.attach(browserHost)
-        // 默认直接进「动漫」版块，省掉版块总览这一层
-        val deep = threadUrlFromIntent(intent)
-        if (deep != null) {
-            // 外部分享/深链进来的帖子：先不写浏览记录，等正文解析成功后再写。
-            // 帖子被删/审核中时不能留下一条标题是「帖子」的空记录。
-            nav = Nav.Thread(deep, "帖子")
-            load(deep)
-        } else {
-            SnapshotStore.get(ANIME_URL)?.let { animePage = it.copy(title = "和谐动漫") }
-            SnapshotStore.get(GAME_URL)?.let { gamePage = it.copy(title = "和谐游戏") }
-            nav = Nav.Forum(ANIME_URL, "和谐动漫")
-            load(ANIME_URL)
-            // 冷启动只刷「和谐动漫」：游戏板块先铺本地快照，等用户首次切过去时再联网刷新
-        }
     }
 
     /** 从 VIEW / SEND intent 里取出帖子 URL（外部分享进来的 gamemale 帖子链接） */
@@ -493,9 +600,9 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         val url = threadUrlFromIntent(intent) ?: return
+        if (!::routes.isInitialized) return
         // 同样推迟到解析成功后再写，避免删帖/审核页留下空记录
-        backStack.clear()
-        nav = Nav.Thread(url, "帖子")
+        routes.openDeepLink(AppRoute.Thread(url, "帖子"))
         threadPage = null
         load(url)
     }
@@ -513,7 +620,7 @@ class MainActivity : ComponentActivity() {
         // 退到后台再写一遍浏览记录：万一记录那一次落盘被打断，重启后还能找回来
         runCatching { HistoryStore.persist(this, history) }
         runCatching {
-            (nav as? Nav.Thread)?.let { t ->
+            (routes.top as? AppRoute.Thread)?.let { t ->
                 threadPage?.let { tp ->
                     tidOf(t.url)?.toLongOrNull()?.let { tid ->
                         history = HistoryStore.record(this, tid, tp.subject, t.url)
@@ -525,8 +632,12 @@ class MainActivity : ComponentActivity() {
     }
 
     // ---------------- 数据加载 ----------------
-    private var homeWarmed = false
-    private var homeAlt = false
+    private var homeWarmed: Boolean
+        get() = homeVm.homeWarmed
+        set(value) { homeVm.homeWarmed = value }
+    private var homeAlt: Boolean
+        get() = homeVm.homeAlt
+        set(value) { homeVm.homeAlt = value }
 
     private fun loadHome() {
         loading = true
@@ -673,80 +784,83 @@ class MainActivity : ComponentActivity() {
      */
     private fun showForum(url: String, page: ForumPage?) {
         forumPage = page
-        if (page == null || url.contains("search.php") || backStack.isNotEmpty()) return
-        if (url.contains("fid=150")) {
-            animePage = page
-            animeUrl = url
-        } else if (url.contains("fid=152")) {
-            gamePage = page
-            gameUrl = url
-            // 游戏板块已经拿到新数据（不管是首次切换的自动刷新，还是用户自己刷新），
-            // 就不再占用「冷启动首次切换」这次机会
-            gameFirstSwitchPending = false
-        }
+        homeVm.absorbBoard(routes.top == AppRoute.Home, url, page)
     }
 
-    private fun boardOf(url: String): ForumPage? = when {
-        url.contains("fid=150") -> animePage
-        url.contains("fid=152") -> gamePage
-        else -> null
-    }
+    private fun boardOf(url: String): ForumPage? = homeVm.boardOf(url)
 
     private fun prevCats(url: String): List<CatTab> {
-        val page = when {
-            url.contains("search.php") || backStack.isNotEmpty() -> forumPage
-            url.contains("fid=150") -> animePage
-            url.contains("fid=152") -> gamePage
+        val page = when (routes.top) {
+            AppRoute.Home -> when {
+                url.contains("search.php") -> forumPage
+                homeTab == 0 -> animePage
+                homeTab == 1 -> gamePage
+                else -> forumPage
+            }
             else -> forumPage
         }
         return page?.cats ?: emptyList()
     }
 
-    /** 底栏三个 tab 停稳之后，把导航对上这一页；已经在这一页就不重新加载 */
+    /** 首页 Pager 停稳后加载这一页的数据。已经压着详情时底栏不在，这里直接忽略。 */
     private fun selectRootTab(index: Int) {
-        if (backStack.isNotEmpty()) return
+        if (routes.top != AppRoute.Home) return
+        if (homeTab == index) return
+        homeTab = index
+        threadPage = null
+        error = null
         when (index) {
-            0 -> {
-                if ((nav as? Nav.Forum)?.url?.contains("fid=150") == true) return
-                openQuick(animeUrl, "和谐动漫")
-            }
+            0 -> openRootBoard(animeUrl, "和谐动漫")
             1 -> {
-                if ((nav as? Nav.Forum)?.url?.contains("fid=152") == true) return
                 // 冷启动只刷了「和谐动漫」，游戏板块的数据还是上次的本地快照。
                 // 所以冷启动后第一次切过来时补一次联网刷新；之后再切回来只复用已有列表。
                 val firstSwitch = gameFirstSwitchPending
                 gameFirstSwitchPending = false
                 val hasLocal = (forumCache[gameUrl] ?: SnapshotStore.get(gameUrl) ?: gamePage)
                     ?.threads?.isNotEmpty() == true
-                openQuick(gameUrl, "和谐游戏")
+                openRootBoard(gameUrl, "和谐游戏")
                 if (firstSwitch && hasLocal) {
                     refreshing = true
                     fetchForumForRefresh(gameUrl, attempt = 0)
                 }
             }
             2 -> {
-                if (nav is Nav.Watch) return
-                openWatch()
+                watchLater = WatchStore.load(this)
+                loading = false
             }
             else -> {
-                if (nav is Nav.History) return
-                openHistory()
+                history = HistoryStore.load(this)
+                loading = false
             }
         }
+    }
+
+    /** 切到动漫或游戏根页面：有缓存就铺上，没有再去拉。 */
+    private fun openRootBoard(url: String, title: String) {
+        val cached = forumCache[url] ?: SnapshotStore.get(url) ?: boardOf(url)
+        if (cached != null && cached.threads.isNotEmpty()) {
+            showForum(url, cached.copy(title = title))
+            loadedForumUrl = url
+            loadedForumTitle = title
+            loading = false
+            refreshing = false
+            return
+        }
+        load(url)
     }
 
     private fun load(rawUrl: String) {
         val url = if (rawUrl.contains("mod=forumdisplay") && !rawUrl.contains("orderby="))
             rawUrl + "&orderby=dateline" else rawUrl
-        if (nav is Nav.Forum && forumPage == null) {
+        if (forumSurface() && forumPage == null) {
             val snap = forumCache[url] ?: SnapshotStore.get(url)
             if (snap != null) {
                 Diag.log("load", "先用磁盘快照铺屏 threads=" + snap.threads.size)
-                showForum(url, snap.copy(cats = mergeCats(emptyList(), snap.cats), title = (nav as Nav.Forum).title))
+                showForum(url, snap.copy(cats = mergeCats(emptyList(), snap.cats), title = forumTitle()))
             }
         }
         // 已经有旧列表（快照或上一屏）时，用顶部细条静默刷新，不铺全屏 loading
-        val hasOldList = nav is Nav.Forum && forumPage?.threads?.isNotEmpty() == true
+        val hasOldList = forumSurface() && forumPage?.threads?.isNotEmpty() == true
         if (hasOldList) {
             refreshing = true
             error = null
@@ -754,11 +868,11 @@ class MainActivity : ComponentActivity() {
             loading = true
             error = null
         }
-        Diag.log("load", "start nav=" + nav + " url=" + url)
-        if (nav is Nav.Forum && loadedForumUrl == url) retryCount = 0
-        if (nav is Nav.Forum) {
+        Diag.log("load", "start nav=" + routes.top + " url=" + url)
+        if (forumSurface() && loadedForumUrl == url) retryCount = 0
+        if (forumSurface()) {
             loadedForumUrl = url
-            loadedForumTitle = (nav as Nav.Forum).title
+            loadedForumTitle = forumTitle()
         }
         runCatching { fetcher.fetch(url) { r ->
             runOnUiThread {
@@ -775,22 +889,24 @@ class MainActivity : ComponentActivity() {
                     }
                     runCatching {
                         refreshLogin(html)
-                        when (nav) {
-                            is Nav.Thread -> {
-                                if (!sameTarget((nav as Nav.Thread).url, url)) {
-                                    Diag.log("load", "丢弃过期帖子响应 url=" + url + " 当前=" + (nav as Nav.Thread).url)
+                        when (val top = routes.top) {
+                            is AppRoute.Thread -> {
+                                if (!sameTarget(top.url, url)) {
+                                    Diag.log("load", "丢弃过期帖子响应 url=" + url + " 当前=" + top.url)
                                     return@onSuccess
                                 }
                                 // 650KB 页面的 jsoup 解析和落盘都放后台，UI 先把已有内容铺出来
                                 applyThreadHtml(html, url)
                             }
-                            is Nav.Forum -> {
-                                if (!sameTarget((nav as Nav.Forum).url, url)) {
-                                    Diag.log("load", "丢弃过期响应 url=" + url + " 当前=" + (nav as Nav.Forum).url)
+                            AppRoute.Home, is AppRoute.Forum -> {
+                                if (top == AppRoute.Home && homeTab > 1) return@onSuccess
+                                val pageUrl = forumUrl().orEmpty()
+                                if (!sameTarget(pageUrl, url)) {
+                                    Diag.log("load", "丢弃过期响应 url=" + url + " 当前=" + pageUrl)
                                     return@onSuccess
                                 }
                                 loadedForumUrl = url
-                                loadedForumTitle = (nav as Nav.Forum).title
+                                loadedForumTitle = forumTitle()
                                 // 页面结构校验：冷启动网络差时站点可能只回了 2KB 异常页/验证页，
                                 // 这种既不是「未登录」也不是「空版块」，应报加载失败而不是误导用户去登录。
                                 val looksForumPage = html.contains("threadlisttableid") ||
@@ -825,9 +941,7 @@ class MainActivity : ComponentActivity() {
                                     refreshing = false
                                     loading = false
                                     error = null
-                                    showForum(url, (nav as Nav.Forum).let { f ->
-                                        Site.parseForumPage(html).copy(title = f.title)
-                                    })
+                                    showForum(url, Site.parseForumPage(html).copy(title = forumTitle()))
                                     return@onSuccess
                                 }
                                 needLogin = false
@@ -837,9 +951,7 @@ class MainActivity : ComponentActivity() {
                                     refreshing = false
                                     loading = false
                                     error = null
-                                    showForum(url, (nav as Nav.Forum).let { f ->
-                                        Site.parseForumPage(html).copy(title = f.title)
-                                    })
+                                    showForum(url, Site.parseForumPage(html).copy(title = forumTitle()))
                                     return@onSuccess
                                 }
                                 needUpgrade = false
@@ -852,7 +964,7 @@ class MainActivity : ComponentActivity() {
                                     needUpgrade = false
                                     refreshing = false
                                     error = null
-                                    showForum(url, fp.copy(title = (nav as Nav.Forum).title))
+                                    showForum(url, fp.copy(title = forumTitle()))
                                     return@onSuccess
                                 }
                                 if (fp.threads.isEmpty() && url.contains("search.php")) {
@@ -881,9 +993,9 @@ class MainActivity : ComponentActivity() {
                                         val tid2 = Regex("fid=(\\d+)").find(base)?.groupValues?.get(1)
                                         val baseUrl = base + "&filter=dateline&orderby=dateline"
                                         dumpText("forum-empty", html)
-                                        if (tid2 != null && nav is Nav.Forum && (nav as Nav.Forum).url != baseUrl) {
+                                        if (tid2 != null && forumSurface() && forumUrl() != baseUrl) {
                                             Diag.log("load", "分类为空，回退 " + baseUrl)
-                                            nav = Nav.Forum(baseUrl, (nav as Nav.Forum).title)
+                                            retargetForum(baseUrl, forumTitle())
                                             load(baseUrl)
                                             return@onSuccess
                                         }
@@ -904,7 +1016,7 @@ class MainActivity : ComponentActivity() {
                                     val tp = Site.parseThread(html)
                                     if (tp.posts.isNotEmpty()) {
                                         threadPage = tp
-                                        nav = Nav.Thread(url, tp.subject)
+                                        showAsThread(url, tp.subject)
                                     }
                                 }
                             }
@@ -913,7 +1025,7 @@ class MainActivity : ComponentActivity() {
                     }.onFailure {
                         error = "解析失败：" + (it.message ?: it.javaClass.simpleName)
                     }
-                    if (nav is Nav.Forum) forumPage?.let { prefetchThumbs(it) }
+                    if (forumSurface()) forumPage?.let { prefetchThumbs(it) }
                 }.onFailure {
                     refreshing = false
                     loading = false
@@ -924,21 +1036,21 @@ class MainActivity : ComponentActivity() {
                         openVerify(url)
                         return@onFailure
                     }
-                    if (nav is Nav.Thread &&
+                    if (routes.top is AppRoute.Thread &&
                         (reason.contains("删除") || reason.contains("审核") ||
                             reason.contains("不存在") || reason.contains("不是目标帖子"))
                     ) {
                         // 帖子没了：不写浏览记录，把之前可能记下的那条也删掉。
                         // 「拿到的不是目标帖子」在删帖/审核时也会反复出现（站点只回异常页），
                         // 不能无限重试，直接给明确提示并清掉记录。
-                        tidOf((nav as Nav.Thread).url)?.toLongOrNull()?.let { tid ->
+                        tidOf((routes.top as AppRoute.Thread).url)?.toLongOrNull()?.let { tid ->
                             history = HistoryStore.remove(this, tid)
                         }
                         error = "这篇帖子可能已被删除或正在审核，无法查看\n可以复制链接到浏览器确认，或稍后再试"
                         retryCount = 0
                         return@onFailure
                     }
-                    if (nav is Nav.Forum && retryCount < 1) {
+                    if (forumSurface() && retryCount < 1) {
                         retryCount++
                         load(url)
                     } else {
@@ -1024,11 +1136,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun reload() {
-        when (val n = nav) {
-            Nav.Settings, Nav.Search, Nav.History, Nav.Watch, Nav.Attachments -> {}
-            is Nav.Home -> loadHome()
-            is Nav.Forum -> load(n.url)
-            is Nav.Thread -> {
+        when (val n = routes.top) {
+            AppRoute.Settings, AppRoute.Search, AppRoute.Attachments, AppRoute.Deep -> {}
+            AppRoute.Home -> when (homeTab) {
+                0 -> load(animeUrl)
+                1 -> load(gameUrl)
+                else -> {}
+            }
+            is AppRoute.Forum -> load(n.url)
+            is AppRoute.Thread -> {
                 // 从「加载不出来」页点重试时，补一层和首次加载一样的全屏刷新动画；
                 // 普通评分/回复后的静默刷新不加，避免每次提交都遮一屏。
                 if (error != null) loading = true
@@ -1077,20 +1193,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openForum(item: ForumItem) {
-        backStack.add(nav)
-        nav = Nav.Forum(item.url, item.name)
+        routes.push(AppRoute.Forum(item.url, item.name))
         forumPage = null
         threadPage = null
         load(item.url)
     }
 
-    /** 底部导航直达版块（动漫/游戏） */
-    /** 切到浏览记录页：与两个板块一样是一级页，不压栈 */
+    /** 切到浏览记录页：只滚动首页 Pager，不压栈 */
     private fun openHistory() {
         history = HistoryStore.load(this)
-        val isTopLevel = backStack.isEmpty()
-        if (!isTopLevel) backStack.add(nav)
-        nav = Nav.History
+        if (routes.top == AppRoute.Home) requestHomeTab(3)
         threadPage = null
         error = null
         loading = false
@@ -1098,9 +1210,7 @@ class MainActivity : ComponentActivity() {
 
     private fun openWatch() {
         watchLater = WatchStore.load(this)
-        val isTopLevel = backStack.isEmpty()
-        if (!isTopLevel) backStack.add(nav)
-        nav = Nav.Watch
+        if (routes.top == AppRoute.Home) requestHomeTab(2)
         threadPage = null
         error = null
         loading = false
@@ -1108,11 +1218,11 @@ class MainActivity : ComponentActivity() {
 
     /** 详情页右上角菜单：收藏 / 取消收藏当前帖子 */
     private fun toggleWatchLater() {
-        val tid = (nav as? Nav.Thread)?.url?.let { tidOf(it) }?.toLongOrNull() ?: return
+        val tid = (routes.top as? AppRoute.Thread)?.url?.let { tidOf(it) }?.toLongOrNull() ?: return
         // 优先用正文解析出来的真实标题，避免深链刚进来时把「帖子」存进收藏
         val title = threadPage?.subject?.takeIf { it.isNotBlank() }
-            ?: (nav as? Nav.Thread)?.title.orEmpty()
-        val url = (nav as? Nav.Thread)?.url.orEmpty()
+            ?: (routes.top as? AppRoute.Thread)?.title.orEmpty()
+        val url = (routes.top as? AppRoute.Thread)?.url.orEmpty()
         val saved = watchLater.any { it.tid == tid } || WatchStore.has(this, tid)
         watchLater = if (saved) WatchStore.remove(this, tid)
         else WatchStore.add(this, tid, title, url)
@@ -1121,10 +1231,17 @@ class MainActivity : ComponentActivity() {
 
     private fun openQuick(url: String, title: String) {
         Diag.log("nav", "switch forum -> " + title + " 缓存=" + (forumCache[url] != null))
-        // 一级页之间切换：不压栈。另一块的列表留在自己的快照里，不要借过来
-        val isTopLevel = backStack.isEmpty()
-        if (!isTopLevel) backStack.add(nav)
-        nav = Nav.Forum(url, title)
+        when {
+            url.contains("fid=150") -> {
+                animeUrl = url
+                if (routes.top == AppRoute.Home) requestHomeTab(0) else routes.push(AppRoute.Forum(url, title))
+            }
+            url.contains("fid=152") -> {
+                gameUrl = url
+                if (routes.top == AppRoute.Home) requestHomeTab(1) else routes.push(AppRoute.Forum(url, title))
+            }
+            else -> routes.push(AppRoute.Forum(url, title))
+        }
         threadPage = null
         error = null
         val cached = forumCache[url] ?: SnapshotStore.get(url) ?: boardOf(url)
@@ -1142,9 +1259,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openSearch() {
-        if (nav is Nav.Search) return
-        backStack.add(nav)
-        nav = Nav.Search
+        if (routes.top is AppRoute.Search) return
+        routes.push(AppRoute.Search)
         loadSearchHistory()
     }
 
@@ -1170,9 +1286,18 @@ class MainActivity : ComponentActivity() {
         Diag.log("search", "query=" + q.trim())
         // 先拿出这个关键词的旧结果（内存 / 磁盘快照）铺屏，再后台拉新结果替换
         val cached = forumCache[url] ?: SnapshotStore.get(url)
-        forumPage = cached?.copy(title = "搜索：" + q.trim())
+        val title = "搜索：" + q.trim()
+        forumPage = cached?.copy(title = title)
         searchUpdating = cached != null
-        nav = Nav.Forum(url, "搜索：" + q.trim())
+        val top = routes.top
+        if (top is AppRoute.Forum && top.url.contains("search.php")) {
+            routes.replaceTop(AppRoute.Forum(url, title))
+        } else if (top is AppRoute.Search) {
+            routes.push(AppRoute.Forum(url, title))
+        } else {
+            routes.push(AppRoute.Search)
+            routes.push(AppRoute.Forum(url, title))
+        }
         threadPage = null
         loadedForumUrl = url
         load(url)
@@ -1195,12 +1320,11 @@ class MainActivity : ComponentActivity() {
 
     /** 从任意入口（列表 / 搜索 / 浏览记录 / 深链）打开帖子 */
     private fun openThreadUrl(rawUrl: String, title: String) {
-        backStack.add(nav)
         val url = canonicalThreadUrl(rawUrl)
         openThreadTid = tidOf(url)
         // 浏览记录推迟到正文真的解析成功后再写：
         // 帖子被删/审核中时不应该留下一条「帖子」这种空标题记录。
-        nav = Nav.Thread(url, title)
+        routes.push(AppRoute.Thread(url, title))
         val tid = tidOf(url)
         val disk = tid?.let { cache.read(it) }
         val cached = tid?.let { threadCache[it] } ?: disk?.first
@@ -1229,9 +1353,18 @@ class MainActivity : ComponentActivity() {
 
     /** 切分类 / 翻页：仍在当前列表页内换数据 */
     fun goList(url: String) {
-        when (val n = nav) {
-            is Nav.Thread -> { nav = Nav.Thread(url, ""); threadPage = null }
-            else -> { nav = Nav.Forum(url, (nav as? Nav.Forum)?.title ?: ""); }
+        when (val n = routes.top) {
+            is AppRoute.Thread -> {
+                routes.replaceTop(AppRoute.Thread(url, ""))
+                threadPage = null
+            }
+            is AppRoute.Forum -> routes.replaceTop(n.copy(url = url))
+            AppRoute.Home -> when (homeTab) {
+                0 -> animeUrl = url
+                1 -> gameUrl = url
+                else -> routes.push(AppRoute.Forum(url, forumTitle()))
+            }
+            else -> routes.push(AppRoute.Forum(url, forumTitle()))
         }
         linkLoad(url)
     }
@@ -1253,7 +1386,7 @@ class MainActivity : ComponentActivity() {
                         if (url.contains("mod=viewthread") || url.contains("thread-")) {
                             val tp = Site.parseThread(html)
                             threadPage = tp
-                            nav = Nav.Thread(url, tp.subject)
+                            showAsThread(url, tp.subject)
                         } else {
                             var fp = Site.parseForumPage(html)
                             // 搜索结果的 DOM 不是版块列表：第二页用版块解析会得到空列表，
@@ -1268,10 +1401,10 @@ class MainActivity : ComponentActivity() {
                             )
                             showForum(url, shown)
                             loadedForumUrl = url
-                            val keepTitle = backStack.isEmpty() &&
+                            val keepTitle = routes.showBottomBar &&
                                 (url.contains("fid=150") || url.contains("fid=152"))
-                            val title = if (keepTitle) (nav as? Nav.Forum)?.title?.takeIf { it.isNotBlank() } else null
-                            nav = Nav.Forum(url, title ?: fp.title.ifBlank { "版块" })
+                            val title = if (keepTitle) forumTitle().takeIf { it.isNotBlank() } else null
+                            retargetForum(url, title ?: fp.title.ifBlank { "版块" })
                         }
                     }.onFailure { error = "解析失败：" + (it.message ?: it.javaClass.simpleName) }
                 }.onFailure { error = it.message ?: "加载失败" }
@@ -1281,9 +1414,8 @@ class MainActivity : ComponentActivity() {
 
     private fun openSettings() {
         // 搜索页也能进设置：之前这里把 Search 一起拦掉了，导致搜索页点头像完全没反应
-        if (nav is Nav.Settings) return
-        backStack.add(nav)
-        nav = Nav.Settings
+        if (routes.top is AppRoute.Settings) return
+        routes.push(AppRoute.Settings)
         refreshCacheStats()
     }
 
@@ -1328,8 +1460,8 @@ class MainActivity : ComponentActivity() {
 
     /** 下拉刷新：不动现有列表，成功后再整体替换 */
     private fun refreshCurrentForum() {
-        Diag.log("refresh", "nav=" + nav)
-        val url = (nav as? Nav.Forum)?.url ?: loadedForumUrl ?: return
+        Diag.log("refresh", "nav=" + routes.top)
+        val url = forumUrl() ?: loadedForumUrl ?: return
         if (refreshing) return
         refreshing = true
         prefetchToken++          // 停掉这一轮的预览图预取
@@ -1446,7 +1578,7 @@ class MainActivity : ComponentActivity() {
 
     /** 回复结果以“页面上真的有这条回复”为准，不依赖站点返回值文案 */
     private fun verifyReply(text: String) {
-        val url = (nav as? Nav.Thread)?.url
+        val url = (routes.top as? AppRoute.Thread)?.url
         if (url == null) {
             busy = false
             toast("回复已提交，回到帖子页刷新即可看到")
@@ -1599,44 +1731,41 @@ class MainActivity : ComponentActivity() {
 
     private fun goBack() {
         if (loginPage) { closeLogin(); return }
-        if (backStack.isNotEmpty()) {
-            nav = backStack.removeAt(backStack.size - 1)
-            when (val n = nav) {
-                Nav.Search -> {}
-                Nav.Settings -> {}
-                Nav.History, Nav.Watch, Nav.Attachments -> {}
-                is Nav.Home -> loadHome()
-                is Nav.Forum -> {
-                    // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
-                    val cached = forumCache[n.url]
-                    if (cached != null) {
-                        showForum(n.url, cached)
-                        loadedForumUrl = n.url
-                        error = null
-                    } else if (forumPage == null || loadedForumUrl != n.url || error != null) {
-                        load(n.url)
-                    }
-                }
-                is Nav.Thread -> {
-                    // 设置页返回帖子详情：本地已有同一帖就直接还原，不重新抓取
-                    if (threadPage != null && loadedThreadUrl == n.url) {
-                        error = null
-                    } else {
-                        val tid = Regex("thread-(\\d+)").find(n.url)?.groupValues?.get(1)
-                        val disk = tid?.let { cache.read(it) }
-                        if (disk != null) {
-                            runCatching {
-                                threadPage = Site.parseThread(disk.first)
-                                lastHtml = disk.first
-                                loadedThreadUrl = n.url
-                            }
-                        } else load(n.url)
-                    }
-                }
-            }
+        val revealed = routes.pop() ?: run {
+            finish()
             return
         }
-        finish()
+        when (revealed) {
+            is AppRoute.Forum -> {
+                // 按 URL 命中缓存就直接还原（从搜索结果返回列表页也走这里）
+                val cached = forumCache[revealed.url]
+                if (cached != null) {
+                    showForum(revealed.url, cached)
+                    loadedForumUrl = revealed.url
+                    error = null
+                } else if (forumPage == null || loadedForumUrl != revealed.url || error != null) {
+                    load(revealed.url)
+                }
+            }
+            is AppRoute.Thread -> {
+                // 设置页返回帖子详情：本地已有同一帖就直接还原，不重新抓取
+                if (threadPage != null && loadedThreadUrl == revealed.url) {
+                    error = null
+                } else {
+                    val tid = Regex("thread-(\\d+)").find(revealed.url)?.groupValues?.get(1)
+                    val disk = tid?.let { cache.read(it) }
+                    if (disk != null) {
+                        runCatching {
+                            threadPage = Site.parseThread(disk.first)
+                            lastHtml = disk.first
+                            loadedThreadUrl = revealed.url
+                        }
+                    } else load(revealed.url)
+                }
+            }
+            AppRoute.Home -> error = null
+            else -> {}
+        }
     }
 
     /** 上次进程如果崩过，启动时把堆栈弹出来（文本可长按复制） */
@@ -1804,7 +1933,7 @@ class MainActivity : ComponentActivity() {
                 loading = false
                 return@bgParse
             }
-            if ((nav as? Nav.Thread)?.url != url) {
+            if ((routes.top as? AppRoute.Thread)?.url != url) {
                 Diag.log("load", "丢弃过期帖子结果 url=" + url)
                 return@bgParse
             }
@@ -1816,7 +1945,7 @@ class MainActivity : ComponentActivity() {
                 if (retryCount < 1 && canonical != url) {
                     retryCount++
                     Diag.log("thread", "正文为空，改用规范地址重试 " + canonical)
-                    nav = Nav.Thread(canonical, tp.subject)
+                    routes.replaceTop(AppRoute.Thread(canonical, tp.subject))
                     load(canonical)
                     return@bgParse
                 }
@@ -1852,9 +1981,9 @@ class MainActivity : ComponentActivity() {
     private fun syncThreadSubject(url: String, subject: String) {
         if (subject.isBlank()) return
         val tid = tidOf(url)?.toLongOrNull()
-        val cur = nav as? Nav.Thread
+        val cur = routes.top as? AppRoute.Thread
         if (cur != null && tid != null && tidOf(cur.url)?.toLongOrNull() == tid) {
-            if (cur.title != subject) nav = Nav.Thread(cur.url, subject)
+            if (cur.title != subject) routes.replaceTop(cur.copy(title = subject))
         }
         if (tid != null) watchLater = WatchStore.rename(this, tid, subject)
     }
@@ -1885,45 +2014,96 @@ class MainActivity : ComponentActivity() {
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private var prefetchToken = 0
-    private var loadedForumUrl: String? = null
-    private var loadedForumTitle: String = ""
+    private var loadedForumUrl: String?
+        get() = forumVm.loadedForumUrl
+        set(value) { forumVm.loadedForumUrl = value }
+    private var loadedForumTitle: String
+        get() = forumVm.loadedForumTitle
+        set(value) { forumVm.loadedForumTitle = value }
     private var retryCount = 0
-    private var loadedThreadUrl: String? = null
-    private var refreshing by mutableStateOf(false)
-    /** 版块因用户组等级不足打不开 */
-    private var needUpgrade by mutableStateOf(false)
-    /** 未登录导致列表为空 */
-    private var needLogin by mutableStateOf(false)
-    private var accounts by mutableStateOf<List<Accounts.Acc>>(emptyList())
-    private var history by mutableStateOf<List<HistoryStore.Entry>>(emptyList())
-    /** 浏览记录选择模式下已选中的条数（显示在顶栏标题） */
-    private var historySelectionCount by mutableStateOf(0)
-    private var historySelecting by mutableStateOf(false)
-    /** 收藏 */
-    private var watchLater by mutableStateOf<List<WatchStore.Entry>>(emptyList())
-    private var watchSelectionCount by mutableStateOf(0)
-    private var watchSelecting by mutableStateOf(false)
-    /** 附件购买窗口 */
-    private var attachPayInfo by mutableStateOf<AttachPay?>(null)
-    private var attachPayName by mutableStateOf("")
-    private var attachPayBusy by mutableStateOf(false)
-    private var openThreadTid by mutableStateOf<String?>(null)
-    private var blurBg by mutableStateOf(true)
-    private var currentAccountId: String? = null
-    private var accountsOpen by mutableStateOf(false)
-    private var pendingCookie: String? = null
-    private var addMode = false
-    private var loginPage by mutableStateOf(false)
+    private var loadedThreadUrl: String?
+        get() = threadVm.loadedThreadUrl
+        set(value) { threadVm.loadedThreadUrl = value }
+    private var refreshing: Boolean
+        get() = forumVm.refreshing
+        set(value) { forumVm.refreshing = value }
+    private var needUpgrade: Boolean
+        get() = forumVm.needUpgrade
+        set(value) { forumVm.needUpgrade = value }
+    private var needLogin: Boolean
+        get() = forumVm.needLogin
+        set(value) { forumVm.needLogin = value }
+    private var accounts: List<Accounts.Acc>
+        get() = accountVm.accounts
+        set(value) { accountVm.accounts = value }
+    private var history: List<HistoryStore.Entry>
+        get() = homeVm.history
+        set(value) { homeVm.history = value }
+    private var historySelectionCount: Int
+        get() = homeVm.historySelectionCount
+        set(value) { homeVm.historySelectionCount = value }
+    private var historySelecting: Boolean
+        get() = homeVm.historySelecting
+        set(value) { homeVm.historySelecting = value }
+    private var watchLater: List<WatchStore.Entry>
+        get() = homeVm.watchLater
+        set(value) { homeVm.watchLater = value }
+    private var watchSelectionCount: Int
+        get() = homeVm.watchSelectionCount
+        set(value) { homeVm.watchSelectionCount = value }
+    private var watchSelecting: Boolean
+        get() = homeVm.watchSelecting
+        set(value) { homeVm.watchSelecting = value }
+    private var attachPayInfo: AttachPay?
+        get() = attachVm.attachPayInfo
+        set(value) { attachVm.attachPayInfo = value }
+    private var attachPayName: String
+        get() = attachVm.attachPayName
+        set(value) { attachVm.attachPayName = value }
+    private var attachPayBusy: Boolean
+        get() = attachVm.attachPayBusy
+        set(value) { attachVm.attachPayBusy = value }
+    private var openThreadTid: String?
+        get() = threadVm.openThreadTid
+        set(value) { threadVm.openThreadTid = value }
+    private var blurBg: Boolean
+        get() = settingsVm.blurBg
+        set(value) { settingsVm.blurBg = value }
+    private var currentAccountId: String?
+        get() = accountVm.currentAccountId
+        set(value) { accountVm.currentAccountId = value }
+    private var accountsOpen: Boolean
+        get() = accountVm.accountsOpen
+        set(value) { accountVm.accountsOpen = value }
+    private var pendingCookie: String?
+        get() = accountVm.pendingCookie
+        set(value) { accountVm.pendingCookie = value }
+    private var addMode: Boolean
+        get() = accountVm.addMode
+        set(value) { accountVm.addMode = value }
+    private var loginPage: Boolean
+        get() = accountVm.loginPage
+        set(value) { accountVm.loginPage = value }
     private var loginWeb: WebView? = null
-    private var loginPrompted = false
-    /** 站点要求人工验证时，弹一个可见 WebView 让页面自己跑完验证 */
-    private var verifyPage by mutableStateOf(false)
+    private var loginPrompted: Boolean
+        get() = accountVm.loginPrompted
+        set(value) { accountVm.loginPrompted = value }
+    private var verifyPage: Boolean
+        get() = accountVm.verifyPage
+        set(value) { accountVm.verifyPage = value }
     private var verifyWeb: WebView? = null
-    private var verifyTarget: String? = null
-    private var searchOpen by mutableStateOf(false)
-    private var backProgress by mutableStateOf(0f)
-    private var searchHistory by mutableStateOf<List<String>>(emptyList())
-    private var searchUpdating by mutableStateOf(false)
+    private var verifyTarget: String?
+        get() = accountVm.verifyTarget
+        set(value) { accountVm.verifyTarget = value }
+    private var searchOpen: Boolean
+        get() = searchVm.searchOpen
+        set(value) { searchVm.searchOpen = value }
+    private var searchHistory: List<String>
+        get() = searchVm.searchHistory
+        set(value) { searchVm.searchHistory = value }
+    private var searchUpdating: Boolean
+        get() = forumVm.searchUpdating
+        set(value) { forumVm.searchUpdating = value }
     /** tid -> 已抓到的帖子 HTML（预取时顺手存下），按总体积限制，避免把堆吃满 */
     private val threadCache = object : LinkedHashMap<String, String>() {
         override fun put(key: String, value: String): String? {
@@ -1948,7 +2128,9 @@ class MainActivity : ComponentActivity() {
     }
     /** url -> 已加载好的列表页（回退时不重载，搜索页也各存各的） */
     private val forumCache = LinkedHashMap<String, ForumPage>()
-    private var rateSourceHtml: String? = null
+    private var rateSourceHtml: String?
+        get() = threadVm.rateSourceHtml
+        set(value) { threadVm.rateSourceHtml = value }
 
     /** 列表页本身没有缩略图（这个模板没开图文插件），就用正文首图补，最多补 6 条 */
     /** 单条帖子的预览图：本地有缓存就直接解析出来，不再联网 */
@@ -2024,7 +2206,7 @@ class MainActivity : ComponentActivity() {
             .take(8)
         if (targets.isEmpty()) return
         fun step(i: Int) {
-            if (i >= targets.size || token != prefetchToken || nav !is Nav.Forum) return
+            if (i >= targets.size || token != prefetchToken || !forumSurface()) return
             val t = targets[i]
             val local = cache.read(t.tid)?.first ?: threadCache[t.tid]
             if (local != null) {
@@ -2089,7 +2271,7 @@ class MainActivity : ComponentActivity() {
 
     /** 只复制帖子链接本身，不带标题 */
     private fun copyThreadLink() {
-        val url = (nav as? Nav.Thread)?.url ?: navUrl()
+        val url = (routes.top as? AppRoute.Thread)?.url ?: navUrl()
         if (url.isBlank()) { toast("当前页面没有可复制的链接"); return }
         runCatching {
             val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
@@ -2100,8 +2282,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun shareThread() {
-        val url = (nav as? Nav.Thread)?.url ?: navUrl()
-        val title = (nav as? Nav.Thread)?.title ?: "GameMale 帖子"
+        val url = (routes.top as? AppRoute.Thread)?.url ?: navUrl()
+        val title = (routes.top as? AppRoute.Thread)?.title ?: "GameMale 帖子"
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, title)
@@ -2113,7 +2295,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private var dailyRunning = false
-    private var dailyFailed by mutableStateOf(false)
+    private var dailyFailed: Boolean
+        get() = homeVm.dailyFailed
+        set(value) { homeVm.dailyFailed = value }
 
     private fun todayKey(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
@@ -2269,14 +2453,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun threadTid(): String? =
-        Regex("thread-(\\d+)").find((nav as? Nav.Thread)?.url ?: "" )?.groupValues?.get(1)
+        Regex("thread-(\\d+)").find((routes.top as? AppRoute.Thread)?.url ?: "" )?.groupValues?.get(1)
 
-    private fun navUrl(): String = when (val n = nav) {
-        is Nav.Forum -> n.url
-        is Nav.Thread -> n.url
-        is Nav.Search -> SITE + "search.php?mod=forum"
-        Nav.Home -> SITE + "forum.php"
-        Nav.Settings, Nav.History, Nav.Watch, Nav.Attachments -> ""
+    private fun navUrl(): String = when (val n = routes.top) {
+        AppRoute.Home -> when (homeTab) {
+            0 -> animeUrl
+            1 -> gameUrl
+            else -> ""
+        }
+        is AppRoute.Forum -> n.url
+        is AppRoute.Thread -> n.url
+        AppRoute.Search -> SITE + "search.php?mod=forum"
+        else -> ""
     }
 
     /** 回复：用页面里的 #fastpostform 字段，补上 message 后 POST（带 inajax=1 拿纯文本结果） */
@@ -2406,7 +2594,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 评分：先 GET 评分页拿 #rateform，再按用户理由 POST */
-    private var ratePid: String? = null
+    private var ratePid: String?
+        get() = threadVm.ratePid
+        set(value) { threadVm.ratePid = value }
 
     private fun openRate(pid: String) {
         ratePid = pid
@@ -2613,8 +2803,8 @@ class MainActivity : ComponentActivity() {
     /** 真正去取购买页 / 下载。需要付费或权限的会先弹窗，免费的直接开始 */
     private fun proceedAttach(at: AttachItem) {
         val tid = threadTid()?.toLongOrNull() ?: 0L
-        val threadTitle = threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() }
-        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty()
+        val threadTitle = threadPage?.subject.orEmpty().ifBlank { (routes.top as? AppRoute.Thread)?.title.orEmpty() }
+        val threadUrl = (routes.top as? AppRoute.Thread)?.url.orEmpty()
         if (!at.url.contains("action=attachpay")) {
             // 免费附件 / 已经付过费：站点直接给下载地址，不需要确认
             downloadAttach(attachmentUrl(at.url), at.name, tid, threadTitle, threadUrl)
@@ -2714,8 +2904,8 @@ class MainActivity : ComponentActivity() {
         val at = attachConfirm ?: return
         attachConfirm = null
         val tid = threadTid()?.toLongOrNull() ?: 0L
-        val title = threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() }
-        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty()
+        val title = threadPage?.subject.orEmpty().ifBlank { (routes.top as? AppRoute.Thread)?.title.orEmpty() }
+        val threadUrl = (routes.top as? AppRoute.Thread)?.url.orEmpty()
         downloadAttach(attachmentUrl(at.url), at.name, tid, title, threadUrl)
     }
 
@@ -2724,11 +2914,11 @@ class MainActivity : ComponentActivity() {
         val pay = attachPayInfo ?: return
         if (attachPayBusy) return
         attachPayBusy = true
-        val threadUrl = (nav as? Nav.Thread)?.url.orEmpty().ifBlank { SITE }
+        val threadUrl = (routes.top as? AppRoute.Thread)?.url.orEmpty().ifBlank { SITE }
         val srcAt = attachPayAt
         val tid = pay.tid.toLongOrNull() ?: threadTid()?.toLongOrNull() ?: 0L
-        val title = threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() }
-        val pageUrl = (nav as? Nav.Thread)?.url.orEmpty()
+        val title = threadPage?.subject.orEmpty().ifBlank { (routes.top as? AppRoute.Thread)?.title.orEmpty() }
+        val pageUrl = (routes.top as? AppRoute.Thread)?.url.orEmpty()
         Thread {
             var ok = false
             var already = false
@@ -2876,7 +3066,7 @@ class MainActivity : ComponentActivity() {
     private fun findSignedAttachUrl(pay: AttachPay, threadUrl: String): String? {
         val tid = pay.tid
         val pages = ArrayList<String>()
-        val curThread = nav as? Nav.Thread
+        val curThread = routes.top as? AppRoute.Thread
         if (lastHtml.isNotBlank() && curThread != null &&
             tidOf(curThread.url).orEmpty() == tid
         ) pages.add(lastHtml)
@@ -3000,7 +3190,7 @@ class MainActivity : ComponentActivity() {
                         val text = runCatching { AttachmentStore.readText(file) }.getOrNull()
                         if (text != null) attachTexts = attachTexts + (key to text)
                     }
-                    val onThisThread = (nav as? Nav.Thread)?.url == threadUrl
+                    val onThisThread = (routes.top as? AppRoute.Thread)?.url == threadUrl
                     if (onThisThread) attachFocus = key
                     toast(if (AttachmentStore.kindOf(name) == "txt") "下载完成，已读取正文" else "下载完成：" + name)
                     Diag.log("attach", "download ok tid=" + tid + " name=" + name + " size=" + entry.size)
@@ -3077,9 +3267,8 @@ class MainActivity : ComponentActivity() {
 
     private fun openAttachManager() {
         attachments = AttachmentStore.load(this)
-        if (nav is Nav.Attachments) return
-        backStack.add(nav)
-        nav = Nav.Attachments
+        if (routes.top is AppRoute.Attachments) return
+        routes.push(AppRoute.Attachments)
         error = null
         loading = false
     }
@@ -3103,8 +3292,8 @@ class MainActivity : ComponentActivity() {
                         u,
                         at.name,
                         threadTid()?.toLongOrNull() ?: 0L,
-                        threadPage?.subject.orEmpty().ifBlank { (nav as? Nav.Thread)?.title.orEmpty() },
-                        (nav as? Nav.Thread)?.url.orEmpty()
+                        threadPage?.subject.orEmpty().ifBlank { (routes.top as? AppRoute.Thread)?.title.orEmpty() },
+                        (routes.top as? AppRoute.Thread)?.url.orEmpty()
                     )
                     return true
                 }
