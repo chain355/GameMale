@@ -126,6 +126,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
@@ -2527,6 +2529,11 @@ private fun CardBox(
     var touch by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Unspecified) }
     val gl = rememberGraphicsLayer()
     val shape = RoundedCornerShape(18.dp)
+    val darkUi = colors.onSurface.luminance() > 0.5f
+    val readDim = remember(darkUi) {
+        val gain = if (darkUi) 0.5f else 0.8f
+        ColorFilter.colorMatrix(ColorMatrix().apply { setToScale(gain, gain, gain, 1f) })
+    }
     Box(
         Modifier
             .fillMaxWidth()
@@ -2534,15 +2541,12 @@ private fun CardBox(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
+                colorFilter = if (read && !pressed) readDim else null
             }
             .drawWithContent {
                 if (pressed) {
                     gl.record { this@drawWithContent.drawContent() }
                     drawLayer(gl)
-                } else if (read) {
-                    // 已读态明显压暗：整卡（图片和文字）统一降亮度，但不转黑白
-                    drawContent()
-                    drawRect(Color.Black.copy(alpha = 0.45f))
                 } else {
                     drawContent()
                 }
