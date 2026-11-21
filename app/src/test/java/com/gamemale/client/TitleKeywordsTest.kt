@@ -30,6 +30,31 @@ class TitleKeywordsTest {
     }
 
     @Test
+    fun splitLatinAndChineseRunsWithoutSpaces() {
+        assertEquals(
+            listOf("zephyxus", "我爱你"),
+            TitleKeywords.split("zephyxus我爱你")
+        )
+        assertEquals(
+            listOf("zephyxus", "我爱你", "AI汉化"),
+            TitleKeywords.split("zephyxus我爱你 AI汉化")
+        )
+    }
+
+    @Test
+    fun splitMixedBracketTagButKeepShortAcronym() {
+        assertEquals(
+            listOf("zephyxus", "我爱你", "AI汉化"),
+            TitleKeywords.split("【zephyxus我爱你】【AI汉化】")
+        )
+    }
+
+    @Test
+    fun splitKeepsShortAcronymWithChineseSuffix() {
+        assertEquals(listOf("AI汉化", "4K修复"), TitleKeywords.split("【AI汉化】4K修复"))
+    }
+
+    @Test
     fun splitKeepsBracketWordsAndDropsBlankTitle() {
         assertEquals(emptyList<String>(), TitleKeywords.split("   "))
         assertEquals(listOf("自购", "三々御茶"), TitleKeywords.split("【自购】【三々御茶】"))
