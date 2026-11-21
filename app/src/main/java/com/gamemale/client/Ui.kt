@@ -1130,6 +1130,9 @@ fun AppUi(
                 val st = if (idx == 2) watchListState else historyListState
                 val atTop = st.firstVisibleItemIndex == 0 && st.firstVisibleItemScrollOffset == 0
                 if (!atTop) scope.launch { st.animateScrollToItem(0) }
+                // 浏览记录再读一次磁盘：刚看完的帖子即使是被外部分享打开的，也不会因为
+                // 页面还停在旧快照而看起来「没记录」。收藏仍保持原行为。
+                if (idx == 3) onOpenHistoryTab()
             }
         }
         if (!inHistorySelection) {
@@ -1485,6 +1488,9 @@ fun AppUi(
                                             history, historyListState, onOpenHistory, onClearHistory,
                                             blocked = blockedWords,
                                             watch = watchWords,
+                                            // 浏览记录是「看过什么」的账本，不再被屏蔽词隐藏；
+                                            // 否则刚打开过的帖子会静默消失，看起来像没记录。
+                                            applyBlocked = false,
                                             exitSignal = historyExitSignal,
                                             selectAllSignal = selectAllSignal,
                                             clearSelectionSignal = clearSelectionSignal,
@@ -2690,12 +2696,13 @@ private fun HistoryView(
     blur: Boolean = false,
     blocked: List<String> = emptyList(),
     watch: List<String> = emptyList(),
+    applyBlocked: Boolean = true,
     emptyText: String = "还没有浏览记录",
     deleteText: String = "删除",
     markBounds: Boolean = true
 ) {
     val colors = CouiTheme.colorScheme
-    val shown = history.filter { e -> !ContentPrefs.hit(e.title, blocked) }
+    val shown = if (applyBlocked) history.filter { e -> !ContentPrefs.hit(e.title, blocked) } else history
     // 选择模式：长按进入，点按切换选中；顶栏显示已选数量
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<Long>()) }

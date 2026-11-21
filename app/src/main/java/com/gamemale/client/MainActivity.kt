@@ -868,6 +868,7 @@ class MainActivity : ComponentActivity() {
             }
             else -> {
                 history = HistoryStore.load(this)
+                logHistoryView()
                 loading = false
             }
         }
@@ -1248,6 +1249,7 @@ class MainActivity : ComponentActivity() {
     /** 切到浏览记录页：只滚动首页 Pager，不压栈 */
     private fun openHistory() {
         history = HistoryStore.load(this)
+        logHistoryView()
         if (routes.top == AppRoute.Home) requestHomeTab(3)
         threadPage = null
         error = null
@@ -1459,6 +1461,19 @@ class MainActivity : ComponentActivity() {
                     }.onFailure { error = "解析失败：" + (it.message ?: it.javaClass.simpleName) }
                 }.onFailure { error = it.message ?: "加载失败" }
             }
+        }
+    }
+
+    /** 进入浏览记录时留一行统计：总条数、被屏蔽词命中的条数、首条帖子，排查「没记录」时直接看日志。 */
+    private fun logHistoryView() {
+        runCatching {
+            val hidden = history.count { ContentPrefs.hit(it.title, blockedWords) }
+            val top = history.maxByOrNull { it.ts }
+            Diag.log(
+                "history",
+                "列表 total=" + history.size + " 屏蔽命中=" + hidden +
+                    " 首条=" + (top?.let { it.tid.toString() + ":" + it.title.take(32) } ?: "无")
+            )
         }
     }
 
