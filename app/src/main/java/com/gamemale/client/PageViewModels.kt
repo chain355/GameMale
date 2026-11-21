@@ -35,6 +35,7 @@ class HomeViewModel : ViewModel() {
 
     var readTids by mutableStateOf<Set<Long>>(emptySet())
     var dailyFailed by mutableStateOf(false)
+    var dailyRewards by mutableStateOf<List<String>>(emptyList())
 
     var homeWarmed: Boolean = false
     var homeAlt: Boolean = false

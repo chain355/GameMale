@@ -412,6 +412,8 @@ class MainActivity : ComponentActivity() {
                     refreshing = refreshing,
                     searchUpdating = searchUpdating,
                     dailyFailed = dailyFailed,
+                    dailyRewards = dailyRewards,
+                    onCloseDailyRewards = { dailyRewards = emptyList() },
                     onOpenSign = { openInBrowser(SITE + "plugin.php?id=k_misign:sign") },
                     onOpenAward = { openInBrowser(SITE + "plugin.php?id=it618_award") },
                     onRefresh = { refreshCurrentForum() },
@@ -2336,6 +2338,9 @@ class MainActivity : ComponentActivity() {
     private var dailyFailed: Boolean
         get() = homeVm.dailyFailed
         set(value) { homeVm.dailyFailed = value }
+    private var dailyRewards: List<String>
+        get() = homeVm.dailyRewards
+        set(value) { homeVm.dailyRewards = value }
 
     private fun todayKey(): String =
         java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
@@ -2421,14 +2426,22 @@ class MainActivity : ComponentActivity() {
         toast(if (doSign) "正在自动签到…" else "正在自动翻卡抽奖…")
         val enabled = booleanArrayOf(doSign, doAward)
         val done = arrayOfNulls<Boolean>(2)
+        var signReward: String? = null
+        var awardReward: String? = null
         fun finish() {
             if (enabled.indices.any { enabled[it] && done[it] == null }) return
             val msgs = ArrayList<String>()
-            if (doSign) msgs.add(if (done[0] == true) "已自动签到" else "签到失败")
-            if (doAward) msgs.add(if (done[1] == true) "已自动翻卡抽奖" else "翻卡抽奖失败")
+            if (doSign) msgs.add(
+                if (done[0] == true) signReward?.let { "签到奖励：$it" } ?: "已自动签到"
+                else "签到失败"
+            )
+            if (doAward) msgs.add(
+                if (done[1] == true) awardReward?.let { "抽卡奖励：$it" } ?: "已自动翻卡抽奖"
+                else "翻卡抽奖失败"
+            )
             val failed = enabled.indices.any { enabled[it] && done[it] == false }
             dailyFailed = failed
-            toast(msgs.joinToString("，"))
+            dailyRewards = msgs
             sp.edit()
                 .putString("dailyTaskDay", todayKey())
                 .putBoolean("dailyTaskFailed", failed)
@@ -2446,6 +2459,14 @@ class MainActivity : ComponentActivity() {
         val signUrl = SITE + "plugin.php?id=k_misign:sign"
         val awardUrl = SITE + "plugin.php?id=it618_award"
 
+        fun loadAwardReward(formhash: String, after: () -> Unit) {
+            fetchText(SITE + "plugin.php?id=it618_award:ajax&page=1&formhash=$formhash&ac=myaward_get") { html ->
+                awardReward = DailyReward.latestAward(html)
+                if (awardReward == null) Diag.log("daily", "award record not parsed")
+                after()
+            }
+        }
+
         fun lottery() {
             if (!doAward) {
                 finish()
@@ -2457,18 +2478,20 @@ class MainActivity : ComponentActivity() {
                 }
                 val drawn = html.contains("已抽奖") || html.contains("已经抽奖") ||
                     Regex("抽奖\\s*\\d+\\s*次").containsMatchIn(html)
+                val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
                 if (drawn) {
-                    done[1] = true; finish()
+                    done[1] = true
+                    if (fh == null) finish() else loadAwardReward(fh) { finish() }
                 } else {
                     toast("正在自动翻卡抽奖…")
-                    val fh = Regex("name=\"formhash\" value=\"([^\"]+)\"").find(html)?.groupValues?.get(1)
                     if (fh == null) {
                         done[1] = false; finish()
                     } else {
                         // 抽卡接口的返回体直接判断成败，不再重载页面（重载容易超时）
                         fetchText(SITE + "plugin.php?id=it618_award:ajax&ac=getaward&formhash=$fh") { r ->
-                            done[1] = judgeDaily(r, 1)
-                            finish()
+                            val ok = judgeDaily(r, 1)
+                            done[1] = ok
+                            if (ok) loadAwardReward(fh) { finish() } else finish()
                         }
                     }
                 }
@@ -2486,6 +2509,7 @@ class MainActivity : ComponentActivity() {
                 lottery()
                 return@fetchText
             }
+            signReward = DailyReward.sign(html)
             if (!html.contains("您今天还没有签到")) {
                 done[0] = true
                 toast(if (doAward) "今日已签到，正在检查翻卡…" else "今日已签到")

@@ -912,6 +912,8 @@ fun AppUi(
     onDismissUpgradeLog: () -> Unit = {},
     firstRunNotice: Boolean = false,
     onDismissFirstRunNotice: () -> Unit = {},
+    dailyRewards: List<String> = emptyList(),
+    onCloseDailyRewards: () -> Unit = {},
     appVersion: String = "",
     watchLater: List<WatchStore.Entry> = emptyList(),
     watchSelecting: Boolean = false,
@@ -1743,6 +1745,9 @@ fun AppUi(
         // 使用声明优先级最高：确认之后才展示更新日志
         if (upgradeReleases.isNotEmpty() && !firstRunNotice) UpgradeLogDialog(upgradeReleases, onDismissUpgradeLog)
         if (firstRunNotice) FirstRunNoticeDialog(onDismissFirstRunNotice)
+        // 声明与升级日志优先，等它们关掉后再展示每日任务奖励
+        if (dailyRewards.isNotEmpty() && !firstRunNotice && upgradeReleases.isEmpty())
+            DailyRewardDialog(dailyRewards, onCloseDailyRewards)
         if (replyOpen) ReplyDialog(busy, onCancelReply, onSendReply)
         if (rateOpen) RateDialog(rateFields, busy, onCancelRate, onSendRate)
         if (imageUrl != null) {
@@ -2228,6 +2233,39 @@ private fun DialogHead(
             if (!subtitle.isNullOrBlank()) {
                 Spacer(Modifier.height(2.dp))
                 Txt(subtitle, size = 12.sp, color = colors.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DailyRewardDialog(rewards: List<String>, onClose: () -> Unit) {
+    val colors = CouiTheme.colorScheme
+    Dialog(onDismissRequest = onClose) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(18.dp)
+        ) {
+            DialogHead("今日任务奖励", onClose, subtitle = "本次自动任务已完成")
+            Spacer(Modifier.height(12.dp))
+            rewards.forEach { line ->
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.container)
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Txt(line, size = 13.sp, color = colors.onSurface, lineHeight = 1.55f)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Pill("知道了", onClose, primary = true)
             }
         }
     }

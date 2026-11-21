@@ -427,10 +427,15 @@ object Site {
             if (content != null) collectBlocks(content, blocks)
 
             val attachments = ArrayList<AttachItem>()
+            // 图片附件块：正文会把 .mbn.savephotop 里的 zoomfile 图片补成大图，
+            // 这类附件块不再重复列进附件区，只保留非图片文件。
+            fun hasDisplayImage(dl: Element?): Boolean =
+                dl?.selectFirst("img[zoomfile], img[file]") != null
             // 正文内插入的附件（[attach] 标签）：普通文件 + 付费附件（action=attachpay）
             for (a in plc.select("a[href*=mod=attachment], a[href*=action=attachpay]")) {
                 // 图片附件（[attach]img[/attach]）不当作可下载文件，也不显示附件说明
                 if (a.selectFirst("img") != null) continue
+                if (hasDisplayImage(a.closest("dl.tattl"))) continue
                 // 悬浮提示里的“下载附件/保存到相册”不是附件本体
                 if (a.closest(".tip") != null) continue
                 val name = a.text().trim()
@@ -456,6 +461,8 @@ object Site {
                 attachments.add(AttachItem(name, url, metaFinal, price))
             }
             for (dl in plc.select(".pattl dl.tattl")) {
+                // 同一块已经作为正文大图展示，附件区不再重复列出
+                if (hasDisplayImage(dl)) continue
                 for (a in dl.select("dd a[href*=mod=attachment], dd a[href*=action=attachpay]")) {
                     if (a.closest(".tip") != null) continue
                     if (a.selectFirst("img") != null) continue
