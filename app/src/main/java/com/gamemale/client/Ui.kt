@@ -28,7 +28,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.geometry.Rect
@@ -168,12 +167,24 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.drawscope.scale
-import com.itos.coui.backdrop.rememberCouiBackdrop
-import com.itos.coui.backdrop.couiBackdrop
-import com.itos.coui.backdrop.drawCouiBackdrop
+import androidx.compose.ui.graphics.Matrix
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.GlobalPositionAwareModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.node.requireGraphicsContext
+import androidx.compose.ui.node.requireView
+import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import android.view.ViewTreeObserver
+import kotlin.math.ceil
 import com.itos.coui.icons.CouiIcons
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
@@ -1007,7 +1018,7 @@ fun AppUi(
     // 顶栏返回 / 系统返回 / 侧滑：通知浏览记录页退出选择模式
     var historyExitSignal by remember { mutableStateOf(0) }
     // 菜单盖在导航外面，采样当前页自己的模糊源
-    var menuBackdrop by remember { mutableStateOf<com.itos.coui.backdrop.CouiBackdrop?>(null) }
+    var menuBlur by remember { mutableStateOf<PageBlur?>(null) }
     val homePage = rootPager.settledPage
     val inHistorySelection = (route == AppRoute.Home && homePage == 3 && historySelecting) ||
         (route == AppRoute.Home && homePage == 2 && watchSelecting) ||
@@ -1055,7 +1066,7 @@ fun AppUi(
         CompositionLocalProvider(LocalBarInset provides barH) {
         Box(Modifier.fillMaxSize()) {
             @Composable
-            fun BoxScope.HomeChrome(backdrop: com.itos.coui.backdrop.CouiBackdrop) {
+            fun BoxScope.HomeChrome(source: PageBlur) {
         // 底部三个 tab，跟首页 pager 同一页；按住可以滑到旁边的项
         val navDrag = remember { PressDragState() }
         // 「和谐动漫 / 和谐游戏」：单击在顶部时刷新，否则回顶；300ms 内双击刷新当前列表。
@@ -1108,13 +1119,12 @@ fun AppUi(
                 Modifier
                     .height(56.dp)
                     .clip(RoundedCornerShape(26.dp))
-                    .then(
-                        if (blurBg) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { RoundedCornerShape(26.dp) },
-                            effects = { blur(30f) },
-                            onDrawSurface = { drawRect(colors.container.copy(alpha = 0.66f)) }
-                        ) else Modifier.background(colors.container)
+                    .frost(
+                        source,
+                        blurBg,
+                        radius = 30f,
+                        tint = colors.container.copy(alpha = 0.66f),
+                        fallback = colors.container
                     )
                     .border(
                         1.dp,
@@ -1221,13 +1231,12 @@ fun AppUi(
                     .size(56.dp)
                     .markSpot("search")
                     .clip(CircleShape)
-                    .then(
-                        if (blurBg) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { CircleShape },
-                            effects = { blur(28f) },
-                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
-                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
+                    .frost(
+                        source,
+                        blurBg,
+                        radius = 28f,
+                        tint = colors.accent.copy(alpha = 0.82f),
+                        fallback = colors.accent.copy(alpha = 0.92f)
                     )
                     .border(
                         1.dp,
@@ -1246,7 +1255,7 @@ fun AppUi(
             }
 
             @Composable
-            fun BoxScope.ReplyChrome(backdrop: com.itos.coui.backdrop.CouiBackdrop) {
+            fun BoxScope.ReplyChrome(source: PageBlur) {
             Box(
                 Modifier
                     .align(Alignment.BottomEnd)
@@ -1254,13 +1263,12 @@ fun AppUi(
                     .padding(end = 16.dp, bottom = 10.dp)
                     .size(56.dp)
                     .clip(CircleShape)
-                    .then(
-                        if (blurBg) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { CircleShape },
-                            effects = { blur(28f) },
-                            onDrawSurface = { drawRect(colors.accent.copy(alpha = 0.82f)) }
-                        ) else Modifier.background(colors.accent.copy(alpha = 0.92f))
+                    .frost(
+                        source,
+                        blurBg,
+                        radius = 28f,
+                        tint = colors.accent.copy(alpha = 0.82f),
+                        fallback = colors.accent.copy(alpha = 0.92f)
                     )
                     .border(
                         1.dp,
@@ -1298,8 +1306,8 @@ fun AppUi(
                         add(Triple("手动抽卡", 7) { onOpenAward() })
                     }
                 }
-                val pageBackdrop = rememberCouiBackdrop()
-                if (page == nav.top) SideEffect { menuBackdrop = pageBackdrop }
+                val pageBlur = rememberPageBlur()
+                if (page == nav.top) SideEffect { menuBlur = pageBlur }
                 val title = when (page) {
                     AppRoute.Home -> when (rootPager.currentPage) {
                         0 -> "和谐动漫"
@@ -1316,16 +1324,19 @@ fun AppUi(
                     AppRoute.Deep -> "帖子"
                 }
                 // 背景、顶栏、内容和本页按钮在同一层里，返回时才是整页一起动。
-                // 页面内容直接画。couiBackdrop 会把内容录进一张新的图形层再贴回去，
-                // 新页第一帧那张层是空的，整屏会先闪成空白。
-                CompositionLocalProvider(LocalPageBackdrop provides pageBackdrop) {
+                // 正文直接画到屏幕上，另外录一份给顶栏和底栏采样。
+                // 不能改用 couiBackdrop：它会拿录制层替换正文，新页第一帧那张层是空的，整屏会先闪成空白。
                 Box(
                     Modifier
                         .motionFrom(pageBoundsKey(page))
                         .fillMaxSize()
                         .background(colors.background)
                 ) {
-                    Box(Modifier.fillMaxSize()) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .then(if (blurBg) Modifier.capturePageBlur(pageBlur) else Modifier)
+                    ) {
                         Box(Modifier.fillMaxSize().background(colors.background))
                         content()
                     }
@@ -1334,7 +1345,7 @@ fun AppUi(
                         onExitSelection = { historyExitSignal++ },
                         onSelectAll = { selectAllSignal++ },
                         selectionAllSelected = selectionAllSelected,
-                        backdrop = pageBackdrop,
+                        source = pageBlur,
                         blur = blurBg,
                         menuOpen = topMenuOpen && page == nav.top,
                         onToggleMenu = {
@@ -1362,11 +1373,10 @@ fun AppUi(
                         onLogin = onLogin
                     )
                     when (page) {
-                        AppRoute.Home -> HomeChrome(pageBackdrop)
-                        is AppRoute.Thread -> if (!replyOpen) ReplyChrome(pageBackdrop)
+                        AppRoute.Home -> HomeChrome(pageBlur)
+                        is AppRoute.Thread -> if (!replyOpen) ReplyChrome(pageBlur)
                         else -> Unit
                     }
-                }
                 }
             }
 
@@ -1439,8 +1449,6 @@ fun AppUi(
                                             onSelectionCount = onWatchSelectionCount,
                                             onSelectionMode = onWatchSelecting,
                                             onDeleteSelected = onDeleteWatch,
-                                            backdrop = LocalPageBackdrop.current,
-                                            blur = blurBg,
                                             emptyText = "还没有收藏",
                                             deleteText = "移除",
                                             markBounds = rootPager.currentPage == 2
@@ -1455,8 +1463,6 @@ fun AppUi(
                                             onSelectionCount = onHistorySelectionCount,
                                             onSelectionMode = onHistorySelecting,
                                             onDeleteSelected = onDeleteHistory,
-                                            backdrop = LocalPageBackdrop.current,
-                                            blur = blurBg,
                                             markBounds = rootPager.currentPage == 3
                                         )
                                     }
@@ -1525,8 +1531,6 @@ fun AppUi(
                                     exitSignal = historyExitSignal,
                                     selectAllSignal = selectAllSignal,
                                     clearSelectionSignal = clearSelectionSignal,
-                                    backdrop = LocalPageBackdrop.current,
-                                    blur = blurBg
                                 )
                                 }
                             }
@@ -1699,7 +1703,7 @@ fun AppUi(
         AvatarMenu(
             visible = topMenuOpen,
             items = topMenuItems,
-            backdrop = menuBackdrop,
+            source = menuBlur,
             blur = blurBg,
             onDismiss = { topMenuOpen = false }
         )
@@ -1777,7 +1781,7 @@ private fun TopBar(
     onExitSelection: () -> Unit = {},
     onSelectAll: () -> Unit = {},
     selectionAllSelected: Boolean = false,
-    backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
+    source: PageBlur? = null,
     blur: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
@@ -1791,7 +1795,7 @@ private fun TopBar(
             .height(barH + fadeH)
             .zIndex(2f)
     ) {
-        if (backdrop != null && blur) {
+        if (source != null && blur) {
             // 顶栏本体 + 下方一段渐隐区，让模糊从 100% 平滑过渡到 0
             Box(
                 Modifier
@@ -1801,13 +1805,13 @@ private fun TopBar(
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .drawCouiBackdrop(
-                            backdrop,
-                            shape = { RectangleShape },
-                            effects = { blur(64f, TileMode.Clamp) },
-                            onDrawSurface = {
-                                drawRect(colors.background.copy(alpha = 0.55f))
-                            }
+                        .frost(
+                            source,
+                            enabled = true,
+                            radius = 64f,
+                            tint = colors.background.copy(alpha = 0.55f),
+                            fallback = colors.background,
+                            tileMode = TileMode.Clamp
                         )
                 )
                 Box(
@@ -1894,7 +1898,7 @@ private fun AvatarMenu(
     visible: Boolean,
     items: List<Triple<String, Int, () -> Unit>>,
     onDismiss: () -> Unit,
-    backdrop: com.itos.coui.backdrop.CouiBackdrop? = null,
+    source: PageBlur? = null,
     blur: Boolean = false
 ) {
     val colors = CouiTheme.colorScheme
@@ -1940,13 +1944,13 @@ private fun AvatarMenu(
                     }
                     .shadow(24.dp, RoundedCornerShape(30.dp), clip = false)
                     .clip(RoundedCornerShape(30.dp))
-                    .then(
-                        if (blur && backdrop != null) Modifier.drawCouiBackdrop(
-                            backdrop,
-                            shape = { RoundedCornerShape(30.dp) },
-                            effects = { blur(26f, TileMode.Clamp) },
-                            onDrawSurface = { drawRect(colors.container.copy(alpha = 0.72f)) }
-                        ) else Modifier.background(colors.container)
+                    .frost(
+                        source,
+                        blur && source != null,
+                        radius = 26f,
+                        tint = colors.container.copy(alpha = 0.72f),
+                        fallback = colors.container,
+                        tileMode = TileMode.Clamp
                     )
                     .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(30.dp))
                     .drawBehind {
@@ -2304,8 +2308,204 @@ private fun ErrorView(
 
 internal val LocalBarInset = compositionLocalOf { 0.dp }
 
-/** 当前这一页自己的模糊源。页面之间不能共用，否则后打开的页会画出上一页。 */
-private val LocalPageBackdrop = staticCompositionLocalOf<com.itos.coui.backdrop.CouiBackdrop?> { null }
+/**
+ * 一页自己的模糊源。页面之间不能共用，否则后打开的页会画出上一页。
+ * 正文仍直接绘制；这里只多录一份，顶栏、底栏和菜单从这份里采样。
+ */
+private class PageBlur(val layer: GraphicsLayer) {
+    var coordinates: LayoutCoordinates? = null
+    var ready: Boolean = false
+    private val watchers = ArrayList<() -> Unit>()
+
+    fun watch(block: () -> Unit): () -> Unit {
+        watchers.add(block)
+        return {
+            watchers.remove(block)
+        }
+    }
+
+    fun kick() {
+        val snapshot = watchers.toList()
+        for (block in snapshot) block()
+    }
+}
+
+@Composable
+private fun rememberPageBlur(): PageBlur {
+    val layer = rememberGraphicsLayer()
+    return remember(layer) { PageBlur(layer) }
+}
+
+private fun Modifier.capturePageBlur(source: PageBlur): Modifier = this.then(CaptureBlurElement(source))
+
+private fun Modifier.frost(
+    source: PageBlur?,
+    enabled: Boolean,
+    radius: Float,
+    tint: Color,
+    fallback: Color,
+    tileMode: TileMode = TileMode.Clamp
+): Modifier {
+    if (!enabled || source == null) return background(fallback)
+    return this.then(BlurPlateElement(source, radius, tileMode, tint, fallback))
+}
+
+private data class CaptureBlurElement(val source: PageBlur) : ModifierNodeElement<CaptureBlurNode>() {
+    override fun create() = CaptureBlurNode(source)
+    override fun update(node: CaptureBlurNode) {
+        node.source = source
+    }
+    override fun InspectorInfo.inspectableProperties() {
+        name = "capturePageBlur"
+    }
+}
+
+private class CaptureBlurNode(var source: PageBlur) : Modifier.Node(), DrawModifierNode,
+    GlobalPositionAwareModifierNode, ViewTreeObserver.OnPreDrawListener {
+    private var observer: ViewTreeObserver? = null
+
+    override fun onAttach() {
+        observer = requireView().viewTreeObserver.also { it.addOnPreDrawListener(this) }
+    }
+
+    override fun onDetach() {
+        val current = observer?.takeIf { it.isAlive } ?: requireView().viewTreeObserver
+        current.removeOnPreDrawListener(this)
+        observer = null
+        source.coordinates = null
+        source.ready = false
+    }
+
+    override fun onPreDraw(): Boolean {
+        invalidateDraw()
+        source.kick()
+        return true
+    }
+
+    override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
+        source.coordinates = coordinates
+    }
+
+    override fun ContentDrawScope.draw() {
+        if (size.width <= 1f || size.height <= 1f) {
+            drawContent()
+            return
+        }
+        // 录制时当前画布被临时换到图层上，返回后已恢复，再画一次才是屏幕上的正文。
+        source.layer.record { this@draw.drawContent() }
+        source.ready = true
+        drawContent()
+    }
+}
+
+private data class BlurPlateElement(
+    val source: PageBlur,
+    val radius: Float,
+    val tileMode: TileMode,
+    val tint: Color,
+    val fallback: Color
+) : ModifierNodeElement<BlurPlateNode>() {
+    override fun create() = BlurPlateNode(source, radius, tileMode, tint, fallback)
+    override fun update(node: BlurPlateNode) {
+        node.updateSource(source)
+        node.radius = radius
+        node.tileMode = tileMode
+        node.tint = tint
+        node.fallback = fallback
+    }
+    override fun InspectorInfo.inspectableProperties() {
+        name = "frost"
+    }
+}
+
+private class BlurPlateNode(
+    var source: PageBlur,
+    var radius: Float,
+    var tileMode: TileMode,
+    var tint: Color,
+    var fallback: Color
+) : Modifier.Node(), DrawModifierNode, GlobalPositionAwareModifierNode {
+    private var plate: GraphicsLayer? = null
+    private var here: LayoutCoordinates? = null
+    private var unwatch: (() -> Unit)? = null
+    private val matrix = Matrix()
+
+    override fun onAttach() {
+        plate = requireGraphicsContext().createGraphicsLayer().also { it.clip = false }
+        unwatch = source.watch { invalidateDraw() }
+    }
+
+    override fun onDetach() {
+        unwatch?.invoke()
+        unwatch = null
+        plate?.let { runCatching { requireGraphicsContext().releaseGraphicsLayer(it) } }
+        plate = null
+    }
+
+    fun updateSource(next: PageBlur) {
+        if (next === source) return
+        unwatch?.invoke()
+        source = next
+        if (isAttached) unwatch = source.watch { invalidateDraw() }
+    }
+
+    override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
+        here = coordinates
+    }
+
+    override fun ContentDrawScope.draw() {
+        val srcLayer = source.layer
+        val src = source.coordinates
+        val dst = here
+        val target = plate
+        if (!source.ready || src == null || dst == null || target == null ||
+            !src.isAttached || !dst.isAttached
+        ) {
+            drawRect(fallback)
+            drawContent()
+            return
+        }
+        val width = src.size.width.toFloat()
+        val height = src.size.height.toFloat()
+        if (width <= 1f || height <= 1f) {
+            drawRect(fallback)
+            drawContent()
+            return
+        }
+        val origin = dst.screenToLocal(src.localToScreen(androidx.compose.ui.geometry.Offset.Zero))
+        val right = dst.screenToLocal(src.localToScreen(androidx.compose.ui.geometry.Offset(width, 0f)))
+        val bottom = dst.screenToLocal(src.localToScreen(androidx.compose.ui.geometry.Offset(0f, height)))
+        if (!origin.x.isFinite() || !origin.y.isFinite() ||
+            !right.x.isFinite() || !right.y.isFinite() ||
+            !bottom.x.isFinite() || !bottom.y.isFinite()
+        ) {
+            drawRect(fallback)
+            drawContent()
+            return
+        }
+        val xAxis = (right - origin) / width
+        val yAxis = (bottom - origin) / height
+        matrix.reset()
+        matrix[0, 0] = xAxis.x
+        matrix[0, 1] = xAxis.y
+        matrix[1, 0] = yAxis.x
+        matrix[1, 1] = yAxis.y
+        matrix[3, 0] = origin.x
+        matrix[3, 1] = origin.y
+        val padding = ceil(radius).toInt().coerceAtLeast(0)
+        target.topLeft = IntOffset(-padding, -padding)
+        target.renderEffect = BlurEffect(radius, radius, tileMode)
+        val recordSize = IntSize(size.width.toInt() + padding * 2, size.height.toInt() + padding * 2)
+        target.record(recordSize) {
+            translate(padding.toFloat(), padding.toFloat()) {
+                withTransform({ transform(matrix) }) { drawLayer(srcLayer) }
+            }
+        }
+        drawLayer(target)
+        drawRect(tint)
+        drawContent()
+    }
+}
 
 internal object BarOverlay {
     var inset: androidx.compose.ui.unit.Dp by mutableStateOf(0.dp)
