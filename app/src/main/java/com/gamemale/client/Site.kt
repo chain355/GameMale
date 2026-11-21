@@ -7,11 +7,16 @@ import org.jsoup.nodes.TextNode
 
 const val SITE = "https://www.gamemale.com/"
 
-/** 底部导航直达版块：按发布时间倒序（不是最后回复） */
+/**
+ * 底部导航直达版块：按发布时间倒序（不是最后回复）。
+ * 列表走手机模板（mobile=yes）才能拿到每帖头像。电脑 UA 即使带这个参数也会被
+ * 转到 misc.php?mod=mobile，所以只能交给本来就是手机 UA 的 WebView。
+ * 详情不带 mobile=，Fetcher 会补 mobile=no，继续用电脑模板取预览图。
+ */
 const val ANIME_URL =
-    SITE + "forum.php?mod=forumdisplay&fid=150&filter=dateline&orderby=dateline&typeid=831"
+    SITE + "forum.php?mod=forumdisplay&fid=150&filter=dateline&orderby=dateline&typeid=831&mobile=yes"
 const val GAME_URL =
-    SITE + "forum.php?mod=forumdisplay&fid=152&filter=dateline&orderby=dateline&typeid=737"
+    SITE + "forum.php?mod=forumdisplay&fid=152&filter=dateline&orderby=dateline&typeid=737&mobile=yes"
 
 data class ForumItem(val name: String, val url: String, val icon: String?, val desc: String)
 
@@ -25,7 +30,8 @@ data class ThreadItem(
     val replies: String,
     val views: String,
     val sticky: Boolean,
-    val thumbs: List<String> = emptyList()
+    val thumbs: List<String> = emptyList(),
+    val avatar: String = ""
 )
 
 data class CatTab(val label: String, val url: String)
@@ -306,8 +312,10 @@ object Site {
         val title = cleanForumTitle(
             doc.selectFirst("#pt .bm_h h1")?.text()
                 ?: doc.selectFirst(".bm_h h1")?.text()
+                ?: doc.selectFirst("header h1")?.text()
                 ?: doc.title()
         )
+        if (doc.selectFirst(".threadListTit") != null) return parseMobileForum(doc, title)
 
         val cats = ArrayList<CatTab>()
         val seenCat = HashSet<String>()
@@ -367,6 +375,50 @@ object Site {
 
         val (pages, pageNo, pageCount) = pagination(doc)
         return ForumPage(title, cats, threads, pages, pageNo, pageCount)
+    }
+
+    /**
+     * 手机版块列表。头像在 .h_avatar，回复/查看在 .replies / .views。
+     * 帖子链接改写成 thread-{tid}-1-1.html，详情和预览图仍走电脑模板。
+     * 分类标签这套模板里没有，留空，卡片上就不显示。
+     */
+    private fun parseMobileForum(doc: org.jsoup.nodes.Document, title: String): ForumPage {
+        val threads = ArrayList<ThreadItem>()
+        for (li in doc.select("div.threadlist li")) {
+            val a = li.selectFirst("a[href*=viewthread], a[href*=thread-]") ?: continue
+            val href = a.absUrl("href")
+            val tid = Regex("[?&]tid=(\\d+)").find(href)?.groupValues?.get(1)
+                ?: Regex("thread-(\\d+)").find(href)?.groupValues?.get(1)
+                ?: continue
+            val subject = li.selectFirst("h3.threadSubject")?.text()?.trim().orEmpty()
+            if (subject.isEmpty()) continue
+            val avatar = li.selectFirst(".h_avatar img")?.let { img ->
+                listOf("src", "data-src").firstNotNullOfOrNull { key ->
+                    img.absUrl(key).takeIf { it.startsWith("http") }
+                }
+            }.orEmpty()
+            val date = li.selectFirst(".threadListTit > p")?.text()
+                ?.replace('\u00a0', ' ')
+                ?.removePrefix("发布于")
+                ?.trim()
+                .orEmpty()
+            threads.add(
+                ThreadItem(
+                    tid = tid,
+                    title = subject,
+                    url = SITE + "thread-$tid-1-1.html",
+                    typeName = null,
+                    author = li.selectFirst(".threadListTit h4")?.ownText()?.trim().orEmpty(),
+                    date = date,
+                    replies = li.selectFirst(".replies")?.text()?.trim().orEmpty(),
+                    views = li.selectFirst(".views")?.text()?.trim().orEmpty(),
+                    sticky = false,
+                    avatar = avatar
+                )
+            )
+        }
+        val (pages, pageNo, pageCount) = pagination(doc)
+        return ForumPage(title, emptyList(), threads, pages, pageNo, pageCount)
     }
 
     /**
@@ -724,35 +776,51 @@ object Site {
     }
 
     private fun pagination(doc: org.jsoup.nodes.Document): Triple<List<Pair<Int, String>>, Int, Int> {
-        val pgs = doc.select("#pgt .pg, .pgs .pg").distinct()
+        // 电脑版页码在 #pgt / .pgs 里；手机版是列表后面单独的 div.pg，结构一样：
+        // strong 当前页、数字链接、a.last「... N」、span「 / N 页」、a.nxt。
+        val pgs = doc.select("#pgt .pg, .pgs .pg, div.pg").distinct()
         val parsed = LinkedHashMap<Int, String>()
         var pageNo = 1
         var pageCount = 1
         for (pg in pgs) {
             pg.selectFirst("strong")?.let { pageNo = it.text().trim().toIntOrNull() ?: pageNo }
             for (a in pg.select("a")) {
-                val n = a.text().trim().toIntOrNull() ?: continue
-                if (!parsed.containsKey(n)) parsed[n] = a.absUrl("href")
+                val text = a.text().trim()
+                val fromLast = if (a.hasClass("last")) text.filter { it.isDigit() }.toIntOrNull() else null
+                val n = text.toIntOrNull() ?: fromLast ?: continue
+                if (n > 0 && !parsed.containsKey(n)) parsed[n] = a.absUrl("href")
             }
-            Regex("共\\s*(\\d+)\\s*页").find(pg.text())?.let {
-                pageCount = pageCount.coerceAtLeast(it.groupValues[1].toIntOrNull() ?: pageCount)
+            val blob = pg.text() + " " + pg.select("[title]").joinToString(" ") { it.attr("title") }
+            for (re in listOf(Regex("共\\s*(\\d+)\\s*页"), Regex("/\\s*(\\d+)\\s*页"))) {
+                re.find(blob)?.let {
+                    pageCount = pageCount.coerceAtLeast(it.groupValues[1].toIntOrNull() ?: pageCount)
+                }
             }
         }
-        if (pageCount <= 1) pageCount = (parsed.keys + pageNo).max()
+        if (pageCount <= 1) pageCount = (parsed.keys + pageNo).maxOrNull() ?: 1
+        pageCount = pageCount.coerceAtLeast(parsed.keys.maxOrNull() ?: 1)
         val sample = parsed.entries.firstOrNull()?.value.orEmpty()
         val firstNo = parsed.keys.firstOrNull() ?: 0
-        val template = if (sample.isNotEmpty() && firstNo > 0)
-            sample.replaceFirst(Regex("-$firstNo-"), "-{p}-") else ""
+        val template = pageTemplate(sample, firstNo)
         val out = ArrayList<Pair<Int, String>>()
         for (n in 1..pageCount) {
-            val url = parsed[n] ?: when {
-                template.isNotEmpty() -> template.replace("{p}", n.toString())
-                sample.isNotEmpty() -> "$sample&page=$n"
-                else -> ""
-            }
+            val url = parsed[n] ?: template.replace("{p}", n.toString())
             if (url.isNotEmpty()) out.add(n to url)
         }
         return Triple(out, pageNo.coerceIn(1, pageCount), pageCount)
+    }
+
+    /** 用已有页码链接推出其它页。手机版是 page=N（并保留 mobile=yes），电脑版是 -N-。 */
+    private fun pageTemplate(sample: String, firstNo: Int): String {
+        if (sample.isEmpty() || firstNo <= 0) return ""
+        if (sample.contains("-$firstNo-")) {
+            return sample.replaceFirst(Regex("-$firstNo-"), "-{p}-")
+        }
+        val pageRe = Regex("([?&])page=$firstNo(?=&|$)")
+        if (pageRe.containsMatchIn(sample)) {
+            return sample.replace(pageRe, "$1page={p}")
+        }
+        return ""
     }
 
     private fun collectBlocks(el: Element, out: MutableList<Block>) {

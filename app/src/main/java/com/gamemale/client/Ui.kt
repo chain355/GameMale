@@ -205,6 +205,28 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.yield
 import kotlin.math.roundToInt
 
+/** 列表的“阅读”图标：眼睛轮廓 + 瞳孔（COUI 图标集没有合适的，这里自绘） */
+private val ViewVector: ImageVector by lazy {
+    ImageVector.Builder("ViewEye", 24.dp, 24.dp, 24f, 24f).apply {
+        path(stroke = SolidColor(Color.White), strokeLineWidth = 1.7f) {
+            moveTo(1.6f, 12f)
+            curveTo(5.2f, 6.4f, 8.6f, 4.3f, 12f, 4.3f)
+            curveTo(15.4f, 4.3f, 18.8f, 6.4f, 22.4f, 12f)
+            curveTo(18.8f, 17.6f, 15.4f, 19.7f, 12f, 19.7f)
+            curveTo(8.6f, 19.7f, 5.2f, 17.6f, 1.6f, 12f)
+            close()
+        }
+        path(fill = SolidColor(Color.White)) {
+            moveTo(12f, 9.2f)
+            curveTo(13.55f, 9.2f, 14.8f, 10.45f, 14.8f, 12f)
+            curveTo(14.8f, 13.55f, 13.55f, 14.8f, 12f, 14.8f)
+            curveTo(10.45f, 14.8f, 9.2f, 13.55f, 9.2f, 12f)
+            curveTo(9.2f, 10.45f, 10.45f, 9.2f, 12f, 9.2f)
+            close()
+        }
+    }.build()
+}
+
 /** 列表的“回复气泡”图标（COUI 图标集没有评论类图标，这里自绘一个） */
 private val ReplyVector: ImageVector by lazy {
     ImageVector.Builder("ReplyBubble", 24.dp, 24.dp, 24f, 24f).apply {
@@ -3036,17 +3058,45 @@ private fun ForumView(
                             )
                         }
                         Spacer(Modifier.height(6.dp))
-                        Txt(
-                            listOfNotNull(
-                                t.author.takeIf { it.isNotEmpty() },
-                                t.date.takeIf { it.isNotEmpty() },
-                                if (t.replies.isNotEmpty()) "回复 ${t.replies}" else null,
-                                if (t.views.isNotEmpty()) "查看 ${t.views}" else null
-                            ).joinToString("  ·  "),
-                            size = 12.sp,
-                            color = if (isRead) colors.onSurfaceVariant.copy(alpha = 0.55f)
-                            else colors.onSurfaceVariant
-                        )
+                        val meta = if (isRead) colors.onSurfaceVariant.copy(alpha = 0.55f)
+                        else colors.onSurfaceVariant
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (t.avatar.isNotEmpty()) {
+                                NetImage(
+                                    url = t.avatar,
+                                    modifier = Modifier.size(22.dp).clip(CircleShape),
+                                    crop = true
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            if (t.author.isNotEmpty()) {
+                                Txt(t.author, size = 12.sp, color = meta, maxLines = 1)
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            if (t.date.isNotEmpty()) {
+                                Txt(
+                                    t.date,
+                                    modifier = Modifier.weight(1f),
+                                    size = 12.sp,
+                                    color = meta,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            } else {
+                                Spacer(Modifier.weight(1f))
+                            }
+                            if (t.replies.isNotEmpty()) {
+                                IconImg(ReplyVector, 13.dp, meta)
+                                Spacer(Modifier.width(2.dp))
+                                Txt(t.replies, size = 12.sp, color = meta)
+                            }
+                            if (t.views.isNotEmpty()) {
+                                if (t.replies.isNotEmpty()) Spacer(Modifier.width(8.dp))
+                                IconImg(ViewVector, 13.dp, meta)
+                                Spacer(Modifier.width(2.dp))
+                                Txt(t.views, size = 12.sp, color = meta)
+                            }
+                        }
                         if (t.thumbs.isNotEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             ThumbsGrid(t.thumbs, onImage)
@@ -3178,8 +3228,17 @@ private fun PagerRow(pageNo: Int, pageCount: Int, pages: List<Pair<Int, String>>
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        val shown = pages.filter { it.first <= pageCount }.take(8)
-        shown.forEach { (n, url) ->
+        val byNo = pages.toMap()
+        val shown = ArrayList<Int>()
+        if (pageCount <= 8) {
+            for (n in 1..pageCount) shown.add(n)
+        } else {
+            val start = (pageNo - 3).coerceIn(1, (pageCount - 6).coerceAtLeast(1))
+            for (n in start until (start + 7).coerceAtMost(pageCount)) shown.add(n)
+            if (pageCount !in shown) shown.add(pageCount)
+        }
+        shown.forEach { n ->
+            val url = byNo[n] ?: return@forEach
             Box(
                 Modifier
                     .padding(horizontal = 3.dp)

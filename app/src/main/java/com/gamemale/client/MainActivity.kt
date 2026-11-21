@@ -868,9 +868,16 @@ class MainActivity : ComponentActivity() {
         load(url)
     }
 
+    /** 版块列表补上手机模板参数。已带 mobile= 的地址（包括详情用的 mobile=no）不动。 */
+    private fun mobileListUrl(raw: String): String {
+        if (!raw.contains("mod=forumdisplay") || raw.contains("mobile=")) return raw
+        return raw + "&mobile=yes"
+    }
+
     private fun load(rawUrl: String) {
-        val url = if (rawUrl.contains("mod=forumdisplay") && !rawUrl.contains("orderby="))
+        var url = if (rawUrl.contains("mod=forumdisplay") && !rawUrl.contains("orderby="))
             rawUrl + "&orderby=dateline" else rawUrl
+        url = mobileListUrl(url)
         if (forumSurface() && forumPage == null) {
             val snap = forumCache[url] ?: SnapshotStore.get(url)
             if (snap != null) {
@@ -929,7 +936,8 @@ class MainActivity : ComponentActivity() {
                                 // 页面结构校验：冷启动网络差时站点可能只回了 2KB 异常页/验证页，
                                 // 这种既不是「未登录」也不是「空版块」，应报加载失败而不是误导用户去登录。
                                 val looksForumPage = html.contains("threadlisttableid") ||
-                                    html.contains("normalthread_") || html.contains("separatorline")
+                                    html.contains("normalthread_") || html.contains("separatorline") ||
+                                    html.contains("threadListTit")
                                 val challengePage = html.contains("Just a moment") ||
                                     html.contains("请稍候") || html.contains("challenges.cloudflare.com") ||
                                     html.contains("turnstile")
@@ -1372,23 +1380,25 @@ class MainActivity : ComponentActivity() {
 
     /** 切分类 / 翻页：仍在当前列表页内换数据 */
     fun goList(url: String) {
+        val target = mobileListUrl(url)
         when (val n = routes.top) {
             is AppRoute.Thread -> {
-                routes.replaceTop(AppRoute.Thread(url, ""))
+                routes.replaceTop(AppRoute.Thread(target, ""))
                 threadPage = null
             }
-            is AppRoute.Forum -> routes.replaceTop(n.copy(url = url))
+            is AppRoute.Forum -> routes.replaceTop(n.copy(url = target))
             AppRoute.Home -> when (homeTab) {
-                0 -> animeUrl = url
-                1 -> gameUrl = url
-                else -> routes.push(AppRoute.Forum(url, forumTitle()))
+                0 -> animeUrl = target
+                1 -> gameUrl = target
+                else -> routes.push(AppRoute.Forum(target, forumTitle()))
             }
-            else -> routes.push(AppRoute.Forum(url, forumTitle()))
+            else -> routes.push(AppRoute.Forum(target, forumTitle()))
         }
-        linkLoad(url)
+        linkLoad(target)
     }
 
-    private fun linkLoad(url: String) {
+    private fun linkLoad(raw: String) {
+        val url = mobileListUrl(raw)
         if (url.isBlank() || !url.startsWith("http")) {
             toast("这个分类入口没有有效链接")
             return

@@ -1,5 +1,7 @@
 package com.gamemale.client
 
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -24,6 +26,50 @@ class SiteParseTest {
         assertTrue(page.threads.size > 3)
         assertTrue(page.cats.size > 1)
         assertTrue(page.threads.any { it.tid.isNotEmpty() })
+    }
+
+    @Test
+    fun mobileListParsesAvatarAndKeepsDesktopThreadLink() {
+        val html = """
+            <header class="header"><h1>和谐动漫</h1></header>
+            <div class="threadlist"><ul><li>
+            <a class="forumDisplayImgList" href="forum.php?mod=viewthread&tid=200154&mobile=2">
+            <div class="threadListTit">
+            <div class="h_avatar"><img src="https://www.gamemale.com/uc_server/avatar.php?uid=610657&size=small"></div>
+            <h4><div class="count y"><span class="views icon">115</span><span class="replies icon">10</span></div>cdcai</h4>
+            <p>发布于 1 小时前</p>
+            </div>
+            <h3 class="threadSubject"><span>【自购】合集</span></h3>
+            </a></li></ul>
+            <div class="pg"><strong>1</strong>
+            <a href="forum.php?mod=forumdisplay&fid=150&typeid=831&mobile=yes&page=2">2</a>
+            <a href="forum.php?mod=forumdisplay&fid=150&typeid=831&mobile=yes&page=343" class="last">... 343</a>
+            <span title="共 343 页"> / 343 页</span>
+            <a href="forum.php?mod=forumdisplay&fid=150&typeid=831&mobile=yes&page=2" class="nxt">下一页</a>
+            </div></div>
+        """.trimIndent()
+        val page = Site.parseForumPage(html)
+        assertEquals("和谐动漫", page.title)
+        assertTrue(page.cats.isEmpty())
+        assertEquals(1, page.threads.size)
+        val t = page.threads[0]
+        assertEquals("200154", t.tid)
+        assertEquals("cdcai", t.author)
+        assertEquals("1 小时前", t.date)
+        assertEquals("10", t.replies)
+        assertEquals("115", t.views)
+        assertNull(t.typeName)
+        assertTrue(t.avatar.contains("avatar.php?uid=610657"))
+        assertEquals("https://www.gamemale.com/thread-200154-1-1.html", t.url)
+        assertEquals(343, page.pageCount)
+        assertEquals(1, page.pageNo)
+        val p1 = page.pages.first { it.first == 1 }.second
+        val p20 = page.pages.first { it.first == 20 }.second
+        assertTrue(p1.contains("mobile=yes"))
+        assertTrue(p1.contains("page=1"))
+        assertTrue(!p1.contains("page=2"))
+        assertTrue(p20.contains("page=20"))
+        assertTrue(p20.contains("mobile=yes"))
     }
 
     @Test

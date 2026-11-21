@@ -329,7 +329,8 @@ class Fetcher(private val ctx: Context) {
             }.getOrDefault("")
             val tid = currentUrl?.let { Regex("thread-(\\d+)").find(it)?.groupValues?.get(1) }
             val looksComplete = html.contains("id=\"postlist\"") ||
-                html.contains("id=\"threadlist\"") || html.contains("normalthread_")
+                html.contains("id=\"threadlist\"") || html.contains("normalthread_") ||
+                html.contains("threadListTit")
             when {
                 html.isBlank() -> if (early) return@evaluateJavascript else retryOrFail("页面为空")
                 // Cloudflare 的验证页是"活的"：它要靠页面里的 JS 自己算完再跳转。

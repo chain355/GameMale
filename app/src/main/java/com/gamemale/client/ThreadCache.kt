@@ -262,7 +262,8 @@ object SnapshotStore {
                         replies = t.optString("replies"),
                         views = t.optString("views"),
                         sticky = t.optBoolean("sticky"),
-                        thumbs = thumbs
+                        thumbs = thumbs,
+                        avatar = t.optString("avatar")
                     )
                 )
             }
@@ -292,6 +293,7 @@ object SnapshotStore {
                         .put("date", t.date).put("replies", t.replies).put("views", t.views)
                         .put("sticky", t.sticky)
                         .put("thumbs", org.json.JSONArray(t.thumbs))
+                        .put("avatar", t.avatar)
                 )
             }
             f.writeText(
