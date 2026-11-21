@@ -179,6 +179,9 @@ class ThreadCache(ctx: Context) {
 
     fun has(tid: String): Boolean = index[tid]?.let { fileOf(tid).exists() } ?: false
 
+    /** 索引里保存的标题，不读整页 HTML，可用来快速修复浏览记录标题 */
+    fun title(tid: String): String? = index[tid]?.title?.takeIf { it.isNotBlank() }
+
     fun totalBytes(): Long = index.values.sumOf { it.bytes } + runCatching { indexFile.length() }.getOrDefault(0L) +
         ImageStore.totalBytes()
 

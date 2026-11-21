@@ -101,11 +101,13 @@ object HistoryStore {
         val now = System.currentTimeMillis()
         val cur = load(ctx)
         val old = cur.firstOrNull { it.tid == tid }
+        // 错误页 / 占位标题不能覆盖已经修好的真实标题
+        val resolved = HistoryTitle.resolve(title, old?.title)
         val merged = ArrayList<Entry>(cur.size + 1)
         merged.add(
             Entry(
                 tid = tid,
-                title = title.ifBlank { old?.title.orEmpty() },
+                title = resolved,
                 url = url,
                 ts = now
             )
@@ -116,13 +118,39 @@ object HistoryStore {
         runCatching {
             journal(ctx).appendText(JSONObject()
                 .put("tid", tid)
-                .put("title", title)
+                .put("title", resolved)
                 .put("url", url)
                 .put("ts", now)
                 .toString() + "\n")
         }
-        Diag.log("history", "record tid=" + tid + " total=" + capped.size)
+        Diag.log("history", "record tid=" + tid + " title=" + resolved + " total=" + capped.size)
         return capped
+    }
+
+    /**
+     * 启动时用帖子缓存索引里的真实标题，修正历史上被错误页污染的条目。
+     * 只改标题，不动打开时间和顺序。
+     */
+    fun repairTitles(ctx: Context, fixes: Map<Long, String>): List<Entry> {
+        if (fixes.isEmpty()) return load(ctx)
+        val cur = load(ctx)
+        var changed = 0
+        val fixed = cur.map { e ->
+            val better = fixes[e.tid]?.takeIf(HistoryTitle::usable)
+            if (better != null && better != e.title) {
+                changed++
+                e.copy(title = better)
+            } else {
+                e
+            }
+        }
+        if (changed > 0) {
+            save(ctx, fixed)
+            // 主表已经压实并包含全部条目，旧日志不能再把脏标题并回来
+            runCatching { journal(ctx).delete() }
+            Diag.log("history", "修复标题 " + changed + " 条")
+        }
+        return fixed
     }
 
     /** 批量删除（选择模式用） */

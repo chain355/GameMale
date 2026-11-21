@@ -315,6 +315,7 @@ class MainActivity : ComponentActivity() {
         readTids = ReadStore.load(this)
         cache = ThreadCache(this)
         cacheMb = cache.limitMb
+        repairHistoryTitles()
         refreshCacheStats()
         // 版本比对放后台线程，不挡首页首屏
         checkUpgradeLog(prefs)
@@ -332,6 +333,11 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(deepAtLaunch) {
                 if (deepAtLaunch != null) {
                     // 外部分享/深链进来的帖子：先不写浏览记录，等正文解析成功后再写。
+                    // 同时清掉上一篇帖子的正文状态，避免标题/首图串到这一篇。
+                    openThreadTid = tidOf(deepAtLaunch)
+                    threadPage = null
+                    loadedThreadUrl = null
+                    lastHtml = ""
                     load(deepAtLaunch)
                 } else {
                     SnapshotStore.get(ANIME_URL)?.let { animePage = it.copy(title = "和谐动漫") }
@@ -623,7 +629,10 @@ class MainActivity : ComponentActivity() {
         if (!::routes.isInitialized) return
         // 同样推迟到解析成功后再写，避免删帖/审核页留下空记录
         routes.openDeepLink(AppRoute.Thread(url, "帖子"))
+        openThreadTid = tidOf(url)
         threadPage = null
+        loadedThreadUrl = null
+        lastHtml = ""
         load(url)
     }
 
@@ -638,15 +647,24 @@ class MainActivity : ComponentActivity() {
         // 不主动暂停 WebView：切后台时保持当前加载继续跑
         fetcher.keepRunning()
         // 退到后台再写一遍浏览记录：万一记录那一次落盘被打断，重启后还能找回来
-        runCatching { HistoryStore.persist(this, history) }
         runCatching {
-            (routes.top as? AppRoute.Thread)?.let { t ->
-                threadPage?.let { tp ->
-                    tidOf(t.url)?.toLongOrNull()?.let { tid ->
-                        history = HistoryStore.record(this, tid, tp.subject, t.url)
+            val cur = routes.top as? AppRoute.Thread
+            val tp = threadPage
+            if (cur != null && tp != null) {
+                val url = canonicalThreadUrl(cur.url)
+                val loaded = loadedThreadUrl
+                // 只写「已经成功加载完的那一篇」：threadPage 是上一篇时绝不能把它的标题
+                // 记到当前帖子头上（错误页「网页无法打开」就是这么串进去的）。
+                if (loaded != null && loaded.isNotBlank() && sameTarget(loaded, url)) {
+                    tidOf(url)?.toLongOrNull()?.let { tid ->
+                        val title = tp.subject.takeIf(HistoryTitle::usable)
+                            ?: cur.title.takeIf(HistoryTitle::usable)
+                            ?: ""
+                        history = HistoryStore.record(this, tid, title, url)
                     }
                 }
             }
+            HistoryStore.persist(this, history)
         }
         super.onPause()
     }
@@ -1352,7 +1370,8 @@ class MainActivity : ComponentActivity() {
         openThreadTid = tidOf(url)
         // 浏览记录推迟到正文真的解析成功后再写：
         // 帖子被删/审核中时不应该留下一条「帖子」这种空标题记录。
-        routes.push(AppRoute.Thread(url, title))
+        // 历史里已经存成「网页无法打开」的脏标题也先收起来，等正文解析出真标题再换。
+        routes.push(AppRoute.Thread(url, title.takeIf(HistoryTitle::usable) ?: "帖子"))
         val tid = tidOf(url)
         val disk = tid?.let { cache.read(it) }
         val cached = tid?.let { threadCache[it] } ?: disk?.first
@@ -1368,6 +1387,7 @@ class MainActivity : ComponentActivity() {
                 val tp = Site.parseThread(cached)
                 threadPage = tp
                 lastHtml = cached
+                loadedThreadUrl = url
                 refreshLogin(cached)
                 rememberThread(url, tp)
             }
@@ -1439,6 +1459,24 @@ class MainActivity : ComponentActivity() {
                     }.onFailure { error = "解析失败：" + (it.message ?: it.javaClass.simpleName) }
                 }.onFailure { error = it.message ?: "加载失败" }
             }
+        }
+    }
+
+    /**
+     * 启动时把浏览记录里被错误页污染的标题，用帖子缓存索引里的真实标题修回来。
+     * 只处理标题不可用的条目，不重排、不新增、不删除。
+     */
+    private fun repairHistoryTitles() {
+        runCatching {
+            val bad = history.filter { !HistoryTitle.usable(it.title) }
+            if (bad.isEmpty()) return
+            val fixes = bad.mapNotNull { e ->
+                cache.title(e.tid.toString())
+                    ?.takeIf(HistoryTitle::usable)
+                    ?.let { title -> e.tid to title }
+            }.toMap()
+            if (fixes.isEmpty()) return
+            history = HistoryStore.repairTitles(this, fixes)
         }
     }
 
@@ -2030,7 +2068,7 @@ class MainActivity : ComponentActivity() {
      * 用 tid 比对而不是整串 URL：深链地址可能带参数，URL 不等但其实是同一帖。
      */
     private fun syncThreadSubject(url: String, subject: String) {
-        if (subject.isBlank()) return
+        if (!HistoryTitle.usable(subject)) return
         val tid = tidOf(url)?.toLongOrNull()
         val cur = routes.top as? AppRoute.Thread
         if (cur != null && tid != null && tidOf(cur.url)?.toLongOrNull() == tid) {

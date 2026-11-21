@@ -2788,9 +2788,10 @@ private fun HistoryView(
                         }
                     ) {
                         Column {
+                            val shownTitle = e.title.takeIf(HistoryTitle::usable) ?: "帖子 " + e.tid
                             Txt(
-                                (if (ContentPrefs.hit(e.title, watch)) "✨ " else "") +
-                                    e.title.ifBlank { "帖子 " + e.tid },
+                                (if (ContentPrefs.hit(shownTitle, watch)) "✨ " else "") +
+                                    shownTitle,
                                 size = 15.sp,
                                 weight = FontWeight.SemiBold,
                                 color = colors.onSurface,
