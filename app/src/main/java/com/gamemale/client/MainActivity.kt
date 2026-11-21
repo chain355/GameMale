@@ -139,6 +139,9 @@ class MainActivity : ComponentActivity() {
         set(value) { settingsVm.darkMode = value }
     private var lastHtml: String = ""
     private var busy by mutableStateOf(false)
+    /** 「标题选词助筛帖」弹窗：打开时冻结当前标题，避免后台刷新把词块换掉。 */
+    private var titlePickOpen by mutableStateOf(false)
+    private var titlePickTitle by mutableStateOf("")
     private var replyOpen: Boolean
         get() = threadVm.replyOpen
         set(value) { threadVm.replyOpen = value }
@@ -483,6 +486,11 @@ class MainActivity : ComponentActivity() {
                     watchTidSaved = ((navigation.top as? AppRoute.Thread)?.url?.let { tidOf(it) }?.toLongOrNull())
                         ?.let { t -> watchLater.any { it.tid == t } } == true,
                     onToggleWatch = { toggleWatchLater() },
+                    titlePickOpen = titlePickOpen,
+                    titlePickTitle = titlePickTitle,
+                    onOpenTitlePick = { openTitlePick() },
+                    onCloseTitlePick = { titlePickOpen = false },
+                    onAddTitlePick = { kind, words -> addTitlePick(kind, words) },
                     attachPayOpen = attachPayInfo != null,
                     attachPayName = attachPayInfo?.fileName?.ifBlank { attachPayName } ?: attachPayName,
                     attachPayPrice = attachPayInfo?.price.orEmpty(),
@@ -575,14 +583,15 @@ class MainActivity : ComponentActivity() {
                     },
                     onCloseContentPref = { contentPrefOpen = false },
                     onAddContentPref = { words ->
-                        if (contentPrefKind == 0) {
-                            blockedWords = (blockedWords + words).distinct()
-                            ContentPrefs.save(this, blockedWords, watchWords)
-                        } else {
-                            watchWords = (watchWords + words).distinct()
-                            ContentPrefs.save(this, blockedWords, watchWords)
-                        }
-                        toast(if (contentPrefKind == 0) "已添加 ${words.size} 个屏蔽词" else "已添加 ${words.size} 个特别关注")
+                        val (added, moved) = addContentWords(contentPrefKind, words)
+                        val label = if (contentPrefKind == 0) "屏蔽词" else "特别关注"
+                        toast(
+                            when {
+                                added > 0 -> "已添加 $added 个$label"
+                                moved > 0 -> "已移到$label $moved 个词"
+                                else -> "这些词已在$label 中"
+                            }
+                        )
                     },
                     onDeleteContentPref = { w ->
                         if (contentPrefKind == 0) {
@@ -1277,8 +1286,51 @@ class MainActivity : ComponentActivity() {
         toast(if (saved) "已取消收藏" else "已加入收藏")
     }
 
-    private fun openQuick(url: String, title: String) {
-        Diag.log("nav", "switch forum -> " + title + " 缓存=" + (forumCache[url] != null))
+    /** 打开「标题选词助筛帖」：标题只用正文解析出的真实标题，占位标题不弹。 */
+    private fun openTitlePick() {
+        val top = routes.top as? AppRoute.Thread ?: return
+        val title = threadPage?.subject?.takeIf(HistoryTitle::usable)
+            ?: top.title.takeIf(HistoryTitle::usable)
+            ?: return
+        titlePickTitle = title
+        titlePickOpen = true
+    }
+
+    /** 选词入库：忽略大小写去重；同一个词加入一边时，从另一边移除，避免两边同时命中。 */
+    private fun addContentWords(kind: Int, words: List<String>): Pair<Int, Int> {
+        val incoming = ContentPrefs.dedupeRules(words)
+        if (incoming.isEmpty()) return 0 to 0
+        val target = if (kind == 0) blockedWords else watchWords
+        val other = if (kind == 0) watchWords else blockedWords
+        val merged = ContentPrefs.mergeRules(target, incoming)
+        val otherAfter = ContentPrefs.removeRules(other, incoming)
+        val added = merged.size - target.size
+        val moved = incoming.count { w -> other.any { ContentPrefs.sameRule(it, w) } }
+        if (kind == 0) {
+            blockedWords = merged
+            watchWords = otherAfter
+        } else {
+            watchWords = merged
+            blockedWords = otherAfter
+        }
+        ContentPrefs.save(this, blockedWords, watchWords)
+        return added to moved
+    }
+
+    private fun addTitlePick(kind: Int, words: List<String>) {
+        val (added, moved) = addContentWords(kind, words)
+        titlePickOpen = false
+        val label = if (kind == 0) "屏蔽词" else "特别关注"
+        toast(
+            when {
+                added > 0 -> "已加入$label $added 个词"
+                moved > 0 -> "已移到$label $moved 个词"
+                else -> "这些词已在$label 中"
+            }
+        )
+    }
+
+    private fun openQuick(url: String, title: String) {        Diag.log("nav", "switch forum -> " + title + " 缓存=" + (forumCache[url] != null))
         when {
             url.contains("fid=150") -> {
                 animeUrl = url

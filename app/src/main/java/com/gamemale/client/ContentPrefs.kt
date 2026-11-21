@@ -85,4 +85,32 @@ object ContentPrefs {
             else title.contains(w, ignoreCase = true)
         }
     }
+
+    /** 词库比较口径：去掉首尾空白后忽略大小写。 */
+    fun sameRule(a: String, b: String): Boolean =
+        a.trim().equals(b.trim(), ignoreCase = true)
+
+    fun dedupeRules(words: List<String>): List<String> {
+        val out = ArrayList<String>()
+        for (raw in words) {
+            val word = raw.trim()
+            if (word.isEmpty()) continue
+            if (out.none { sameRule(it, word) }) out.add(word)
+        }
+        return out
+    }
+
+    fun mergeRules(existing: List<String>, incoming: List<String>): List<String> {
+        val out = ArrayList<String>(existing)
+        for (word in dedupeRules(incoming)) {
+            if (out.none { sameRule(it, word) }) out.add(word)
+        }
+        return out
+    }
+
+    fun removeRules(existing: List<String>, removed: List<String>): List<String> {
+        val gone = dedupeRules(removed)
+        if (gone.isEmpty()) return existing
+        return existing.filterNot { word -> gone.any { sameRule(it, word) } }
+    }
 }

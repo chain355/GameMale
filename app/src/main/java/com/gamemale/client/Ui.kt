@@ -27,6 +27,8 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.runtime.CompositionLocalProvider
@@ -948,6 +950,11 @@ fun AppUi(
     onDeleteWatch: (List<Long>) -> Unit = {},
     watchTidSaved: Boolean = false,
     onToggleWatch: () -> Unit = {},
+    titlePickOpen: Boolean = false,
+    titlePickTitle: String = "",
+    onOpenTitlePick: () -> Unit = {},
+    onCloseTitlePick: () -> Unit = {},
+    onAddTitlePick: (Int, List<String>) -> Unit = { _, _ -> },
     attachPayOpen: Boolean = false,
     attachPayName: String = "",
     attachPayPrice: String = "",
@@ -1074,6 +1081,11 @@ fun AppUi(
         if (route is AppRoute.Thread) add(Triple("复制链接", 5) { onCopyLink() })
         if (route is AppRoute.Thread) add(Triple("用浏览器打开", 1) { onOpenBrowser() })
         if (route is AppRoute.Thread) add(Triple("刷新", 2) { onRefreshThread() })
+        if (route is AppRoute.Thread &&
+            threadPage?.subject?.let(HistoryTitle::usable) == true
+        ) {
+            add(Triple("标题选词助筛帖", 9) { onOpenTitlePick() })
+        }
         if (route is AppRoute.Thread) add(
             Triple(if (watchTidSaved) "取消收藏" else "收藏", 8) { onToggleWatch() }
         )
@@ -1761,6 +1773,13 @@ fun AppUi(
             onDelete = onDeleteContentPref,
             onClose = onCloseContentPref
         )
+        if (titlePickOpen) TitlePickDialog(
+            title = titlePickTitle,
+            blockedWords = blockedWords,
+            watchWords = watchWords,
+            onAdd = onAddTitlePick,
+            onClose = onCloseTitlePick
+        )
         if (fileTextOpen) FileTextDialog(
             title = fileTextTitle,
             text = fileTextBody,
@@ -2037,6 +2056,7 @@ private fun AvatarMenu(
                             5 -> MenuIcon(AppIcon.Copy)
                             6, 7 -> MenuIcon(AppIcon.Browser)
                             8 -> MenuIcon(AppIcon.Star)
+                            9 -> MenuIcon(AppIcon.Filter)
                             else -> MenuIcon(AppIcon.Setting)
                         }
                         Spacer(Modifier.width(12.dp))
@@ -2073,7 +2093,7 @@ private fun AvatarMenu(
     }
 }
 
-private enum class AppIcon { Share, Browser, Refresh, Setting, Login, Copy, Star }
+private enum class AppIcon { Share, Browser, Refresh, Setting, Login, Copy, Star, Filter }
 
 @Composable
 private fun MenuIcon(kind: AppIcon) {
@@ -2085,6 +2105,7 @@ private fun MenuIcon(kind: AppIcon) {
         AppIcon.Login -> IconImg(CouiIcons.Filled.UserCircle, 20.dp, CouiTheme.colorScheme.onSurface)
         AppIcon.Copy -> IconCopy()
         AppIcon.Star -> IconStar()
+        AppIcon.Filter -> IconNoEntry(20.dp)
     }
 }
 
@@ -4354,7 +4375,7 @@ private fun SettingsView(
                 }
                 Spacer(Modifier.height(6.dp))
                 Txt(
-                    "关键词不区分大小写，按正则表达式匹配标题：普通文字可直接输入，含 . + ( ) 等符号时请按正则写法转义。屏蔽词命中的帖子会从列表中消失；特别关注命中的帖子标题前会加 ✨。作用于板块列表、搜索结果、浏览记录和收藏，已打开的帖子正文不受影响。",
+                    "关键词不区分大小写，按正则表达式匹配标题：普通文字可直接输入，含 . + ( ) 等符号时请按正则写法转义。屏蔽词命中的帖子会从首页与收藏列表消失，浏览记录仍完整保留；特别关注命中的帖子标题前会加 ✨。帖子详情头像菜单里的「标题选词助筛帖」可以从当前标题快速挑词。",
                     size = 11.sp,
                     color = colors.onSurfaceVariant,
                     lineHeight = 1.5f
@@ -5414,6 +5435,218 @@ private fun ContentPrefDialog(
             }
 
         }
+    }
+}
+
+
+/** 从当前帖子标题挑词，一键加入特别关注或屏蔽词。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TitlePickDialog(
+    title: String,
+    blockedWords: List<String>,
+    watchWords: List<String>,
+    onAdd: (Int, List<String>) -> Unit,
+    onClose: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    val darkUi = colors.onSurface.luminance() > 0.5f
+    val words = remember(title) { TitleKeywords.split(title) }
+    var selected by remember(title) { mutableStateOf<Set<String>>(emptySet()) }
+    val enabled = selected.isNotEmpty()
+
+    Dialog(onDismissRequest = onClose) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(22.dp))
+                .background(colors.surface)
+                .padding(14.dp)
+        ) {
+            DialogHead(
+                "标题选词助筛帖",
+                onClose,
+                subtitle = "从这条标题里挑词，加入你的内容偏好",
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
+            Spacer(Modifier.height(12.dp))
+
+            Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp)) {
+                Txt("当前标题", size = 11.sp, weight = FontWeight.Bold, color = colors.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Txt("点按词语选择，可多选", size = 11.sp, color = colors.onSurfaceVariant)
+            }
+            Spacer(Modifier.height(7.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(colors.onSurface.copy(alpha = 0.05f))
+                    .padding(horizontal = 12.dp, vertical = 11.dp)
+            ) {
+                Txt(
+                    title,
+                    size = 13.sp,
+                    color = colors.onSurface,
+                    lineHeight = 1.55f,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Txt("候选词", size = 11.sp, color = colors.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Txt(
+                    if (selected.isEmpty()) "未选择" else "已选 ${selected.size} 个",
+                    size = 11.sp,
+                    weight = if (selected.isEmpty()) FontWeight.Normal else FontWeight.SemiBold,
+                    color = if (selected.isEmpty()) colors.onSurfaceVariant else colors.accent
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            if (words.isEmpty()) {
+                Txt("这条标题没有可拆分的候选词，可到设置页手动添加。", size = 12.sp, color = colors.onSurfaceVariant)
+            } else {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    words.forEach { word ->
+                        val picked = word in selected
+                        val inBlocked = blockedWords.any { ContentPrefs.sameRule(it, word) }
+                        val inWatch = watchWords.any { ContentPrefs.sameRule(it, word) }
+                        Row(
+                            Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (picked) colors.accent.copy(alpha = 0.11f)
+                                    else colors.onSurface.copy(alpha = 0.055f)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (picked) colors.accent.copy(alpha = 0.34f) else Color.Transparent,
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .clickable {
+                                    selected = if (picked) selected - word else selected + word
+                                }
+                                .padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (picked) {
+                                PickCheck(colors.accent)
+                                Spacer(Modifier.width(5.dp))
+                            }
+                            Txt(
+                                word,
+                                size = 12.sp,
+                                weight = if (picked) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (picked) colors.accent else colors.onSurface,
+                                maxLines = 1
+                            )
+                            if (inBlocked || inWatch) {
+                                Spacer(Modifier.width(5.dp))
+                                Txt(
+                                    if (inBlocked) "已屏蔽" else "已关注",
+                                    size = 9.sp,
+                                    color = colors.onSurfaceVariant.copy(alpha = 0.72f),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Txt(
+                if (selected.isEmpty()) "至少选择 1 个词后，才能加入词库"
+                else "已选 ${selected.size} 个词 · 已在词库中的词会自动跳过",
+                size = 11.sp,
+                color = colors.onSurfaceVariant
+            )
+            Spacer(Modifier.height(9.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                TitlePickAction(
+                    text = "✨ 特别关注",
+                    enabled = enabled,
+                    dark = darkUi,
+                    kind = 1,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onAdd(1, selected.toList()) }
+                )
+                TitlePickAction(
+                    text = "🚫 屏蔽词",
+                    enabled = enabled,
+                    dark = darkUi,
+                    kind = 0,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onAdd(0, selected.toList()) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PickCheck(tint: Color) {
+    Box(Modifier.size(13.dp).clip(CircleShape).background(tint), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(8.dp)) {
+            val p = androidx.compose.ui.graphics.Path()
+            p.moveTo(size.width * 0.10f, size.height * 0.52f)
+            p.lineTo(size.width * 0.38f, size.height * 0.80f)
+            p.lineTo(size.width * 0.90f, size.height * 0.20f)
+            drawPath(p, color = Color.White, style = Stroke(width = 1.5.dp.toPx()))
+        }
+    }
+}
+
+@Composable
+private fun TitlePickAction(
+    text: String,
+    enabled: Boolean,
+    dark: Boolean,
+    kind: Int,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val colors = CouiTheme.colorScheme
+    val bg = when {
+        !enabled -> colors.onSurface.copy(alpha = if (dark) 0.10f else 0.06f)
+        kind == 1 -> if (dark) Color(0xFF3A321D) else Color(0xFFFFF7D9)
+        else -> if (dark) Color(0xFF3A2422) else Color(0xFFFFF0EE)
+    }
+    val line = when {
+        !enabled -> Color.Transparent
+        kind == 1 -> if (dark) Color(0xFF6B5A2A) else Color(0xFFEFD38A)
+        else -> if (dark) Color(0xFF6E3B36) else Color(0xFFEFC8C2)
+    }
+    val content = when {
+        !enabled -> colors.onSurfaceVariant.copy(alpha = 0.34f)
+        kind == 1 -> if (dark) Color(0xFFF1D48A) else Color(0xFF8A5A00)
+        else -> if (dark) Color(0xFFF0A9A1) else Color(0xFFA23B32)
+    }
+    Box(
+        modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(bg)
+            .border(1.dp, line, RoundedCornerShape(16.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Txt(
+            text,
+            size = 13.sp,
+            weight = FontWeight.SemiBold,
+            color = content,
+            maxLines = 1,
+            modifier = Modifier.alpha(if (enabled) 1f else 0.55f)
+        )
     }
 }
 

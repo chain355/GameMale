@@ -27,6 +27,14 @@ class ContentPrefsTest {
     }
 
     @Test
+    fun rulesMergeAndRemoveIgnoringCase() {
+        assertTrue(ContentPrefs.sameRule(" AI ", "ai"))
+        assertEquals(listOf("AI", "汉化"), ContentPrefs.dedupeRules(listOf("AI", " ai ", "汉化", "AI")))
+        assertEquals(listOf("AI", "汉化"), ContentPrefs.mergeRules(listOf("AI"), listOf("ai", " 汉化 ")))
+        assertEquals(listOf("汉化"), ContentPrefs.removeRules(listOf("AI", "汉化"), listOf("ai")))
+    }
+
+    @Test
     fun batchKeepsRegexPunctuationAndSplitsByLine() {
         val parsed = ContentPrefs.parseBatch("  Zephyxus  \nfoo{1,3}\n\nbar;baz")
         assertEquals(listOf("Zephyxus", "foo{1,3}", "bar;baz"), parsed)
