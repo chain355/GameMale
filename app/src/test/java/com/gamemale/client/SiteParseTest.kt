@@ -73,6 +73,35 @@ class SiteParseTest {
     }
 
     @Test
+    fun webViewMobilePagerUsesPageSelect() {
+        val html = """
+            <div class="threadlist"><ul><li>
+            <a href="forum.php?mod=viewthread&tid=9&mobile=2">
+            <div class="threadListTit"><h4>某人</h4><p>发布于 刚刚</p></div>
+            <h3 class="threadSubject"><span>标题</span></h3>
+            </a></li></ul></div>
+            <div class="page">
+            <a href="javascript:;" class="grey">上一页</a>
+            <select id="dumppage">
+            <option value="1" selected>第1页</option>
+            <option value="2">第2页</option>
+            <option value="287">第287页</option>
+            </select>
+            <a href="https://www.gamemale.com/forum.php?mod=forumdisplay&amp;fid=150&amp;mobile=yes&amp;page=2">下一页</a>
+            </div>
+        """.trimIndent()
+        val page = Site.parseForumPage(html)
+        assertEquals(1, page.pageNo)
+        assertEquals(287, page.pageCount)
+        val p2 = page.pages.first { it.first == 2 }.second
+        val p40 = page.pages.first { it.first == 40 }.second
+        assertTrue(p2.contains("page=2"))
+        assertTrue(p2.contains("mobile=yes"))
+        assertTrue(p40.contains("page=40"))
+        assertTrue(p40.contains("mobile=yes"))
+    }
+
+    @Test
     fun threadDetailParses() {
         val page = Site.parseThread(load("thread.html"))
         println("subject=${page.subject} posts=${page.posts.size} pages=${page.pageCount}")

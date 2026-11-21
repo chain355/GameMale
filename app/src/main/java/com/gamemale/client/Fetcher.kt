@@ -328,9 +328,16 @@ class Fetcher(private val ctx: Context) {
                 (JSONTokener(value).nextValue() as? String) ?: ""
             }.getOrDefault("")
             val tid = currentUrl?.let { Regex("thread-(\\d+)").find(it)?.groupValues?.get(1) }
+            // 手机版列表的翻页在帖子后面。threadListTit 第一张卡片就有，
+            // 页面一过 40KB 就收的话，底部分页还没进 DOM，首页页码会整条消失。
+            // WebView 模板是 select#dumppage，触屏版才是 div.pg。
+            val mobileListReady = html.contains("threadListTit") &&
+                (html.contains("id=\"dumppage\"") ||
+                    html.contains("class=\"pg\"") || html.contains("class=\"pg ") ||
+                    html.contains("class=\"nxt\""))
             val looksComplete = html.contains("id=\"postlist\"") ||
                 html.contains("id=\"threadlist\"") || html.contains("normalthread_") ||
-                html.contains("threadListTit")
+                mobileListReady
             when {
                 html.isBlank() -> if (early) return@evaluateJavascript else retryOrFail("页面为空")
                 // Cloudflare 的验证页是"活的"：它要靠页面里的 JS 自己算完再跳转。

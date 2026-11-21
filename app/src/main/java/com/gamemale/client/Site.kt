@@ -776,8 +776,9 @@ object Site {
     }
 
     private fun pagination(doc: org.jsoup.nodes.Document): Triple<List<Pair<Int, String>>, Int, Int> {
-        // 电脑版页码在 #pgt / .pgs 里；手机版是列表后面单独的 div.pg，结构一样：
-        // strong 当前页、数字链接、a.last「... N」、span「 / N 页」、a.nxt。
+        // WebView 手机版是列表后面的 div.page：下拉框列出全部页码，旁边一个「下一页」链接。
+        doc.selectFirst("div.page select#dumppage")?.let { return selectPagination(it) }
+        // 电脑版页码在 #pgt / .pgs 里；触屏版是列表后面单独的 div.pg。
         val pgs = doc.select("#pgt .pg, .pgs .pg, div.pg").distinct()
         val parsed = LinkedHashMap<Int, String>()
         var pageNo = 1
@@ -805,6 +806,30 @@ object Site {
         val out = ArrayList<Pair<Int, String>>()
         for (n in 1..pageCount) {
             val url = parsed[n] ?: template.replace("{p}", n.toString())
+            if (url.isNotEmpty()) out.add(n to url)
+        }
+        return Triple(out, pageNo.coerceIn(1, pageCount), pageCount)
+    }
+
+    /** 手机版 div.page 的下拉框：option value 是页码，选中项是当前页，旁边的「下一页」给出地址模板。 */
+    private fun selectPagination(select: Element): Triple<List<Pair<Int, String>>, Int, Int> {
+        var pageNo = 1
+        var pageCount = 1
+        for (opt in select.select("option")) {
+            val n = opt.attr("value").trim().toIntOrNull() ?: continue
+            if (n > pageCount) pageCount = n
+            if (opt.hasAttr("selected")) pageNo = n
+        }
+        val box = select.parents().firstOrNull { it.hasClass("page") }
+        val sample = box?.select("a[href]")
+            ?.map { it.absUrl("href") }
+            ?.firstOrNull { it.startsWith("http") && it.contains("page=") }
+            .orEmpty()
+        val firstNo = Regex("[?&]page=(\\d+)").find(sample)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        val template = pageTemplate(sample, firstNo)
+        val out = ArrayList<Pair<Int, String>>()
+        for (n in 1..pageCount) {
+            val url = template.replace("{p}", n.toString())
             if (url.isNotEmpty()) out.add(n to url)
         }
         return Triple(out, pageNo.coerceIn(1, pageCount), pageCount)
