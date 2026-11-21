@@ -18,6 +18,16 @@ import kotlinx.serialization.Serializable
  * 导航键。首页四个标签是同一个 Home 里的横向 Pager，不各占一条栈。
  * 帖子、版块、搜索、设置压在首页栈上。深链单独一条栈，返回即离开应用。
  */
+/**
+ * 一次栈顶替换怎么出现。
+ * [Enter] 是打开另一页，从点击处展开。
+ * [InPlace] 是留在当前页，只换地址和内容，例如翻页。
+ */
+enum class NavArrival {
+    Enter,
+    InPlace,
+}
+
 @Serializable
 sealed interface AppRoute : NavKey {
     @Serializable data object Home : AppRoute
@@ -45,6 +55,13 @@ class AppNavigation(
 ) {
     private val readActive = activeReader
 
+    /** 最近一次 [replaceTop] 带进来的呈现方式，只对那一次传入的路由对象有效。 */
+    private var arrivalRoute: AppRoute? = null
+    private var arrival: NavArrival = NavArrival.Enter
+
+    fun arrivalOf(route: AppRoute): NavArrival =
+        if (route === arrivalRoute) arrival else NavArrival.Enter
+
     var activeId: String
         get() = readActive()
         set(value) = activeWriter(value)
@@ -66,10 +83,13 @@ class AppNavigation(
         get() = stack().size > 1 || activeStack == AppRoute.Deep
 
     fun push(route: AppRoute) {
+        arrivalRoute = null
         stack().add(route)
     }
 
-    fun replaceTop(route: AppRoute) {
+    fun replaceTop(route: AppRoute, arrival: NavArrival = NavArrival.Enter) {
+        arrivalRoute = route
+        this.arrival = arrival
         val current = stack()
         if (current.isEmpty()) current.add(route) else current[current.lastIndex] = route
     }
@@ -86,6 +106,7 @@ class AppNavigation(
      * 弹出成功时返回新的栈顶，供缓存还原。
      */
     fun pop(): AppRoute? {
+        arrivalRoute = null
         val current = stack()
         if (current.size <= 1) return null
         current.removeLast()

@@ -86,23 +86,24 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 首页两个版块只改自己的地址；已经压进来的版块替换栈顶，不再多一层。 */
-    private fun retargetForum(url: String, title: String) {
+    private fun retargetForum(url: String, title: String, arrival: NavArrival = NavArrival.Enter) {
         when (routes.top) {
             AppRoute.Home -> when (homeTab) {
                 0 -> animeUrl = url
                 1 -> gameUrl = url
                 else -> routes.push(AppRoute.Forum(url, title))
             }
-            is AppRoute.Forum -> routes.replaceTop(AppRoute.Forum(url, title))
+            is AppRoute.Forum -> routes.replaceTop(AppRoute.Forum(url, title), arrival)
             else -> routes.push(AppRoute.Forum(url, title))
         }
     }
 
     /** 根页面打开帖子是压栈；已经在版块或帖子上则替换栈顶。 */
-    private fun showAsThread(url: String, title: String) {
+    private fun showAsThread(url: String, title: String, arrival: NavArrival = NavArrival.Enter) {
         when (val top = routes.top) {
-            is AppRoute.Thread -> routes.replaceTop(AppRoute.Thread(url, title.ifBlank { top.title }))
-            is AppRoute.Forum -> routes.replaceTop(AppRoute.Thread(url, title))
+            is AppRoute.Thread ->
+                routes.replaceTop(AppRoute.Thread(url, title.ifBlank { top.title }), arrival)
+            is AppRoute.Forum -> routes.replaceTop(AppRoute.Thread(url, title), arrival)
             else -> routes.push(AppRoute.Thread(url, title))
         }
     }
@@ -351,7 +352,7 @@ class MainActivity : ComponentActivity() {
                     onRetry = { reload() },
                     onOpenForum = { openForum(it) },
                     onOpenThread = { openThread(it) },
-                    onLoad = { url -> linkLoad(url) },
+                    onLoad = { url, arrival -> linkLoad(url, arrival) },
                     onToggleDark = {
                         themeMode = if (darkMode) 2 else 1
                         darkMode = !darkMode
@@ -1383,10 +1384,10 @@ class MainActivity : ComponentActivity() {
         val target = mobileListUrl(url)
         when (val n = routes.top) {
             is AppRoute.Thread -> {
-                routes.replaceTop(AppRoute.Thread(target, ""))
+                routes.replaceTop(AppRoute.Thread(target, n.title), NavArrival.InPlace)
                 threadPage = null
             }
-            is AppRoute.Forum -> routes.replaceTop(n.copy(url = target))
+            is AppRoute.Forum -> routes.replaceTop(n.copy(url = target), NavArrival.InPlace)
             AppRoute.Home -> when (homeTab) {
                 0 -> animeUrl = target
                 1 -> gameUrl = target
@@ -1394,10 +1395,10 @@ class MainActivity : ComponentActivity() {
             }
             else -> routes.push(AppRoute.Forum(target, forumTitle()))
         }
-        linkLoad(target)
+        linkLoad(target, NavArrival.InPlace)
     }
 
-    private fun linkLoad(raw: String) {
+    private fun linkLoad(raw: String, arrival: NavArrival = NavArrival.Enter) {
         val url = mobileListUrl(raw)
         if (url.isBlank() || !url.startsWith("http")) {
             toast("这个分类入口没有有效链接")
@@ -1415,7 +1416,7 @@ class MainActivity : ComponentActivity() {
                         if (url.contains("mod=viewthread") || url.contains("thread-")) {
                             val tp = Site.parseThread(html)
                             threadPage = tp
-                            showAsThread(url, tp.subject)
+                            showAsThread(url, tp.subject, arrival)
                         } else {
                             var fp = Site.parseForumPage(html)
                             // 搜索结果的 DOM 不是版块列表：第二页用版块解析会得到空列表，
@@ -1433,7 +1434,7 @@ class MainActivity : ComponentActivity() {
                             val keepTitle = routes.showBottomBar &&
                                 (url.contains("fid=150") || url.contains("fid=152"))
                             val title = if (keepTitle) forumTitle().takeIf { it.isNotBlank() } else null
-                            retargetForum(url, title ?: fp.title.ifBlank { "版块" })
+                            retargetForum(url, title ?: fp.title.ifBlank { "版块" }, arrival)
                         }
                     }.onFailure { error = "解析失败：" + (it.message ?: it.javaClass.simpleName) }
                 }.onFailure { error = it.message ?: "加载失败" }

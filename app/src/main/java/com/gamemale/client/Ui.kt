@@ -12,6 +12,7 @@ import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.snap
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.scene.SinglePaneSceneStrategy
 import androidx.navigation3.ui.LocalNavAnimatedContentScope
@@ -708,7 +709,7 @@ fun Txt(
 }
 
 /** 这次导航是返回。推入新页时为 false，这样被盖住的页面不会跟着缩回去。 */
-private object NavMotion {
+internal object NavMotion {
     var popping = false
     /** 这次推入还没把新页从点击区域展开。过渡开始前新页不能先铺满屏幕。 */
     var enterHeld by mutableStateOf(false)
@@ -765,8 +766,8 @@ private fun Modifier.markSpot(key: String?): Modifier {
  * 比页面底色更亮，会整屏闪一下。
  */
 @Composable
-private fun Modifier.motionFrom(key: String?): Modifier {
-    if (key == null) return this
+private fun Modifier.motionFrom(key: String?, inPlace: Boolean = false): Modifier {
+    if (key == null || inPlace) return this
     val spot = openSpots[key] ?: return this
     val transition = LocalNavAnimatedContentScope.current.transition
     val popping = NavMotion.popping
@@ -823,7 +824,7 @@ fun AppUi(
     onRetry: () -> Unit,
     onOpenForum: (ForumItem) -> Unit,
     onOpenThread: (ThreadItem) -> Unit,
-    onLoad: (String) -> Unit,
+    onLoad: (String, NavArrival) -> Unit,
     onToggleDark: () -> Unit,
     onLogin: () -> Unit,
     onExternal: (String) -> Unit,
@@ -1352,9 +1353,10 @@ fun AppUi(
                 // 背景、顶栏、内容和本页按钮在同一层里，返回时才是整页一起动。
                 // 正文直接画到屏幕上，另外录一份给顶栏和底栏采样。
                 // 不能改用 couiBackdrop：它会拿录制层替换正文，新页第一帧那张层是空的，整屏会先闪成空白。
+                val inPlace = nav.arrivalOf(page) == NavArrival.InPlace
                 Box(
                     Modifier
-                        .motionFrom(pageBoundsKey(page))
+                        .motionFrom(pageBoundsKey(page), inPlace)
                         .fillMaxSize()
                         .background(colors.background)
                 ) {
@@ -1599,9 +1601,19 @@ fun AppUi(
                 modifier = Modifier.fillMaxSize(),
                 sceneStrategies = listOf(SinglePaneSceneStrategy()),
                 transitionSpec = {
+                    val inPlace = nav.arrivalOf(nav.top) == NavArrival.InPlace
                     NavMotion.popping = false
-                    NavMotion.enterHeld = true
-                    pageBoundsTransform(incomingOnTop = true)
+                    NavMotion.enterHeld = !inPlace
+                    if (inPlace) {
+                        ContentTransform(
+                            targetContentEnter = fadeIn(snap()),
+                            initialContentExit = fadeOut(snap()),
+                            targetContentZIndex = 1f,
+                            sizeTransform = null,
+                        )
+                    } else {
+                        pageBoundsTransform(incomingOnTop = true)
+                    }
                 },
                 popTransitionSpec = {
                     NavMotion.popping = true
@@ -2859,7 +2871,7 @@ private fun HomeBoardPage(
     needLogin: Boolean,
     needUpgrade: Boolean,
     onOpenThread: (ThreadItem) -> Unit,
-    onLoad: (String) -> Unit,
+    onLoad: (String, NavArrival) -> Unit,
     onImage: (String) -> Unit,
     onRefresh: () -> Unit,
     onThumbNeeded: (ThreadItem) -> Unit,
@@ -2893,7 +2905,7 @@ private fun ForumView(
     page: ForumPage?,
     loading: Boolean,
     onThread: (ThreadItem) -> Unit,
-    onLoad: (String) -> Unit,
+    onLoad: (String, NavArrival) -> Unit,
     currentUrl: String,
     onImage: (String) -> Unit,
     listState: LazyListState,
@@ -3221,7 +3233,7 @@ private fun ThumbsGrid(thumbs: List<Any>, onImage: ((String) -> Unit)? = null, d
 }
 
 @Composable
-private fun PagerRow(pageNo: Int, pageCount: Int, pages: List<Pair<Int, String>>, onLoad: (String) -> Unit) {
+private fun PagerRow(pageNo: Int, pageCount: Int, pages: List<Pair<Int, String>>, onLoad: (String, NavArrival) -> Unit) {
     val colors = CouiTheme.colorScheme
     Row(
         Modifier.fillMaxWidth().padding(vertical = 10.dp),
@@ -3245,7 +3257,7 @@ private fun PagerRow(pageNo: Int, pageCount: Int, pages: List<Pair<Int, String>>
                     .size(width = 34.dp, height = 32.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(if (n == pageNo) colors.accent else colors.container)
-                    .clickable { onLoad(url) },
+                    .clickable { onLoad(url, NavArrival.InPlace) },
                 contentAlignment = Alignment.Center
             ) {
                 Txt(n.toString(), size = 13.sp, color = if (n == pageNo) colors.onAccent else colors.onSurfaceVariant)
@@ -3259,7 +3271,7 @@ private fun PagerRow(pageNo: Int, pageCount: Int, pages: List<Pair<Int, String>>
 private fun ThreadView(
     page: ThreadPage?,
     loading: Boolean,
-    onLoad: (String) -> Unit,
+    onLoad: (String, NavArrival) -> Unit,
     onExternal: (String) -> Unit,
     onReply: () -> Unit,
     onRate: (String) -> Unit,
@@ -3305,6 +3317,15 @@ private fun ThreadView(
             }
         }
         onFocusConsumed()
+    }
+    // 翻页后回到顶部
+    var seenThreadPage by remember { mutableStateOf(-1) }
+    LaunchedEffect(page?.pageNo) {
+        val no = page?.pageNo ?: return@LaunchedEffect
+        val prev = seenThreadPage
+        seenThreadPage = no
+        if (prev < 0 || prev == no || attachFocus != null) return@LaunchedEffect
+        listState.scrollToItem(0)
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
